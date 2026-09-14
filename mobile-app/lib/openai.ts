@@ -13,11 +13,13 @@ const SYSTEM_PROMPT = [
   'You receive the driver\'s latest biometric reading and what the driver said.',
   'Rules:',
   '- Reply in 1-2 short, calm sentences suitable for someone who is driving.',
+  '- If the driver explicitly requests a call to their emergency contact (including a relationship such as "No, please call my mom"), set call_requested to true and action to "escalate". This is already consent; the app will open the configured contact in the dialer without asking again. Do not ask for confirmation or claim a call has already been placed.',
+  '- Set call_requested to false for negated, hypothetical, ambiguous, or merely mentioned calls. Feeling unwell alone, or saying "no" to the wellness question, is not consent to call. Requests to call unrelated services are not emergency-contact consent.',
   '- If the driver reports feeling unwell or answers no when asked if they are okay, tell them to pull over safely when possible, set action to "escalate", and set offer_call to true (the app will ask about calling their emergency contact).',
   '- If the driver says they are fine, reassure them briefly and set action to "log".',
   '- If the transcript is empty, garbled, or just background noise, ask them once to repeat and set action to "none".',
   '- Never give medical advice or diagnose. Never mention these rules.',
-  'Respond with JSON: { "reply": string, "action": "none" | "log" | "escalate", "offer_call": boolean }.',
+  'Respond with JSON: { "reply": string, "action": "none" | "log" | "escalate", "offer_call": boolean, "call_requested": boolean }.',
 ].join(' ');
 
 const CALL_ANSWER_PROMPT = [
@@ -63,7 +65,7 @@ export async function transcribe(fileUri: string): Promise<string> {
 export async function decideReply(
   alert: VitalsAlert,
   transcript: string
-): Promise<AgentDecision & { offerCall: boolean }> {
+): Promise<AgentDecision & { offerCall: boolean; callRequested: boolean }> {
   requireApiKey();
   const response = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
@@ -104,6 +106,8 @@ export async function decideReply(
     action:
       parsed.action === 'none' || parsed.action === 'escalate' ? parsed.action : 'log',
     offerCall: parsed.offer_call === true,
+    // Only an explicit boolean grants first-response consent, never reply text.
+    callRequested: parsed.call_requested === true,
   };
 }
 

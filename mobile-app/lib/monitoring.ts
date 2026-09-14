@@ -1,3 +1,4 @@
+import { loadProfile } from './profiles';
 import { supabase } from './supabase';
 import { classifyVitals, type TelemetryEvent, type VitalsAlert } from './types';
 
@@ -53,31 +54,16 @@ export function subscribeToVitals(
   };
 }
 
-/**
- * The driver's emergency contact from driver_profiles.
- * TODO: Scope contact lookup to the selected driver.
- * Prototype: reads the first profile; replace with profile
- * selection once the app has driver identity/auth.
- */
-export async function getEmergencyContact(): Promise<{
+/** Load only the contact belonging to the selected prototype driver. */
+export async function getEmergencyContact(profileId: string | null): Promise<{
   name: string;
   phone: string;
-} | null> {
-  const { data, error } = await supabase
-    .from('driver_profiles')
-    .select('display_name, emergency_contact_name, emergency_contact_phone')
-    .limit(1);
-
-  if (error) {
-    console.error('Failed to load emergency contact:', error);
-    return null;
+}> {
+  if (!profileId) throw new Error('Select and save a driver profile in Profile / Setup first.');
+  const profile = await loadProfile(profileId);
+  if (!profile.emergency_contact_phone?.trim()) {
+    throw new Error('The selected driver has no emergency contact phone number. Update Profile / Setup.');
   }
-
-  const profile = data?.[0];
-  if (!profile?.emergency_contact_phone) {
-    return null;
-  }
-
   return {
     name: profile.emergency_contact_name || profile.display_name || 'your emergency contact',
     phone: profile.emergency_contact_phone,

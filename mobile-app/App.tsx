@@ -3,13 +3,14 @@ import {
   ActivityIndicator,
   Button,
   Keyboard,
-  Linking,
-  Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
   View,
 } from 'react-native';
+import { loadProfiles, saveProfile, type DriverProfile } from './lib/profiles';
+import { openPhone } from './lib/phone';
 import { supabase } from './lib/supabase';
 import {
   AudioModule,
@@ -70,6 +71,17 @@ export default function App() {
   const [transcript, setTranscript] = useState('');
   const [agentError, setAgentError] = useState('');
 
+  const [profiles, setProfiles] = useState<DriverProfile[]>([]);
+  const [profileId, setProfileId] = useState<string | null>(null);
+  const [driverName, setDriverName] = useState('');
+  const [contactName, setContactName] = useState('');
+  const [contactPhone, setContactPhone] = useState('');
+  const [profileStatus, setProfileStatus] = useState('Loading profiles...');
+  const [profileBusy, setProfileBusy] = useState(true);
+  const [profilesLoaded, setProfilesLoaded] = useState(false);
+  const profileIdRef = useRef<string | null>(null);
+  const profileBusyRef = useRef(false);
+
   const recorder = useAudioRecorder({
     ...RecordingPresets.HIGH_QUALITY,
     isMeteringEnabled: true,
@@ -107,6 +119,89 @@ export default function App() {
       void stopSpeaking();
     };
   }, []);
+
+  function populateProfile(profile: DriverProfile | null) {
+    profileIdRef.current = profile?.id ?? null;
+    setProfileId(profile?.id ?? null);
+    setDriverName(profile?.display_name ?? '');
+    setContactName(profile?.emergency_contact_name ?? '');
+    setContactPhone(profile?.emergency_contact_phone ?? '');
+  }
+
+  async function refreshProfiles() {
+    if (profileBusyRef.current || busyRef.current) return;
+    profileBusyRef.current = true;
+    setProfileBusy(true);
+    setProfilesLoaded(false);
+    try {
+      const rows = await loadProfiles();
+      ensureMounted();
+      setProfiles(rows);
+      const selected = rows.find(row => row.id === profileIdRef.current);
+      populateProfile(selected ?? (rows.length === 1 ? rows[0] : null));
+      setProfilesLoaded(true);
+      setProfileStatus(rows.length === 0 ? 'Create your prototype profile below.' :
+        selected || rows.length === 1 ? 'Profile loaded.' : 'Select your driver profile below.');
+    } catch (error) {
+      if (mountedRef.current) setProfileStatus(error instanceof Error ? error.message : 'Could not load profiles.');
+    } finally {
+      profileBusyRef.current = false;
+      if (mountedRef.current) setProfileBusy(false);
+    }
+  }
+
+  useEffect(() => { void refreshProfiles(); }, []);
+
+  function selectProfile(profile: DriverProfile) {
+    if (busyRef.current || profileBusyRef.current) return;
+    populateProfile(profile);
+    setProfileStatus('Profile selected. Save any changes before testing the contact.');
+  }
+
+  async function saveSetup() {
+    if (busyRef.current || profileBusyRef.current || !profilesLoaded) return;
+    if (!profileIdRef.current && profiles.length > 0) {
+      setProfileStatus('Select an existing driver profile before saving.');
+      return;
+    }
+    profileBusyRef.current = true;
+    setProfileBusy(true);
+    try {
+      const saved = await saveProfile(profileIdRef.current, {
+        display_name: driverName,
+        emergency_contact_name: contactName,
+        emergency_contact_phone: contactPhone,
+      });
+      ensureMounted();
+      populateProfile(saved);
+      setProfiles(previous => [...previous.filter(row => row.id !== saved.id), saved]);
+      setProfileStatus('Profile saved. Emergency calls use this saved contact.');
+    } catch (error) {
+      if (mountedRef.current) setProfileStatus(error instanceof Error ? error.message : 'Could not save profile.');
+    } finally {
+      profileBusyRef.current = false;
+      if (mountedRef.current) setProfileBusy(false);
+    }
+  }
+
+  async function testEmergencyContact() {
+    if (busyRef.current || profileBusyRef.current) return;
+    busyRef.current = true;
+    setAgentState('testing');
+    try {
+      const contact = await getEmergencyContact(profileIdRef.current);
+      ensureMounted();
+      await openPhone(contact.phone);
+      if (mountedRef.current) setProfileStatus('Phone interface opened for the saved emergency contact.');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Emergency contact test failed.';
+      console.error(message);
+      if (mountedRef.current) setProfileStatus(message);
+    } finally {
+      busyRef.current = false;
+      if (mountedRef.current) setAgentState('idle');
+    }
+  }
 
   async function say(text: string) {
     ensureMounted();
@@ -195,6 +290,7 @@ export default function App() {
     }
     busyRef.current = true;
     setAgentState('alerting');
+    const conversationProfileId = profileIdRef.current;
     const heard: string[] = [];
     let decision: AgentDecision | null = null;
     let askedEmergencyCall = false;
@@ -212,13 +308,20 @@ export default function App() {
       const result = await decideReply(next, reply);
       ensureMounted();
       decision = result;
+      // Entering this pathway is logged even if contact lookup/dialing fails.
+      askedEmergencyCall = result.callRequested || result.offerCall;
       setAgentState('responding');
       await say(result.reply);
-      if (result.offerCall) {
-        const contact = await getEmergencyContact();
+      if (askedEmergencyCall) {
+        const contact = await getEmergencyContact(conversationProfileId);
         ensureMounted();
         if (contact) {
-          askedEmergencyCall = true;
+          if (result.callRequested) {
+            await say(`Okay. Opening the dialer for ${contact.name} now.`);
+            await openPhone(contact.phone);
+            dialerOpened = true;
+            return;
+          }
           setAgentState('alerting');
           await say(`Would you like me to call ${contact.name}?`);
           const answerText = await listen(CALL_LISTEN_CAP_SECONDS);
@@ -230,7 +333,7 @@ export default function App() {
             if (answer.placeCall) {
               await say(`Okay. Opening the dialer for ${contact.name} now.`);
               // Keep contact local and open the dialer BEFORE cleanup/logging.
-              await Linking.openURL(`tel:${contact.phone}`);
+              await openPhone(contact.phone);
               dialerOpened = true;
             } else if (answer.ack) {
               await say(answer.ack);
@@ -242,6 +345,7 @@ export default function App() {
         }
       }
     } catch (error) {
+      console.error(error instanceof Error ? error.message : 'Voice agent failed.');
       if (mountedRef.current) {
         setAgentError(error instanceof Error ? error.message : 'Voice agent failed.');
       }
@@ -359,7 +463,34 @@ export default function App() {
   }
 
   return (
-    <Pressable style={styles.container} onPress={Keyboard.dismiss}>
+    <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag">
+      <View style={styles.profileSection}>
+        <Text style={styles.title}>Profile / Setup</Text>
+        <Text>Prototype driver selection (no sign-in). Select your profile each time you open the app.</Text>
+        {profiles.map(profile => (
+          <Button key={profile.id}
+            title={`${profileId === profile.id ? 'Selected: ' : 'Select: '}${profile.display_name || 'Unnamed driver'} (${profile.id})`}
+            onPress={() => selectProfile(profile)} disabled={profileBusy || agentState !== 'idle'} />
+        ))}
+        <Button title="RELOAD PROFILES" onPress={refreshProfiles} disabled={profileBusy || agentState !== 'idle'} />
+        <Text>Driver/display name</Text>
+        <TextInput style={styles.profileInput} accessibilityLabel="Driver/display name" value={driverName}
+          onChangeText={setDriverName} editable={!profileBusy && agentState === 'idle' && profilesLoaded && (profileId !== null || profiles.length === 0)} />
+        <Text>Emergency contact name</Text>
+        <TextInput style={styles.profileInput} accessibilityLabel="Emergency contact name" value={contactName}
+          onChangeText={setContactName} editable={!profileBusy && agentState === 'idle' && profilesLoaded && (profileId !== null || profiles.length === 0)} />
+        <Text>Emergency contact phone number</Text>
+        <TextInput style={styles.profileInput} accessibilityLabel="Emergency contact phone number" value={contactPhone}
+          onChangeText={setContactPhone} keyboardType="phone-pad"
+          editable={!profileBusy && agentState === 'idle' && profilesLoaded && (profileId !== null || profiles.length === 0)} />
+        <Button title="SAVE PROFILE" onPress={saveSetup}
+          disabled={profileBusy || agentState !== 'idle' || !profilesLoaded || (profileId === null && profiles.length > 0)} />
+        <Button title="TEST EMERGENCY CONTACT (DEV)" onPress={testEmergencyContact}
+          disabled={profileBusy || agentState !== 'idle' || profileId === null} />
+        <Text>Development test: opens the phone interface using the saved contact.</Text>
+        <Text accessibilityLiveRegion="polite">{profileStatus}</Text>
+      </View>
+
       <Text style={styles.title}>Sensor Test App</Text>
 
       <TextInput
@@ -417,7 +548,7 @@ export default function App() {
       )}
 
       <Text style={styles.status}>{sendStatus}</Text>
-    </Pressable>
+    </ScrollView>
   );
 }
 
@@ -433,11 +564,21 @@ const AGENT_STATE_LABEL: Record<AgentState, string> = {
 
 const styles = StyleSheet.create({
   container: {
-    flex: 1,
+    flexGrow: 1,
     alignItems: 'center',
     justifyContent: 'center',
     gap: 24,
     padding: 24,
+  },
+  profileSection: {
+    width: '100%',
+    gap: 12,
+  },
+  profileInput: {
+    borderWidth: 1,
+    borderRadius: 8,
+    padding: 12,
+    fontSize: 18,
   },
   title: {
     fontSize: 28,
