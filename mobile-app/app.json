@@ -21,7 +21,13 @@
     },
     "plugins": [
       "expo-sqlite",
-      "expo-status-bar"
+      "expo-status-bar",
+      [
+        "expo-audio",
+        {
+          "microphonePermission": "Allows the app to hear your replies during wellness check-ins."
+        }
+      ]
     ]
   }
 }

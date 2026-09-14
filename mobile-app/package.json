@@ -16,7 +16,9 @@
     "expo-status-bar": "~57.0.1",
     "react": "19.2.3",
     "react-native": "0.86.3",
-    "react-native-url-polyfill": "^4.0.0"
+    "react-native-url-polyfill": "^4.0.0",
+    "expo-audio": "~57.0.5",
+    "expo-file-system": "~57.0.7"
   },
   "devDependencies": {
     "@types/react": "~19.2.10",
