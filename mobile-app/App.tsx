@@ -4,6 +4,9 @@ import {
   Pressable,
   SafeAreaView,
   Keyboard,
+  KeyboardAvoidingView,
+  Modal,
+  Platform,
   ScrollView,
   StyleSheet,
   Text,
@@ -65,8 +68,7 @@ const CHECK_IN_LINES: Record<PiStatus, string> = {
 };
 
 export default function App() {
-  const [setupExpanded, setSetupExpanded] = useState(false);
-  const [toolsExpanded, setToolsExpanded] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
   const [assistantPrompt, setAssistantPrompt] = useState('');
   const [testLabel, setTestLabel] = useState('Testing microphone');
   const [reading, setReading] = useState('');
@@ -79,6 +81,10 @@ export default function App() {
   const [profiles, setProfiles] = useState<DriverProfile[]>([]);
   const [profileId, setProfileId] = useState<string | null>(null);
   const [driverName, setDriverName] = useState('');
+  const [age, setAge] = useState('');
+  const [height, setHeight] = useState('');
+  const [weight, setWeight] = useState('');
+  const [gender, setGender] = useState('');
   const [contactName, setContactName] = useState('');
   const [contactPhone, setContactPhone] = useState('');
   const [profileStatus, setProfileStatus] = useState('Loading profiles...');
@@ -126,6 +132,10 @@ export default function App() {
     profileIdRef.current = profile?.id ?? null;
     setProfileId(profile?.id ?? null);
     setDriverName(profile?.display_name ?? '');
+    setAge(profile?.age?.toString() ?? '');
+    setHeight(profile?.height_cm?.toString() ?? '');
+    setWeight(profile?.weight_kg?.toString() ?? '');
+    setGender(profile?.gender ?? '');
     setContactName(profile?.emergency_contact_name ?? '');
     setContactPhone(profile?.emergency_contact_phone ?? '');
   }
@@ -139,11 +149,10 @@ export default function App() {
       const rows = await loadProfiles();
       ensureMounted();
       setProfiles(rows);
-      const selected = rows.find(row => row.id === profileIdRef.current);
-      populateProfile(selected ?? (rows.length === 1 ? rows[0] : null));
+      populateProfile(rows.length === 1 ? rows[0] : null);
       setProfilesLoaded(true);
-      setProfileStatus(rows.length === 0 ? 'Create your prototype profile below.' :
-        selected || rows.length === 1 ? 'Profile loaded.' : 'Select your driver profile below.');
+      setProfileStatus(rows.length === 0 ? 'Create your driver profile to get started.' :
+        rows.length === 1 ? 'Profile loaded.' : 'Multiple profiles found. This app requires one driver profile.');
     } catch (error) {
       if (mountedRef.current) setProfileStatus(error instanceof Error ? error.message : 'Could not load profiles.');
     } finally {
@@ -154,16 +163,10 @@ export default function App() {
 
   useEffect(() => { void refreshProfiles(); }, []);
 
-  function selectProfile(profile: DriverProfile) {
-    if (busyRef.current || profileBusyRef.current) return;
-    populateProfile(profile);
-    setProfileStatus('Profile selected. Save any changes before testing the contact.');
-  }
-
   async function saveSetup() {
     if (busyRef.current || profileBusyRef.current || !profilesLoaded) return;
     if (!profileIdRef.current && profiles.length > 0) {
-      setProfileStatus('Select an existing driver profile before saving.');
+      setProfileStatus('Unable to save: this app requires one driver profile.');
       return;
     }
     profileBusyRef.current = true;
@@ -171,6 +174,10 @@ export default function App() {
     try {
       const saved = await saveProfile(profileIdRef.current, {
         display_name: driverName,
+        age,
+        height_cm: height,
+        weight_kg: weight,
+        gender,
         emergency_contact_name: contactName,
         emergency_contact_phone: contactPhone,
       });
@@ -473,6 +480,12 @@ export default function App() {
   const profileEditable = !profileBusy && agentState === 'idle' && profilesLoaded &&
     (profileId !== null || profiles.length === 0);
   const selectedProfile = profiles.find(profile => profile.id === profileId);
+  const activeDriverName = selectedProfile?.display_name || (profileBusy ? 'Loading driver...' : 'Set up your driver profile');
+  const driverInitial = selectedProfile?.display_name?.trim().charAt(0).toUpperCase() || '?';
+  function closeMenu() {
+    Keyboard.dismiss();
+    setMenuOpen(false);
+  }
   const statusTitle = !alert ? 'Waiting for readings' : warning
     ? alert.severity === 'critical' ? 'Critical reading detected' : 'Attention needed'
     : 'Vitals are normal';
@@ -490,8 +503,15 @@ export default function App() {
         <View style={styles.header}>
           <View style={styles.row}>
             <Text style={styles.eyebrow}>DRIVER WELLNESS</Text>
-            <View style={styles.liveBadge} accessibilityLabel="Live monitoring dashboard">
-              <View style={styles.liveDot} /><Text style={styles.liveText}>LIVE</Text>
+            <View style={styles.headerActions}>
+              <View style={styles.liveBadge} accessibilityLabel="Live monitoring dashboard">
+                <View style={styles.liveDot} /><Text style={styles.liveText}>LIVE</Text>
+              </View>
+              <Pressable accessibilityRole="button" accessibilityLabel="Open driver menu"
+                accessibilityState={{ expanded: menuOpen }} onPress={() => setMenuOpen(true)}
+                style={({ pressed }) => [styles.menuButton, pressed && styles.pressedButton]}>
+                <Text style={styles.blueText}>{driverInitial}</Text>
+              </Pressable>
             </View>
           </View>
           <Text style={styles.title}>Biometric Drive Monitor</Text>
@@ -552,7 +572,7 @@ export default function App() {
 
         <View style={styles.sessionBox}>
           <Text style={styles.eyebrow}>DRIVE SESSION</Text>
-          <Text style={styles.cardLabel}>{selectedProfile?.display_name || 'No driver selected'}</Text>
+          <Text style={styles.cardLabel}>{activeDriverName}</Text>
           <View style={styles.summaryRow}>
             <Text style={styles.muted}>Signal quality</Text>
             <Text style={styles.body}>{alert?.signal_quality != null ? `${alert.signal_quality}%` : '—'}</Text>
@@ -567,58 +587,89 @@ export default function App() {
         <ActionButton title="Simulate abnormal reading" onPress={simulatePiMessage}
           disabled={agentState !== 'idle'} subtle />
 
-        <View style={styles.secondarySection}>
-          <Text style={styles.eyebrow}>MANAGE & TEST</Text>
-          <Pressable accessibilityRole="button" accessibilityState={{ expanded: setupExpanded }}
-            onPress={() => setSetupExpanded(value => !value)} style={styles.disclosure}>
-            <View style={styles.disclosureText}>
-              <Text style={styles.cardLabel}>Driver profile & emergency contact</Text>
-              <Text style={styles.caption}>{selectedProfile?.display_name || 'Select or create a driver profile'}</Text>
-            </View>
-            <Text style={styles.blueText}>{setupExpanded ? '−' : '+'}</Text>
-          </Pressable>
-          {setupExpanded && <View style={styles.card}>
-            <Text style={styles.muted}>Select your profile each time you open the app.</Text>
-            {profiles.map(profile => (
-              <ActionButton key={profile.id}
-                title={`${profileId === profile.id ? 'Selected: ' : 'Select: '}${profile.display_name || 'Unnamed driver'} (${profile.id})`}
-                onPress={() => selectProfile(profile)} disabled={profileBusy || agentState !== 'idle'} />
-            ))}
-            <ActionButton title="Reload profiles" onPress={refreshProfiles} disabled={profileBusy || agentState !== 'idle'} />
-            <Text style={styles.cardLabel}>Driver name</Text>
-            <TextInput style={styles.input} accessibilityLabel="Driver/display name" value={driverName}
-              onChangeText={setDriverName} editable={profileEditable} />
-            <Text style={styles.cardLabel}>Emergency contact name</Text>
-            <TextInput style={styles.input} accessibilityLabel="Emergency contact name" value={contactName}
-              onChangeText={setContactName} editable={profileEditable} />
-            <Text style={styles.cardLabel}>Emergency contact phone</Text>
-            <TextInput style={styles.input} accessibilityLabel="Emergency contact phone number" value={contactPhone}
-              onChangeText={setContactPhone} keyboardType="phone-pad" editable={profileEditable} />
-            <ActionButton title="Save profile" onPress={saveSetup} primary
-              disabled={profileBusy || agentState !== 'idle' || !profilesLoaded || (profileId === null && profiles.length > 0)} />
-            <ActionButton title="Test emergency contact" onPress={testEmergencyContact}
-              disabled={profileBusy || agentState !== 'idle' || profileId === null} />
-            <Text style={styles.caption}>Opens the phone interface using your saved contact.</Text>
-            <Text style={styles.muted} accessibilityLiveRegion="polite">{profileStatus}</Text>
-          </View>}
-
-          <Pressable accessibilityRole="button" accessibilityState={{ expanded: toolsExpanded }}
-            onPress={() => setToolsExpanded(value => !value)} style={styles.disclosure}>
-            <Text style={[styles.cardLabel, styles.disclosureText]}>Device & connection tests</Text>
-            <Text style={styles.blueText}>{toolsExpanded ? '−' : '+'}</Text>
-          </Pressable>
-          {toolsExpanded && <View style={styles.card}>
-            <Text style={styles.cardLabel}>Test reading</Text>
-            <TextInput style={styles.input} accessibilityLabel="Test reading" placeholder="Enter test reading"
-              placeholderTextColor="#94A5C0" keyboardType="decimal-pad" returnKeyType="done"
-              onSubmitEditing={Keyboard.dismiss} value={reading} onChangeText={setReading} />
-            <ActionButton title="Send test reading" onPress={sendTestReading} />
-            {agentState === 'idle' && <ActionButton title="Test microphone" onPress={testMic} />}
-            <Text style={styles.muted} accessibilityLiveRegion="polite">{sendStatus}</Text>
-          </View>}
-        </View>
         <Text style={styles.footer}>BIOMETRIC DRIVE MONITOR · DRIVER WELLNESS</Text>
       </ScrollView>
+      <Modal visible={menuOpen} transparent animationType="fade" onRequestClose={closeMenu}>
+        <View style={styles.modalRoot}>
+          <Pressable style={styles.backdrop} accessibilityRole="button" accessibilityLabel="Close driver menu"
+            onPress={closeMenu} />
+          <SafeAreaView style={styles.drawer} accessibilityViewIsModal>
+            <KeyboardAvoidingView style={styles.drawerBody} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
+              <View style={styles.drawerHeader}>
+                <View style={styles.drawerHeading}>
+                  <Text style={styles.eyebrow}>YOUR DRIVE</Text>
+                  <Text style={styles.sectionTitle}>Profile & setup</Text>
+                </View>
+                <Pressable accessibilityRole="button" accessibilityLabel="Close driver menu" onPress={closeMenu}
+                  style={({ pressed }) => [styles.menuButton, pressed && styles.pressedButton]}>
+                  <Text style={styles.blueText}>X</Text>
+                </Pressable>
+              </View>
+              <ScrollView contentContainerStyle={styles.drawerContent} keyboardShouldPersistTaps="handled"
+                keyboardDismissMode="on-drag">
+                <View style={styles.activeDriverCard}>
+                  <View style={styles.avatar}><Text style={styles.avatarText}>{driverInitial}</Text></View>
+                  <View style={styles.drawerHeading}>
+                    <Text style={styles.sectionTitle}>{activeDriverName}</Text>
+                    <View style={styles.headerActions}>
+                      {selectedProfile && <View style={styles.liveDot} />}
+                      <Text style={selectedProfile ? styles.greenText : styles.caption}>
+                        {selectedProfile ? 'Active driver' : 'Profile setup'}
+                      </Text>
+                    </View>
+                  </View>
+                </View>
+
+                <View style={styles.menuSection}>
+                  <Text style={styles.sectionTitle}>Personal information</Text>
+                  <Text style={styles.cardLabel}>Driver name</Text>
+                  <TextInput style={styles.input} accessibilityLabel="Driver name" value={driverName}
+                    onChangeText={setDriverName} editable={profileEditable} autoComplete="name" />
+                  <Text style={styles.cardLabel}>Age</Text>
+                  <TextInput style={styles.input} accessibilityLabel="Age" value={age}
+                    onChangeText={setAge} editable={profileEditable} keyboardType="number-pad" />
+                  <Text style={styles.cardLabel}>Height (cm)</Text>
+                  <TextInput style={styles.input} accessibilityLabel="Height in centimeters" value={height}
+                    onChangeText={setHeight} editable={profileEditable} keyboardType="decimal-pad" />
+                  <Text style={styles.cardLabel}>Weight (kg)</Text>
+                  <TextInput style={styles.input} accessibilityLabel="Weight in kilograms" value={weight}
+                    onChangeText={setWeight} editable={profileEditable} keyboardType="decimal-pad" />
+                  <Text style={styles.cardLabel}>Gender</Text>
+                  <TextInput style={styles.input} accessibilityLabel="Gender" value={gender}
+                    onChangeText={setGender} editable={profileEditable} placeholder="Optional"
+                    placeholderTextColor="#94A5C0" />
+                </View>
+
+                <View style={styles.menuSection}>
+                  <Text style={styles.sectionTitle}>Emergency contact</Text>
+                  <Text style={styles.cardLabel}>Contact name</Text>
+                  <TextInput style={styles.input} accessibilityLabel="Emergency contact name" value={contactName}
+                    onChangeText={setContactName} editable={profileEditable} />
+                  <Text style={styles.cardLabel}>Phone number</Text>
+                  <TextInput style={styles.input} accessibilityLabel="Emergency contact phone number" value={contactPhone}
+                    onChangeText={setContactPhone} keyboardType="phone-pad" editable={profileEditable} />
+                  <ActionButton title="Save profile" onPress={saveSetup} primary disabled={!profileEditable} />
+                  <ActionButton title="Test emergency contact" onPress={testEmergencyContact}
+                    disabled={profileBusy || agentState !== 'idle' || profileId === null} />
+                  <Text style={styles.caption}>Opens the phone interface using your saved contact.</Text>
+                  <Text style={styles.muted} accessibilityLiveRegion="polite">{profileStatus}</Text>
+                </View>
+
+                <View style={styles.menuSection}>
+                  <Text style={styles.sectionTitle}>Device & connection tests</Text>
+                  <Text style={styles.cardLabel}>Test reading</Text>
+                  <TextInput style={styles.input} accessibilityLabel="Test reading" placeholder="Enter test reading"
+                    placeholderTextColor="#94A5C0" keyboardType="decimal-pad" returnKeyType="done"
+                    onSubmitEditing={Keyboard.dismiss} value={reading} onChangeText={setReading} />
+                  <ActionButton title="Send test reading" onPress={sendTestReading} />
+                  {agentState === 'idle' && <ActionButton title="Test microphone" onPress={testMic} />}
+                  <Text style={styles.muted} accessibilityLiveRegion="polite">{sendStatus}</Text>
+                </View>
+              </ScrollView>
+            </KeyboardAvoidingView>
+          </SafeAreaView>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -685,9 +736,19 @@ const styles = StyleSheet.create({
   errorText: { color: '#FFACB7', fontSize: 13, lineHeight: 20 },
   sessionBox: { padding: 4, gap: 10 },
   summaryRow: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', gap: 8 },
-  secondarySection: { borderTopWidth: 1, borderTopColor: '#25334A', paddingTop: 22, gap: 12 },
-  disclosure: { minHeight: 56, flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 10 },
-  disclosureText: { flex: 1, gap: 4 },
+  headerActions: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  menuButton: { width: 44, height: 44, borderRadius: 22, backgroundColor: '#1A2C48', borderColor: '#365074', borderWidth: 1, alignItems: 'center', justifyContent: 'center' },
+  modalRoot: { flex: 1, flexDirection: 'row', justifyContent: 'flex-end' },
+  backdrop: { position: 'absolute', top: 0, bottom: 0, left: 0, right: 0, backgroundColor: 'rgba(0, 5, 16, 0.72)' },
+  drawer: { width: '88%', maxWidth: 420, backgroundColor: '#0D182B', borderLeftWidth: 1, borderLeftColor: '#30415D' },
+  drawerBody: { flex: 1 },
+  drawerHeader: { flexDirection: 'row', alignItems: 'center', gap: 12, padding: 20, borderBottomWidth: 1, borderBottomColor: '#26354F' },
+  drawerHeading: { flex: 1, gap: 6 },
+  drawerContent: { padding: 20, paddingBottom: 40, gap: 24 },
+  activeDriverCard: { flexDirection: 'row', alignItems: 'center', gap: 12, padding: 16, backgroundColor: '#152A3C', borderRadius: 18, borderWidth: 1, borderColor: '#2C4D55' },
+  avatar: { width: 44, height: 44, borderRadius: 22, backgroundColor: '#28466C', alignItems: 'center', justifyContent: 'center' },
+  avatarText: { color: '#C6DFFF', fontSize: 22, fontWeight: '700' },
+  menuSection: { gap: 12, borderTopWidth: 1, borderTopColor: '#26354F', paddingTop: 20 },
   input: { backgroundColor: '#0B1528', color: '#F0F5FF', borderColor: '#344765', borderWidth: 1, borderRadius: 12, padding: 13, fontSize: 16, minHeight: 48 },
   button: { minHeight: 46, justifyContent: 'center', alignItems: 'center', borderRadius: 12, paddingHorizontal: 14, paddingVertical: 12, borderWidth: 1, borderColor: '#365074', backgroundColor: '#1A2C48' },
   primaryButton: { backgroundColor: '#8BBAFF', borderColor: '#8BBAFF' },

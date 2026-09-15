@@ -4,17 +4,25 @@ import { normalizePhone } from './phone';
 export type DriverProfile = {
   id: string;
   display_name: string | null;
+  age: number | null;
+  height_cm: number | null;
+  weight_kg: number | null;
+  gender: string | null;
   emergency_contact_name: string | null;
   emergency_contact_phone: string | null;
 };
 export type ProfileInput = {
   display_name: string;
+  age: string;
+  height_cm: string;
+  weight_kg: string;
+  gender: string;
   emergency_contact_name: string;
   emergency_contact_phone: string;
 };
-const COLUMNS = 'id, display_name, emergency_contact_name, emergency_contact_phone';
+const COLUMNS = 'id, display_name, age, height_cm, weight_kg, gender, emergency_contact_name, emergency_contact_phone';
 
-// TODO: Replace manual prototype selection with authenticated driver identity.
+// The single-driver app automatically uses the sole returned profile.
 export async function loadProfiles(): Promise<DriverProfile[]> {
   const { data, error } = await supabase.from('driver_profiles')
     .select(COLUMNS).order('id');
@@ -30,9 +38,13 @@ export async function loadProfile(id: string): Promise<DriverProfile> {
 }
 
 export async function saveProfile(id: string | null, input: ProfileInput): Promise<DriverProfile> {
-  // Explicit allowlist: never send biographical fields or a caller-supplied id.
+  // Explicit allowlist; existing profiles are updated only by their UUID.
   const values = {
     display_name: input.display_name.trim(),
+    age: optionalNumber(input.age, 'Age', true),
+    height_cm: optionalNumber(input.height_cm, 'Height'),
+    weight_kg: optionalNumber(input.weight_kg, 'Weight'),
+    gender: input.gender.trim() || null,
     emergency_contact_name: input.emergency_contact_name.trim(),
     emergency_contact_phone: input.emergency_contact_phone.trim(),
   };
@@ -40,11 +52,23 @@ export async function saveProfile(id: string | null, input: ProfileInput): Promi
     throw new Error('Enter the driver name and emergency contact name.');
   }
   normalizePhone(values.emergency_contact_phone);
-  if (id !== null && !id.trim()) throw new Error('Select a valid profile before saving.');
+  if (id !== null && !id.trim()) throw new Error('The driver profile ID is invalid.');
   const query = id === null
     ? supabase.from('driver_profiles').insert(values)
     : supabase.from('driver_profiles').update(values).eq('id', id);
   const { data, error } = await query.select(COLUMNS).single();
   if (error) throw new Error(`Could not save profile: ${error.message}`);
   return data;
+}
+
+// Empty optional fields remain null; reject malformed, non-finite or negative values.
+function optionalNumber(value: string, label: string, integer = false): number | null {
+  const text = value.trim();
+  if (!text) return null;
+  const number = Number(text);
+  if (!/^\d+(?:\.\d+)?$/.test(text) || !Number.isFinite(number) ||
+      (integer ? !Number.isInteger(number) || number < 0 : number <= 0)) {
+    throw new Error(`${label} must be ${integer ? 'a non-negative whole number' : 'a positive number'}.`);
+  }
+  return number;
 }
