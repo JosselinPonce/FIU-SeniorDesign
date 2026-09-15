@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
-  Button,
+  Pressable,
+  SafeAreaView,
   Keyboard,
   ScrollView,
   StyleSheet,
@@ -9,6 +10,7 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import { StatusBar } from 'expo-status-bar';
 import { loadProfiles, saveProfile, type DriverProfile } from './lib/profiles';
 import { openPhone } from './lib/phone';
 import { supabase } from './lib/supabase';
@@ -18,7 +20,6 @@ import {
   RecordingPresets,
   setAudioModeAsync,
   useAudioRecorder,
-  useAudioRecorderState,
 } from 'expo-audio';
 import { File } from 'expo-file-system';
 import { speak, stopSpeaking } from './lib/elevenlabs';
@@ -40,9 +41,9 @@ type AgentState =
 
 // --- Voice-agent tuning constants ---
 // Metering is in negative decibels: closer to 0 is louder.
-const SILENCE_DB_THRESHOLD = -35;
+const SILENCE_DB_THRESHOLD = -30;
 // Stop listening after this much continuous silence once speech was heard.
-const SILENCE_STOP_MS = 1500;
+const SILENCE_STOP_MS = 1250;
 // Never listen longer than this (safety cap; metering handles the normal case).
 const HARD_CAP_SECONDS = 15;
 // Shorter cap for the yes/no emergency-call round.
@@ -64,6 +65,10 @@ const CHECK_IN_LINES: Record<PiStatus, string> = {
 };
 
 export default function App() {
+  const [setupExpanded, setSetupExpanded] = useState(false);
+  const [toolsExpanded, setToolsExpanded] = useState(false);
+  const [assistantPrompt, setAssistantPrompt] = useState('');
+  const [testLabel, setTestLabel] = useState('Testing microphone');
   const [reading, setReading] = useState('');
   const [sendStatus, setSendStatus] = useState('Waiting...');
   const [alert, setAlert] = useState<VitalsAlert | null>(null);
@@ -86,15 +91,12 @@ export default function App() {
     ...RecordingPresets.HIGH_QUALITY,
     isMeteringEnabled: true,
   });
-  const recorderState = useAudioRecorderState(recorder, 150);
 
   // Synchronous lock: state updates alone cannot exclude two callbacks in one tick.
   const busyRef = useRef(false);
   const mountedRef = useRef(true);
   const stopRecordingRef = useRef<(() => void) | null>(null);
-  const meteringRef = useRef<number | null>(null);
   const playbackRef = useRef<ReturnType<typeof createAudioPlayer> | null>(null);
-  meteringRef.current = recorderState.metering ?? null;
 
   function ensureMounted() {
     if (!mountedRef.current) {
@@ -186,6 +188,7 @@ export default function App() {
 
   async function testEmergencyContact() {
     if (busyRef.current || profileBusyRef.current) return;
+    setTestLabel('Emergency contact test');
     busyRef.current = true;
     setAgentState('testing');
     try {
@@ -205,6 +208,7 @@ export default function App() {
 
   async function say(text: string) {
     ensureMounted();
+    setAssistantPrompt(text);
     await speak(text);
     ensureMounted();
   }
@@ -243,7 +247,8 @@ export default function App() {
         };
         const interval = setInterval(() => {
           const now = Date.now();
-          const db = meteringRef.current;
+          // Read native metering directly, without waiting for a React render.
+          const db = recorder.getStatus().metering ?? null;
           if (db !== null && db > SILENCE_DB_THRESHOLD) {
             heardSpeech = true;
             lastLoud = now;
@@ -282,6 +287,7 @@ export default function App() {
     // the audio session. Never overwrite that conversation's incident reading.
     if (busyRef.current || !mountedRef.current) return;
     setAlert(next);
+    setAssistantPrompt('');
     setTranscript('');
     setAgentError('');
     if (next.status === 'NORMAL') {
@@ -389,6 +395,7 @@ export default function App() {
 
   async function testMic() {
     if (busyRef.current || !mountedRef.current) return;
+    setTestLabel('Testing microphone');
     busyRef.current = true;
     setAgentState('testing');
     setAgentError('');
@@ -462,155 +469,232 @@ export default function App() {
     setReading('');
   }
 
+  const warning = alert !== null && alert.status !== 'NORMAL';
+  const profileEditable = !profileBusy && agentState === 'idle' && profilesLoaded &&
+    (profileId !== null || profiles.length === 0);
+  const selectedProfile = profiles.find(profile => profile.id === profileId);
+  const statusTitle = !alert ? 'Waiting for readings' : warning
+    ? alert.severity === 'critical' ? 'Critical reading detected' : 'Attention needed'
+    : 'Vitals are normal';
+  const statusDetail = !alert ? 'Your latest biometric readings will appear here.'
+    : alert.status === 'HIGH_HEART_RATE' ? 'Elevated heart rate detected.'
+    : alert.status === 'LOW_HEART_RATE' ? 'Low heart rate detected.'
+    : alert.status === 'LOW_SPO2' ? 'Low blood oxygen detected.'
+    : 'No abnormal readings detected in the latest update.';
+
   return (
-    <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag">
-      <View style={styles.profileSection}>
-        <Text style={styles.title}>Profile / Setup</Text>
-        <Text>Prototype driver selection (no sign-in). Select your profile each time you open the app.</Text>
-        {profiles.map(profile => (
-          <Button key={profile.id}
-            title={`${profileId === profile.id ? 'Selected: ' : 'Select: '}${profile.display_name || 'Unnamed driver'} (${profile.id})`}
-            onPress={() => selectProfile(profile)} disabled={profileBusy || agentState !== 'idle'} />
-        ))}
-        <Button title="RELOAD PROFILES" onPress={refreshProfiles} disabled={profileBusy || agentState !== 'idle'} />
-        <Text>Driver/display name</Text>
-        <TextInput style={styles.profileInput} accessibilityLabel="Driver/display name" value={driverName}
-          onChangeText={setDriverName} editable={!profileBusy && agentState === 'idle' && profilesLoaded && (profileId !== null || profiles.length === 0)} />
-        <Text>Emergency contact name</Text>
-        <TextInput style={styles.profileInput} accessibilityLabel="Emergency contact name" value={contactName}
-          onChangeText={setContactName} editable={!profileBusy && agentState === 'idle' && profilesLoaded && (profileId !== null || profiles.length === 0)} />
-        <Text>Emergency contact phone number</Text>
-        <TextInput style={styles.profileInput} accessibilityLabel="Emergency contact phone number" value={contactPhone}
-          onChangeText={setContactPhone} keyboardType="phone-pad"
-          editable={!profileBusy && agentState === 'idle' && profilesLoaded && (profileId !== null || profiles.length === 0)} />
-        <Button title="SAVE PROFILE" onPress={saveSetup}
-          disabled={profileBusy || agentState !== 'idle' || !profilesLoaded || (profileId === null && profiles.length > 0)} />
-        <Button title="TEST EMERGENCY CONTACT (DEV)" onPress={testEmergencyContact}
-          disabled={profileBusy || agentState !== 'idle' || profileId === null} />
-        <Text>Development test: opens the phone interface using the saved contact.</Text>
-        <Text accessibilityLiveRegion="polite">{profileStatus}</Text>
-      </View>
+    <SafeAreaView style={styles.screen}>
+      <StatusBar style="light" />
+      <ScrollView contentContainerStyle={styles.container} contentInsetAdjustmentBehavior="automatic"
+        keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag">
+        <View style={styles.header}>
+          <View style={styles.row}>
+            <Text style={styles.eyebrow}>DRIVER WELLNESS</Text>
+            <View style={styles.liveBadge} accessibilityLabel="Live monitoring dashboard">
+              <View style={styles.liveDot} /><Text style={styles.liveText}>LIVE</Text>
+            </View>
+          </View>
+          <Text style={styles.title}>Biometric Drive Monitor</Text>
+          <Text style={styles.muted}>Your vitals. Your drive. In view.</Text>
+        </View>
 
-      <Text style={styles.title}>Sensor Test App</Text>
+        <View style={styles.vitalsRow}>
+          <View style={[styles.vitalCard, warning && alert.status !== 'LOW_SPO2' && styles.warningBorder]}>
+            <Text style={styles.heartIcon} accessibilityElementsHidden>♥</Text>
+            <Text style={styles.cardLabel}>Heart Rate</Text>
+            <Text style={[styles.vitalValue, warning && alert.status !== 'LOW_SPO2' && styles.warningText]}>
+              {alert?.heart_rate ?? '—'}
+            </Text>
+            <Text style={styles.muted}>BPM</Text>
+          </View>
+          <View style={[styles.vitalCard, alert?.status === 'LOW_SPO2' && styles.warningBorder]}>
+            <Text style={styles.oxygenIcon} accessibilityElementsHidden>O₂</Text>
+            <Text style={styles.cardLabel}>Blood Oxygen</Text>
+            <Text style={[styles.vitalValue, alert?.status === 'LOW_SPO2' && styles.warningText]}>
+              {alert?.spo2 ?? '—'}<Text style={styles.unit}> %</Text>
+            </Text>
+            <Text style={styles.muted}>SpO₂</Text>
+          </View>
+        </View>
 
-      <TextInput
-        style={styles.input}
-        placeholder="Enter test reading"
-        keyboardType="decimal-pad"
-        returnKeyType="done"
-        onSubmitEditing={Keyboard.dismiss}
-        value={reading}
-        onChangeText={setReading}
-      />
+        <View style={[styles.statusCard, alert && !warning && styles.normalCard, warning && styles.warningCard]}
+          accessibilityLiveRegion="polite">
+          <Text style={[styles.eyebrow, warning ? styles.warningText : alert ? styles.greenText : styles.muted]}>
+            {warning ? `${alert.severity.toUpperCase()} · CHECK-IN` : alert ? 'NORMAL · MONITORING' : 'MONITORING · STANDBY'}
+          </Text>
+          <Text style={styles.sectionTitle}>{statusTitle}</Text>
+          <Text style={styles.body}>{statusDetail}</Text>
+        </View>
 
-      <Button
-        title="SEND TEST READING"
-        onPress={sendTestReading}
-      />
-
-      {agentState === 'idle' && (
-        <Button title="TEST MIC" onPress={testMic} />
-      )}
-
-      <Button
-        title="SIMULATE PI MESSAGE"
-        onPress={simulatePiMessage}
-        disabled={agentState !== 'idle'}
-      />
-
-      {alert && (
-        <View>
-          <Text>Heart Rate: {alert.heart_rate} BPM</Text>
-          <Text>SpO₂: {alert.spo2}%</Text>
-          <Text>Status: {alert.status}</Text>
-          <Text>Severity: {alert.severity}</Text>
-          {alert.signal_quality !== null && (
-            <Text>Signal Quality: {alert.signal_quality}%</Text>
+        <View style={styles.card}>
+          <View style={styles.row}>
+            <Text style={styles.sectionTitle}>Driver Assistant</Text>
+            <View style={styles.assistantIcon}><Text style={styles.blueText}>✦</Text></View>
+          </View>
+          <View style={styles.agentStatusRow} accessibilityLiveRegion="polite">
+            {agentState === 'thinking' ? <ActivityIndicator size="small" color="#8DBAFF" />
+              : <View style={[styles.liveDot, agentState === 'listening' && styles.listeningDot]} />}
+            <Text style={styles.agentStatus}>{agentState === 'testing' ? testLabel : AGENT_STATE_LABEL[agentState]}</Text>
+          </View>
+          <View style={styles.promptBox}>
+            <Text style={styles.body}>{assistantPrompt || (warning ? CHECK_IN_LINES[alert.status]
+              : 'I’m here to check in when your readings need attention.')}</Text>
+          </View>
+          {agentState === 'listening' && (
+            <>
+              <Text style={styles.blueText}>Microphone on · Speak, then pause.</Text>
+              <ActionButton title="Done speaking" onPress={() => stopRecordingRef.current?.()} primary />
+            </>
           )}
-        </View>
-      )}
-
-      <View style={styles.agentBox}>
-        <View style={styles.agentStatusRow}>
-          {agentState === 'thinking' && <ActivityIndicator size="small" />}
-          <Text style={styles.agentStatus}>{AGENT_STATE_LABEL[agentState]}</Text>
+          {transcript !== '' && <Text style={styles.body}>You: “{transcript}”</Text>}
+          {agentError !== '' && <Text style={styles.errorText} accessibilityLiveRegion="polite">{agentError}</Text>}
         </View>
 
-        {agentState === 'listening' && (
-          <Button title="DONE SPEAKING" onPress={() => stopRecordingRef.current?.()} />
-        )}
+        <View style={styles.sessionBox}>
+          <Text style={styles.eyebrow}>DRIVE SESSION</Text>
+          <Text style={styles.cardLabel}>{selectedProfile?.display_name || 'No driver selected'}</Text>
+          <View style={styles.summaryRow}>
+            <Text style={styles.muted}>Signal quality</Text>
+            <Text style={styles.body}>{alert?.signal_quality != null ? `${alert.signal_quality}%` : '—'}</Text>
+          </View>
+          <View style={styles.summaryRow}>
+            <Text style={styles.muted}>Last reading</Text>
+            <Text style={styles.body}>{alert ? new Date(alert.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Awaiting data'}</Text>
+          </View>
+          {alert && <Text style={styles.caption}>{alert.sessionId ? `Session ${alert.sessionId}` : 'Simulated reading · No drive session'}</Text>}
+        </View>
 
-        {transcript !== '' && <Text>Heard: "{transcript}"</Text>}
-      </View>
+        <ActionButton title="Simulate abnormal reading" onPress={simulatePiMessage}
+          disabled={agentState !== 'idle'} subtle />
 
-      {agentError !== '' && (
-        <Text style={styles.errorText}>{agentError}</Text>
-      )}
+        <View style={styles.secondarySection}>
+          <Text style={styles.eyebrow}>MANAGE & TEST</Text>
+          <Pressable accessibilityRole="button" accessibilityState={{ expanded: setupExpanded }}
+            onPress={() => setSetupExpanded(value => !value)} style={styles.disclosure}>
+            <View style={styles.disclosureText}>
+              <Text style={styles.cardLabel}>Driver profile & emergency contact</Text>
+              <Text style={styles.caption}>{selectedProfile?.display_name || 'Select or create a driver profile'}</Text>
+            </View>
+            <Text style={styles.blueText}>{setupExpanded ? '−' : '+'}</Text>
+          </Pressable>
+          {setupExpanded && <View style={styles.card}>
+            <Text style={styles.muted}>Select your profile each time you open the app.</Text>
+            {profiles.map(profile => (
+              <ActionButton key={profile.id}
+                title={`${profileId === profile.id ? 'Selected: ' : 'Select: '}${profile.display_name || 'Unnamed driver'} (${profile.id})`}
+                onPress={() => selectProfile(profile)} disabled={profileBusy || agentState !== 'idle'} />
+            ))}
+            <ActionButton title="Reload profiles" onPress={refreshProfiles} disabled={profileBusy || agentState !== 'idle'} />
+            <Text style={styles.cardLabel}>Driver name</Text>
+            <TextInput style={styles.input} accessibilityLabel="Driver/display name" value={driverName}
+              onChangeText={setDriverName} editable={profileEditable} />
+            <Text style={styles.cardLabel}>Emergency contact name</Text>
+            <TextInput style={styles.input} accessibilityLabel="Emergency contact name" value={contactName}
+              onChangeText={setContactName} editable={profileEditable} />
+            <Text style={styles.cardLabel}>Emergency contact phone</Text>
+            <TextInput style={styles.input} accessibilityLabel="Emergency contact phone number" value={contactPhone}
+              onChangeText={setContactPhone} keyboardType="phone-pad" editable={profileEditable} />
+            <ActionButton title="Save profile" onPress={saveSetup} primary
+              disabled={profileBusy || agentState !== 'idle' || !profilesLoaded || (profileId === null && profiles.length > 0)} />
+            <ActionButton title="Test emergency contact" onPress={testEmergencyContact}
+              disabled={profileBusy || agentState !== 'idle' || profileId === null} />
+            <Text style={styles.caption}>Opens the phone interface using your saved contact.</Text>
+            <Text style={styles.muted} accessibilityLiveRegion="polite">{profileStatus}</Text>
+          </View>}
 
-      <Text style={styles.status}>{sendStatus}</Text>
-    </ScrollView>
+          <Pressable accessibilityRole="button" accessibilityState={{ expanded: toolsExpanded }}
+            onPress={() => setToolsExpanded(value => !value)} style={styles.disclosure}>
+            <Text style={[styles.cardLabel, styles.disclosureText]}>Device & connection tests</Text>
+            <Text style={styles.blueText}>{toolsExpanded ? '−' : '+'}</Text>
+          </Pressable>
+          {toolsExpanded && <View style={styles.card}>
+            <Text style={styles.cardLabel}>Test reading</Text>
+            <TextInput style={styles.input} accessibilityLabel="Test reading" placeholder="Enter test reading"
+              placeholderTextColor="#94A5C0" keyboardType="decimal-pad" returnKeyType="done"
+              onSubmitEditing={Keyboard.dismiss} value={reading} onChangeText={setReading} />
+            <ActionButton title="Send test reading" onPress={sendTestReading} />
+            {agentState === 'idle' && <ActionButton title="Test microphone" onPress={testMic} />}
+            <Text style={styles.muted} accessibilityLiveRegion="polite">{sendStatus}</Text>
+          </View>}
+        </View>
+        <Text style={styles.footer}>BIOMETRIC DRIVE MONITOR · DRIVER WELLNESS</Text>
+      </ScrollView>
+    </SafeAreaView>
   );
 }
 
-// Status labels for the voice agent state machine.
+function ActionButton({ title, onPress, disabled = false, primary = false, subtle = false }: {
+  title: string;
+  onPress: () => void;
+  disabled?: boolean;
+  primary?: boolean;
+  subtle?: boolean;
+}) {
+  return (
+    <Pressable accessibilityRole="button" accessibilityState={{ disabled }} disabled={disabled} onPress={onPress}
+      style={({ pressed }) => [styles.button, primary && styles.primaryButton, subtle && styles.subtleButton,
+        disabled && styles.disabledButton, pressed && styles.pressedButton]}>
+      <Text style={[styles.buttonText, primary && styles.primaryButtonText, subtle && styles.muted]}>{title}</Text>
+    </Pressable>
+  );
+}
+
 const AGENT_STATE_LABEL: Record<AgentState, string> = {
-  idle: 'Monitoring.',
-  testing: 'Testing microphone...',
-  alerting: 'Speaking...',
-  listening: 'Listening — speak, then pause.',
-  thinking: 'Thinking...',
-  responding: 'Responding...',
+  idle: 'Monitoring',
+  testing: 'Testing',
+  alerting: 'Speaking',
+  listening: 'Listening',
+  thinking: 'Processing your response',
+  responding: 'Speaking',
 };
 
 const styles = StyleSheet.create({
-  container: {
-    flexGrow: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 24,
-    padding: 24,
-  },
-  profileSection: {
-    width: '100%',
-    gap: 12,
-  },
-  profileInput: {
-    borderWidth: 1,
-    borderRadius: 8,
-    padding: 12,
-    fontSize: 18,
-  },
-  title: {
-    fontSize: 28,
-    fontWeight: 'bold',
-  },
-  input: {
-    width: '80%',
-    borderWidth: 1,
-    borderRadius: 8,
-    padding: 12,
-    fontSize: 18,
-  },
-  status: {
-    fontSize: 16,
-    textAlign: 'center',
-  },
-  agentBox: {
-    alignItems: 'center',
-    gap: 8,
-  },
-  agentStatusRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  agentStatus: {
-    fontSize: 16,
-    fontWeight: '600',
-  },
-  errorText: {
-    color: '#b3261e',
-    textAlign: 'center',
-    fontSize: 13,
-  },
+  screen: { flex: 1, backgroundColor: '#080F20' },
+  container: { flexGrow: 1, gap: 16, padding: 20, paddingTop: 16, paddingBottom: 36, width: '100%', maxWidth: 560, alignSelf: 'center' },
+  header: { gap: 10, paddingTop: 8, paddingBottom: 8 },
+  row: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 },
+  eyebrow: { color: '#9AACC8', fontSize: 11, fontWeight: '700', letterSpacing: 1.6 },
+  title: { color: '#F4F7FF', fontSize: 32, fontWeight: '700', letterSpacing: -0.8 },
+  liveBadge: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#12332E', borderRadius: 20, paddingHorizontal: 10, paddingVertical: 6 },
+  liveDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: '#58D9AA' },
+  liveText: { color: '#78E6BD', fontSize: 10, fontWeight: '800', letterSpacing: 1 },
+  vitalsRow: { flexDirection: 'row', gap: 12 },
+  vitalCard: { flex: 1, minWidth: 0, backgroundColor: '#111F37', borderColor: '#243854', borderWidth: 1, borderRadius: 22, padding: 18, gap: 8 },
+  heartIcon: { color: '#FB8EAA', fontSize: 25 },
+  oxygenIcon: { color: '#7CBFFF', fontSize: 25, fontWeight: '700' },
+  cardLabel: { color: '#D9E4F7', fontSize: 14, fontWeight: '600' },
+  vitalValue: { color: '#F4F7FF', fontSize: 44, fontWeight: '700', letterSpacing: -1.5, fontVariant: ['tabular-nums'] },
+  unit: { fontSize: 18, color: '#AABBD5', letterSpacing: 0 },
+  muted: { color: '#A4B4CD', fontSize: 13, lineHeight: 20 },
+  body: { color: '#D4E0F3', fontSize: 14, lineHeight: 22 },
+  caption: { color: '#9AACC8', fontSize: 12, lineHeight: 18 },
+  statusCard: { backgroundColor: '#14223A', borderColor: '#2A3E5F', borderWidth: 1, borderRadius: 20, padding: 18, gap: 8 },
+  normalCard: { backgroundColor: '#102D2C', borderColor: '#245249' },
+  warningCard: { backgroundColor: '#322719', borderColor: '#806035' },
+  warningBorder: { borderColor: '#BD8946' },
+  warningText: { color: '#FFD08A' },
+  greenText: { color: '#78E6BD' },
+  sectionTitle: { color: '#F0F5FF', fontSize: 18, fontWeight: '700', flexShrink: 1 },
+  card: { backgroundColor: '#111C31', borderColor: '#26354F', borderWidth: 1, borderRadius: 20, padding: 18, gap: 14 },
+  assistantIcon: { width: 32, height: 32, borderRadius: 10, backgroundColor: '#203B61', alignItems: 'center', justifyContent: 'center' },
+  blueText: { color: '#94C4FF', fontSize: 14, fontWeight: '600' },
+  agentStatusRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  agentStatus: { color: '#AFCFFF', fontSize: 13, fontWeight: '600', flexShrink: 1 },
+  listeningDot: { backgroundColor: '#91C4FF' },
+  promptBox: { backgroundColor: '#192A45', borderLeftWidth: 3, borderLeftColor: '#6AA6FA', borderRadius: 10, padding: 14 },
+  errorText: { color: '#FFACB7', fontSize: 13, lineHeight: 20 },
+  sessionBox: { padding: 4, gap: 10 },
+  summaryRow: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', gap: 8 },
+  secondarySection: { borderTopWidth: 1, borderTopColor: '#25334A', paddingTop: 22, gap: 12 },
+  disclosure: { minHeight: 56, flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 10 },
+  disclosureText: { flex: 1, gap: 4 },
+  input: { backgroundColor: '#0B1528', color: '#F0F5FF', borderColor: '#344765', borderWidth: 1, borderRadius: 12, padding: 13, fontSize: 16, minHeight: 48 },
+  button: { minHeight: 46, justifyContent: 'center', alignItems: 'center', borderRadius: 12, paddingHorizontal: 14, paddingVertical: 12, borderWidth: 1, borderColor: '#365074', backgroundColor: '#1A2C48' },
+  primaryButton: { backgroundColor: '#8BBAFF', borderColor: '#8BBAFF' },
+  subtleButton: { backgroundColor: 'transparent', borderColor: '#293952' },
+  buttonText: { color: '#BED7FF', fontWeight: '600', fontSize: 13, textAlign: 'center' },
+  primaryButtonText: { color: '#0B1B32' },
+  disabledButton: { opacity: 0.4 },
+  pressedButton: { opacity: 0.7 },
+  footer: { color: '#8395B2', fontSize: 10, letterSpacing: 1.2, textAlign: 'center', marginTop: 8 },
 });
