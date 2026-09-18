@@ -56,6 +56,9 @@ const MIN_LISTEN_MS = 1500;
 const MIC_TEST_SECONDS = 3;
 // Below this size a recording cannot contain meaningful speech.
 const MIN_RECORDING_BYTES = 2048;
+const DEMO_READINGS = [
+  [76, 98], [78, 98], [80, 97], [77, 98], [81, 97], [79, 98],
+] as const;
 
 const CHECK_IN_LINES: Record<PiStatus, string> = {
   NORMAL: '',
@@ -74,6 +77,9 @@ export default function App() {
   const [reading, setReading] = useState('');
   const [sendStatus, setSendStatus] = useState('Waiting...');
   const [alert, setAlert] = useState<VitalsAlert | null>(null);
+  const [demoMode, setDemoMode] = useState(false);
+  const [demoReading, setDemoReading] = useState<VitalsAlert | null>(null);
+  const [showLatestRealReading, setShowLatestRealReading] = useState(false);
   const [agentState, setAgentState] = useState<AgentState>('idle');
   const [transcript, setTranscript] = useState('');
   const [agentError, setAgentError] = useState('');
@@ -103,6 +109,10 @@ export default function App() {
   const mountedRef = useRef(true);
   const stopRecordingRef = useRef<(() => void) | null>(null);
   const playbackRef = useRef<ReturnType<typeof createAudioPlayer> | null>(null);
+  const demoModeRef = useRef(false);
+  const demoIndexRef = useRef(0);
+  const demoResumeAfterRef = useRef(0);
+  const latestRealReadingRef = useRef<VitalsAlert | null>(null);
 
   function ensureMounted() {
     if (!mountedRef.current) {
@@ -116,6 +126,7 @@ export default function App() {
   useEffect(() => {
     mountedRef.current = true;
     const unsubscribe = subscribeToVitals((next) => {
+      if (next.eventId !== null) latestRealReadingRef.current = next;
       void handleAlertRef.current(next);
     });
     return () => {
@@ -127,6 +138,48 @@ export default function App() {
       void stopSpeaking();
     };
   }, []);
+
+  function nextDemoReading(): VitalsAlert {
+    const [heart_rate, spo2] = DEMO_READINGS[demoIndexRef.current % DEMO_READINGS.length];
+    demoIndexRef.current += 1;
+    return {
+      eventId: null,
+      sessionId: null,
+      heart_rate,
+      spo2,
+      signal_quality: 98,
+      status: 'NORMAL',
+      severity: 'normal',
+      timestamp: new Date().toISOString(),
+    };
+  }
+
+  useEffect(() => {
+    if (!demoMode) return;
+    const interval = setInterval(() => {
+      if (!busyRef.current && Date.now() >= demoResumeAfterRef.current) {
+        setDemoReading(nextDemoReading());
+      }
+    }, 1500);
+    return () => clearInterval(interval);
+  }, [demoMode]);
+
+  function toggleDemoMode() {
+    if (busyRef.current) return;
+    if (demoModeRef.current) {
+      demoModeRef.current = false;
+      setDemoMode(false);
+      setDemoReading(null);
+      setShowLatestRealReading(true);
+    } else {
+      demoIndexRef.current = 0;
+      demoResumeAfterRef.current = 0;
+      demoModeRef.current = true;
+      setShowLatestRealReading(false);
+      setDemoReading(nextDemoReading());
+      setDemoMode(true);
+    }
+  }
 
   function populateProfile(profile: DriverProfile | null) {
     profileIdRef.current = profile?.id ?? null;
@@ -294,6 +347,8 @@ export default function App() {
     // the audio session. Never overwrite that conversation's incident reading.
     if (busyRef.current || !mountedRef.current) return;
     setAlert(next);
+    setShowLatestRealReading(false);
+    if (demoModeRef.current && next.status !== 'NORMAL') setDemoReading(null);
     setAssistantPrompt('');
     setTranscript('');
     setAgentError('');
@@ -403,6 +458,7 @@ export default function App() {
         }
       } finally {
         busyRef.current = false;
+        if (demoModeRef.current) demoResumeAfterRef.current = Date.now() + 1500;
         if (mountedRef.current) setAgentState('idle');
       }
     }
@@ -497,7 +553,10 @@ export default function App() {
     setReading('');
   }
 
-  const warning = alert !== null && alert.status !== 'NORMAL';
+  const showingDemoReading = demoMode && demoReading !== null;
+  const displayedReading = demoMode ? demoReading ?? alert
+    : showLatestRealReading ? latestRealReadingRef.current : alert;
+  const warning = displayedReading !== null && displayedReading.status !== 'NORMAL';
   const profileEditable = !profileBusy && agentState === 'idle' && profilesLoaded &&
     (profileId !== null || profiles.length === 0);
   const selectedProfile = profiles.find(profile => profile.id === profileId);
@@ -507,13 +566,13 @@ export default function App() {
     Keyboard.dismiss();
     setMenuOpen(false);
   }
-  const statusTitle = !alert ? 'Waiting for readings' : warning
-    ? alert.severity === 'critical' ? 'Critical reading detected' : 'Attention needed'
+  const statusTitle = !displayedReading ? 'Waiting for readings' : warning
+    ? displayedReading.severity === 'critical' ? 'Critical reading detected' : 'Attention needed'
     : 'Vitals are normal';
-  const statusDetail = !alert ? 'Your latest biometric readings will appear here.'
-    : alert.status === 'HIGH_HEART_RATE' ? 'Elevated heart rate detected.'
-    : alert.status === 'LOW_HEART_RATE' ? 'Low heart rate detected.'
-    : alert.status === 'LOW_SPO2' ? 'Low blood oxygen detected.'
+  const statusDetail = !displayedReading ? 'Your latest biometric readings will appear here.'
+    : displayedReading.status === 'HIGH_HEART_RATE' ? 'Elevated heart rate detected.'
+    : displayedReading.status === 'LOW_HEART_RATE' ? 'Low heart rate detected.'
+    : displayedReading.status === 'LOW_SPO2' ? 'Low blood oxygen detected.'
     : 'No abnormal readings detected in the latest update.';
 
   return (
@@ -525,8 +584,8 @@ export default function App() {
           <View style={styles.row}>
             <Text style={styles.eyebrow}>DRIVER WELLNESS</Text>
             <View style={styles.headerActions}>
-              <View style={styles.liveBadge} accessibilityLabel="Live monitoring dashboard">
-                <View style={styles.liveDot} /><Text style={styles.liveText}>LIVE</Text>
+              <View style={styles.liveBadge} accessibilityLabel={demoMode ? 'Demo data dashboard' : 'Live monitoring dashboard'}>
+                <View style={styles.liveDot} /><Text style={styles.liveText}>{demoMode ? showingDemoReading ? 'DEMO' : 'DEMO PAUSED' : 'LIVE'}</Text>
               </View>
               <Pressable accessibilityRole="button" accessibilityLabel="Open driver menu"
                 accessibilityState={{ expanded: menuOpen }} onPress={() => setMenuOpen(true)}
@@ -540,28 +599,28 @@ export default function App() {
         </View>
 
         <View style={styles.vitalsRow}>
-          <View style={[styles.vitalCard, warning && alert.status !== 'LOW_SPO2' && styles.warningBorder]}>
+          <View style={[styles.vitalCard, warning && displayedReading?.status !== 'LOW_SPO2' && styles.warningBorder]}>
             <Text style={styles.heartIcon} accessibilityElementsHidden>♥</Text>
             <Text style={styles.cardLabel}>Heart Rate</Text>
-            <Text style={[styles.vitalValue, warning && alert.status !== 'LOW_SPO2' && styles.warningText]}>
-              {alert?.heart_rate ?? '—'}
+            <Text style={[styles.vitalValue, warning && displayedReading?.status !== 'LOW_SPO2' && styles.warningText]}>
+              {displayedReading?.heart_rate ?? '—'}
             </Text>
             <Text style={styles.muted}>BPM</Text>
           </View>
-          <View style={[styles.vitalCard, alert?.status === 'LOW_SPO2' && styles.warningBorder]}>
+          <View style={[styles.vitalCard, displayedReading?.status === 'LOW_SPO2' && styles.warningBorder]}>
             <Text style={styles.oxygenIcon} accessibilityElementsHidden>O₂</Text>
             <Text style={styles.cardLabel}>Blood Oxygen</Text>
-            <Text style={[styles.vitalValue, alert?.status === 'LOW_SPO2' && styles.warningText]}>
-              {alert?.spo2 ?? '—'}<Text style={styles.unit}> %</Text>
+            <Text style={[styles.vitalValue, displayedReading?.status === 'LOW_SPO2' && styles.warningText]}>
+              {displayedReading?.spo2 ?? '—'}<Text style={styles.unit}> %</Text>
             </Text>
             <Text style={styles.muted}>SpO₂</Text>
           </View>
         </View>
 
-        <View style={[styles.statusCard, alert && !warning && styles.normalCard, warning && styles.warningCard]}
+        <View style={[styles.statusCard, displayedReading && !warning && styles.normalCard, warning && styles.warningCard]}
           accessibilityLiveRegion="polite">
-          <Text style={[styles.eyebrow, warning ? styles.warningText : alert ? styles.greenText : styles.muted]}>
-            {warning ? `${alert.severity.toUpperCase()} · CHECK-IN` : alert ? 'NORMAL · MONITORING' : 'MONITORING · STANDBY'}
+          <Text style={[styles.eyebrow, warning ? styles.warningText : displayedReading ? styles.greenText : styles.muted]}>
+            {warning ? `${displayedReading?.severity.toUpperCase()} · CHECK-IN` : displayedReading ? 'NORMAL · MONITORING' : 'MONITORING · STANDBY'}
           </Text>
           <Text style={styles.sectionTitle}>{statusTitle}</Text>
           <Text style={styles.body}>{statusDetail}</Text>
@@ -578,7 +637,7 @@ export default function App() {
             <Text style={styles.agentStatus}>{agentState === 'testing' ? testLabel : AGENT_STATE_LABEL[agentState]}</Text>
           </View>
           <View style={styles.promptBox}>
-            <Text style={styles.body}>{assistantPrompt || (warning ? CHECK_IN_LINES[alert.status]
+            <Text style={styles.body}>{assistantPrompt || (warning && displayedReading ? CHECK_IN_LINES[displayedReading.status]
               : 'I’m here to check in when your readings need attention.')}</Text>
           </View>
           {agentState === 'listening' && (
@@ -596,17 +655,26 @@ export default function App() {
           <Text style={styles.cardLabel}>{activeDriverName}</Text>
           <View style={styles.summaryRow}>
             <Text style={styles.muted}>Signal quality</Text>
-            <Text style={styles.body}>{alert?.signal_quality != null ? `${alert.signal_quality}%` : '—'}</Text>
+            <Text style={styles.body}>{displayedReading?.signal_quality != null ? `${displayedReading.signal_quality}%` : '—'}</Text>
           </View>
           <View style={styles.summaryRow}>
             <Text style={styles.muted}>Last reading</Text>
-            <Text style={styles.body}>{alert ? new Date(alert.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Awaiting data'}</Text>
+            <Text style={styles.body}>{displayedReading ? new Date(displayedReading.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Awaiting data'}</Text>
           </View>
-          {alert && <Text style={styles.caption}>{alert.sessionId ? `Session ${alert.sessionId}` : 'Simulated reading · No drive session'}</Text>}
+          {displayedReading && <Text style={styles.caption}>{showingDemoReading ? 'Demo reading · No drive session'
+            : displayedReading.sessionId ? `Session ${displayedReading.sessionId}` : 'Simulated reading · No drive session'}</Text>}
         </View>
 
-        <ActionButton title="Simulate abnormal reading" onPress={simulatePiMessage}
-          disabled={agentState !== 'idle'} subtle />
+        <View style={styles.demoControls}>
+          <View style={styles.demoControl}>
+            <ActionButton title="Simulate abnormal reading" onPress={simulatePiMessage}
+              disabled={agentState !== 'idle'} subtle />
+          </View>
+          <View style={styles.demoControl}>
+            <ActionButton title={demoMode ? 'Stop demo data' : 'Start demo data'} onPress={toggleDemoMode}
+              disabled={agentState !== 'idle'} subtle />
+          </View>
+        </View>
 
         <Text style={styles.footer}>BIOMETRIC DRIVE MONITOR · DRIVER WELLNESS</Text>
       </ScrollView>
@@ -756,6 +824,8 @@ const styles = StyleSheet.create({
   promptBox: { backgroundColor: '#192A45', borderLeftWidth: 3, borderLeftColor: '#6AA6FA', borderRadius: 10, padding: 14 },
   errorText: { color: '#FFACB7', fontSize: 13, lineHeight: 20 },
   sessionBox: { padding: 4, gap: 10 },
+  demoControls: { flexDirection: 'row', gap: 8 },
+  demoControl: { flex: 1 },
   summaryRow: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', gap: 8 },
   headerActions: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   menuButton: { width: 44, height: 44, borderRadius: 22, backgroundColor: '#1A2C48', borderColor: '#365074', borderWidth: 1, alignItems: 'center', justifyContent: 'center' },
