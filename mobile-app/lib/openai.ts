@@ -5,8 +5,31 @@ import type { AgentDecision, VitalsAlert } from './types';
 // Preserve the existing environment-variable approach for this prototype.
 const OPENAI_API_KEY = process.env.EXPO_PUBLIC_OPENAI_API_KEY;
 
-const STT_MODEL = 'gpt-4o-mini-transcribe';
+const STT_MODEL = 'gpt-transcribe';
 const CHAT_MODEL = 'gpt-4o-mini';
+
+function normalizeTranscript(transcript: string): string {
+  return transcript.toLowerCase().trim()
+    .replace(/[’‘]/g, "'")
+    .replace(/[\p{P}\p{S}]/gu, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+const WELLNESS_OKAY = new Set([
+  'yes im okay', 'yes i am okay', 'im okay', 'i am okay',
+  'im fine', 'i am fine', 'im alright', 'i am alright',
+  'im all right', 'i am all right',
+]);
+const WELLNESS_NEEDS_HELP = new Set([
+  'no im not okay', 'no i am not okay', 'im not okay', 'i am not okay',
+]);
+const DIRECT_CALL = new Set([
+  'call my emergency contact', 'please call my emergency contact',
+  'call my mom', 'please call my mom', 'no please call my mom',
+]);
+const CALL_YES = new Set(['yes', 'yes please', 'please do', 'call them', 'make the call']);
+const CALL_NO = new Set(['no', 'no thanks', 'no thank you', 'dont call', 'do not call']);
 
 const SYSTEM_PROMPT = [
   'You are the in-cab wellness voice assistant for a biometric steering wheel.',
@@ -24,10 +47,10 @@ const SYSTEM_PROMPT = [
 
 const CALL_ANSWER_PROMPT = [
   'The driver was asked: "Would you like me to call your emergency contact?"',
-  'Decide from their spoken reply whether they consented to the call.',
-  'Treat yes, please, sure, call them, go ahead, and similar as consent.',
-  'Respond with JSON: { "place_call": boolean, "ack": string }',
-  'where ack is 1 short sentence to speak to the driver.',
+  'Classify their spoken reply as yes only for clear consent, including yes, please, sure, call them, go ahead, and similar.',
+  'Classify a clear refusal as no. Classify silence, garbled speech, unrelated speech, or ambiguous replies as unclear.',
+  'Respond with JSON: { "decision": "yes" | "no" | "unclear", "ack": string }',
+  'where ack is 1 short sentence to speak for a clear no, and an empty string for yes or unclear.',
 ].join(' ');
 
 /**
@@ -66,6 +89,16 @@ export async function decideReply(
   alert: VitalsAlert,
   transcript: string
 ): Promise<AgentDecision & { offerCall: boolean; callRequested: boolean }> {
+  const normalized = normalizeTranscript(transcript);
+  if (WELLNESS_OKAY.has(normalized)) {
+    return { reply: "I'm glad you're okay.", action: 'log', offerCall: false, callRequested: false };
+  }
+  if (WELLNESS_NEEDS_HELP.has(normalized)) {
+    return { reply: 'Please pull over safely when you can.', action: 'escalate', offerCall: true, callRequested: false };
+  }
+  if (DIRECT_CALL.has(normalized)) {
+    return { reply: 'Okay.', action: 'escalate', offerCall: false, callRequested: true };
+  }
   requireApiKey();
   const response = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
@@ -93,11 +126,7 @@ export async function decideReply(
       ],
     }),
   });
-
-  if (!response.ok) {
-    throw new Error(`Chat completion failed: ${response.status}`);
-  }
-
+  if (!response.ok) throw new Error(`Chat completion failed: ${response.status}`);
   const data = await response.json();
   const parsed = JSON.parse(data.choices[0].message.content);
 
@@ -116,9 +145,16 @@ export async function decideReply(
  */
 export async function interpretCallAnswer(
   transcript: string
-): Promise<{ placeCall: boolean; ack: string }> {
+): Promise<{ decision: 'yes' | 'no' | 'unclear'; ack: string }> {
+  const normalized = normalizeTranscript(transcript);
+  if (CALL_YES.has(normalized)) {
+    return { decision: 'yes', ack: '' };
+  }
+  if (CALL_NO.has(normalized)) {
+    return { decision: 'no', ack: "Okay, I won't open the dialer." };
+  }
   requireApiKey();
-  const response = await fetch('https://api.openai.com/v1/chat/completions', {
+  const result = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${OPENAI_API_KEY}`,
@@ -133,18 +169,26 @@ export async function interpretCallAnswer(
       ],
     }),
   });
-
-  if (!response.ok) {
-    throw new Error(`Call-answer interpretation failed: ${response.status}`);
+  if (!result.ok) throw new Error(`Call-answer interpretation failed: ${result.status}`);
+  let data: unknown;
+  try {
+    data = await result.json();
+  } catch {
+    data = null;
   }
 
-  const data = await response.json();
-  const parsed = JSON.parse(data.choices[0].message.content);
-
-  return {
-    placeCall: parsed.place_call === true,
-    ack: String(parsed.ack ?? ''),
-  };
+  try {
+    const payload = data as { choices?: Array<{ message?: { content?: string } }> } | null;
+    const parsed = JSON.parse(payload?.choices?.[0]?.message?.content ?? 'null');
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) &&
+        (parsed.decision === 'yes' || parsed.decision === 'no' || parsed.decision === 'unclear') &&
+        typeof parsed.ack === 'string') {
+      return { decision: parsed.decision, ack: parsed.ack };
+    }
+  } catch {
+    // An unusable model response must never be treated as consent or refusal.
+  }
+  return { decision: 'unclear', ack: '' };
 }
 function requireApiKey(): void {
   if (!OPENAI_API_KEY) {

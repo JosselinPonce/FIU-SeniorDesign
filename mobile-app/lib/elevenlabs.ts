@@ -7,7 +7,7 @@ import { File, Paths } from 'expo-file-system';
 const ELEVENLABS_API_KEY = process.env.EXPO_PUBLIC_ELEVENLABS_API_KEY;
 const VOICE_ID =
   process.env.EXPO_PUBLIC_ELEVENLABS_VOICE_ID ?? 'JBFqnCBsd6RMkjVDRZzb';
-const TTS_MODEL = 'eleven_multilingual_v2';
+const TTS_MODEL = 'eleven_flash_v2_5';
 const OUTPUT_FORMAT = 'mp3_44100_128';
 let generation = 0;
 let cancelPlayback: (() => void) | null = null;
@@ -22,7 +22,7 @@ export async function stopSpeaking(): Promise<void> {
   await Speech.stop();
 }
 
-function fallback(text: string): Promise<void> {
+function fallback(text: string, onPlaybackStart: () => void): Promise<void> {
   return new Promise((resolve, reject) => {
     const finish = () => {
       clearTimeout(timer);
@@ -35,6 +35,7 @@ function fallback(text: string): Promise<void> {
     }, 60000);
     cancelPlayback = finish;
     Speech.speak(text, {
+      onStart: onPlaybackStart,
       onDone: finish,
       onStopped: finish,
       onError: () => {
@@ -47,7 +48,7 @@ function fallback(text: string): Promise<void> {
 }
 
 /** ElevenLabs speech with local expo-speech fallback and playback cleanup. */
-export async function speak(text: string): Promise<void> {
+export async function speak(text: string, onPlaybackStart?: () => void): Promise<void> {
   if (!text.trim()) return;
   const current = generation;
   let file: File | null = null;
@@ -55,7 +56,7 @@ export async function speak(text: string): Promise<void> {
     await setAudioModeAsync({ playsInSilentMode: true, allowsRecording: false });
     if (current !== generation) return;
     if (!ELEVENLABS_API_KEY) {
-      await fallback(text);
+      await fallback(text, onPlaybackStart ?? (() => undefined));
       return;
     }
     const controller = new AbortController();
@@ -95,12 +96,13 @@ export async function speak(text: string): Promise<void> {
       const timer = setTimeout(() => finish(new Error('Speech playback timed out.')), 60000);
       cancelPlayback = () => finish();
       player.addListener('playbackStatusUpdate', (status) => {
+        if (status.playing) onPlaybackStart?.();
         if (status.didJustFinish) finish();
       });
       try { player.play(); } catch { finish(new Error('Speech playback failed.')); }
     });
   } catch {
-    if (current === generation) await fallback(text);
+    if (current === generation) await fallback(text, onPlaybackStart ?? (() => undefined));
   } finally {
     if (file?.exists) file.delete();
   }

@@ -32,7 +32,7 @@ import {
   logIncident,
   subscribeToVitals,
 } from './lib/monitoring';
-import type { AgentDecision, PiStatus, VitalsAlert } from './lib/types';
+import type { PiStatus, VitalsAlert } from './lib/types';
 
 type AgentState =
   | 'testing'
@@ -305,31 +305,43 @@ export default function App() {
     setAgentState('alerting');
     const conversationProfileId = profileIdRef.current;
     const heard: string[] = [];
-    let decision: AgentDecision | null = null;
+    let decision: Awaited<ReturnType<typeof decideReply>> | null = null;
     let askedEmergencyCall = false;
     let dialerOpened = false;
     try {
       await say(CHECK_IN_LINES[next.status]);
-      const reply = await listen(HARD_CAP_SECONDS);
-      heard.push(reply);
-      if (!reply) {
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const reply = await listen(HARD_CAP_SECONDS);
+        heard.push(reply);
+        if (reply) {
+          // Use the immutable argument, never render-local alert state.
+          const result = await decideReply(next, reply);
+          ensureMounted();
+          if (result.action !== 'none') {
+            decision = result;
+            break;
+          }
+        }
         setAgentState('responding');
-        await say("I didn't catch that. Please try again.");
+        if (attempt === 0) {
+          await say("I didn't catch that. Please say whether you're okay or need help.");
+        }
+      }
+      if (!decision) {
+        const message = "I couldn't understand your response. Please try again when you're ready.";
+        setAgentError(message);
+        await say(message);
         return;
       }
-      // Use the immutable argument, never render-local alert state.
-      const result = await decideReply(next, reply);
-      ensureMounted();
-      decision = result;
       // Entering this pathway is logged even if contact lookup/dialing fails.
-      askedEmergencyCall = result.callRequested || result.offerCall;
+      askedEmergencyCall = decision.callRequested || decision.offerCall;
       setAgentState('responding');
-      await say(result.reply);
+      await say(decision.reply);
       if (askedEmergencyCall) {
         const contact = await getEmergencyContact(conversationProfileId);
         ensureMounted();
         if (contact) {
-          if (result.callRequested) {
+          if (decision.callRequested) {
             await say(`Okay. Opening the dialer for ${contact.name} now.`);
             await openPhone(contact.phone);
             dialerOpened = true;
@@ -337,23 +349,32 @@ export default function App() {
           }
           setAgentState('alerting');
           await say(`Would you like me to call ${contact.name}?`);
-          const answerText = await listen(CALL_LISTEN_CAP_SECONDS);
-          heard.push(answerText);
-          if (answerText) {
-            const answer = await interpretCallAnswer(answerText);
+          for (let attempt = 0; attempt < 2; attempt++) {
+            const answerText = await listen(CALL_LISTEN_CAP_SECONDS);
+            heard.push(answerText);
+            const answer = answerText
+              ? await interpretCallAnswer(answerText)
+              : { decision: 'unclear' as const, ack: '' };
             ensureMounted();
             setAgentState('responding');
-            if (answer.placeCall) {
+            if (answer.decision === 'yes') {
               await say(`Okay. Opening the dialer for ${contact.name} now.`);
               // Keep contact local and open the dialer BEFORE cleanup/logging.
               await openPhone(contact.phone);
               dialerOpened = true;
-            } else if (answer.ack) {
-              await say(answer.ack);
+              break;
             }
-          } else {
-            setAgentState('responding');
-            await say("I didn't catch that. I won't open the dialer.");
+            if (answer.decision === 'no') {
+              if (answer.ack) await say(answer.ack);
+              break;
+            }
+            if (attempt === 0) {
+              await say("I didn't catch that. Please say yes or no.");
+            } else {
+              const message = "I couldn't understand your answer. I won't open the dialer.";
+              setAgentError(message);
+              await say(message);
+            }
           }
         }
       }
