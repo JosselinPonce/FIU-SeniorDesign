@@ -1,0 +1,16 @@
+{
+  "description": "Action threshold configuration for STABLE / WARNING / CRITICAL classification.",
+  "notes": "These values are intentionally conservative and configurable. They are not medical diagnoses.",
+  "warning_hr_low": 50,
+  "warning_hr_high": 95,
+  "critical_hr_low": 40,
+  "critical_hr_high": 120,
+  "warning_spo2_low": 90,
+  "warning_spo2_high": 100,
+  "critical_spo2_low": 88,
+  "critical_spo2_high": 100,
+  "warning_persistence_count": 3,
+  "critical_confirmation_samples": 1,
+  "stable_confirmation_samples": 1,
+  "SIMULATION_ONLY": true
+}
