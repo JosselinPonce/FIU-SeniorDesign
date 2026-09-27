@@ -123,7 +123,7 @@ export function DriverPicker(props: {
   );
 
   return (
-    <ScrollView contentContainerStyle={st.container} keyboardShouldPersistTaps="handled">
+    <ScrollView contentContainerStyle={st.container} automaticallyAdjustKeyboardInsets={true} keyboardDismissMode="interactive" keyboardShouldPersistTaps="handled">
       <Text style={st.hello}>Who's driving?</Text>
       <Text style={st.lead}>
         Pick a driver so readings are saved to the right profile and compared with their usual range. Long-press a driver to
