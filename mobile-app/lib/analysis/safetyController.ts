@@ -31,7 +31,17 @@ import {
 import { personalBand, profilePrior, type ProfilePrior, type Sex } from './profileModel.ts';
 import { RhythmMonitor } from './rhythm.ts';
 import type { SignalQuality } from './signal.ts';
-import { VoiceCheck, type CheckResult, type Lang, type VoiceIO } from '../voice/voiceCheck.ts';
+import { VoiceCheck, type CheckResult, type CheckAnswer, type CheckQuestion, type Lang, type VoiceIO } from '../voice/voiceCheck.ts';
+
+export type ContactHandoff = 'opened' | 'missing_contact' | 'invalid_phone' | 'open_failed' | 'cancelled';
+
+/** Conservative syntax check; never hand emergency-service numbers to the automatic path. */
+export function contactPhone(raw: string | null | undefined): { phone: string | null; error: 'missing_contact' | 'invalid_phone' | null } {
+  if (!raw?.trim()) return { phone: null, error: 'missing_contact' };
+  const phone = raw.trim().replace(/[\s().-]/g, '');
+  if (!/^\+?[0-9]{7,15}$/.test(phone)) return { phone: null, error: 'invalid_phone' };
+  return { phone, error: null };
+}
 
 export type CheckPhase = 'speaking' | 'listening';
 
@@ -42,8 +52,8 @@ export type SafetyState = {
   /** A warning flag is up and the next seconds are being checked. */
   tracking: Episode | null;
   /** The voice check is running. */
-  check: { episode: Episode; phase: CheckPhase } | null;
-  last: { episode: Episode; result: CheckResult; at: Date } | null;
+  check: { episode: Episode; phase: CheckPhase; question: CheckQuestion } | null;
+  last: { episode: Episode; result: CheckResult; at: Date; handoff?: ContactHandoff } | null;
   notices: number;
   advisory: boolean;
   rejected: number;
@@ -70,6 +80,8 @@ export const initialSafety: SafetyState = {
 };
 
 type Deps = {
+  /** Opens the phone interface only; resolution does not mean a connected call. */
+  handoffContact?: (phone: string) => Promise<void>;
   voiceIO: () => VoiceIO;
   /** Called when a voice check ends, so other audio returns to full volume. */
   releaseAudio?: () => void;
@@ -93,6 +105,8 @@ export class SafetyController {
   private rhythm = new RhythmMonitor();
   private sessionId: string | null = null;
   private voice: VoiceCheck | null = null;
+  private generation = 0;
+  private checking = false;
   private lang: Lang = 'en';
   private name = '';
   private profile: DriverProfile | null = null;
@@ -111,6 +125,7 @@ export class SafetyController {
   /** Recomputes the driver's thresholds from their profile, baseline and
    *  any "I'm OK" adjustments. */
   configure(p: DriverProfile, baseline: Baseline | null, ack: Ack = this.state.ack, reason = 'drive') {
+    if (this.profile?.id !== p.id) this.cancelCheck();
     this.profile = p;
     this.baseline = baseline;
     const prior = profilePrior({
@@ -222,26 +237,33 @@ export class SafetyController {
   }
 
   startSession(sessionId: string) {
+    this.cancelCheck();
     this.sessionId = sessionId;
     this.rhythm = new RhythmMonitor();
     if (this.state.th) this.engine = new FlagEngine(this.state.th, this.deps.newId);
     this.set({ tracking: null, check: null, last: null, notices: 0, advisory: false, rejected: 0 });
   }
 
+  cancelCheck() {
+    this.generation += 1;
+    this.voice?.cancel();
+    this.set({ check: null });
+  }
+
   endSession() {
-    if (this.voice) this.voice.answerByButton('ok'); // ending the drive closes an open check
+    this.cancelCheck();
     this.sessionId = null;
     this.set({ tracking: null });
   }
 
-  answer(r: 'ok' | 'not_ok') {
+  answer(r: CheckAnswer) {
     this.voice?.answerByButton(r);
   }
 
   onFrame(f: Frame, rx: Date, missingBefore: number, sq: SignalQuality | null = null) {
     if (!this.sessionId || !this.engine) return;
     const quality = f.version >= 3 ? f.quality : null;
-    const events = this.engine.feed({
+    const events = this.checking ? [] : this.engine.feed({
       t: rx.getTime(),
       bpm: f.usable ? f.heartRate : null,
       spo2: f.usable ? f.spo2 : null,
@@ -293,6 +315,7 @@ export class SafetyController {
         return;
       case 'emergency':
         void this.persist(ep);
+        if (this.checking) return;
         this.set({ tracking: null });
         void this.runCheck(ep);
         return;
@@ -309,49 +332,96 @@ export class SafetyController {
   }
 
   private async runCheck(ep: Episode, rehearsal = false): Promise<CheckResult> {
-    if (ep.kind === 'no_contact') return { outcome: 'ok', urgent: false, channel: 'none', attempts: 0, confidence: null };
+    if (ep.kind === 'no_contact' || this.checking) return { outcome: 'ok', urgent: false, channel: 'none', attempts: 0, confidence: null, contactCall: 'not_requested' };
+    this.checking = true;
+    // Capture ownership and contact before any asynchronous dialogue or persistence.
+    const generation = this.generation;
+    const sessionId = this.sessionId;
+    const engine = this.engine;
+    const profile = this.profile ? { ...this.profile } : null;
+    const profileId = profile?.id;
+    const contact = contactPhone(profile?.emergency_phone);
+    const current = () => generation === this.generation && sessionId === this.sessionId && profileId === this.profile?.id;
+    let question: CheckQuestion = 'wellness';
     this.deps.haptic('warning');
     const base = this.deps.voiceIO();
     // Report what the voice check is doing so the screen can show it.
     const io: VoiceIO = {
       speak: (text, lang) => {
-        this.set({ check: { episode: ep, phase: 'speaking' } });
+        if (current()) this.set({ check: { episode: ep, phase: 'speaking', question } });
         return base.speak(text, lang);
       },
       listen: (lang, ms, hints) => {
-        this.set({ check: { episode: ep, phase: 'listening' } });
+        if (current()) this.set({ check: { episode: ep, phase: 'listening', question } });
         return base.listen(lang, ms, hints);
       },
       cancel: () => base.cancel(),
     };
-    this.voice = new VoiceCheck(io, this.lang, this.name);
+    const voice = new VoiceCheck(io, this.lang, this.name, {
+      contactAvailable: contact.phone !== null,
+      onQuestion: (q) => { question = q; },
+    });
+    this.voice = voice;
     let result: CheckResult;
     try {
-      result = await this.voice.run(ep.kind);
+      result = await voice.run(ep.kind);
     } catch {
-      result = { outcome: 'no_response', urgent: false, channel: 'none', attempts: 0, confidence: null };
+      result = voice.cancelledResult ?? { outcome: 'no_response', urgent: false, channel: 'none', attempts: 0, confidence: null, contactCall: 'not_requested' };
     }
     this.voice = null;
     this.deps.releaseAudio?.();
-    if (rehearsal) {
-      this.set({ check: null });
+    try {
+      if (rehearsal) {
+        if (current()) this.set({ check: null });
+        return result;
+      }
+      if (!current()) {
+        // Save a known wellness answer to its original incident only. Do not learn,
+        // publish stale UI state, or hand off after session/profile cancellation.
+        if (result.outcome !== 'no_response') {
+          const done = engine?.resolve(result.outcome, Date.now(), ep.id)
+            ?? { ...ep, stage: 'resolved' as const, outcome: result.outcome, resolvedAt: Date.now() };
+          await this.persist(done, undefined, { ...result, contactCall: 'cancelled' }, sessionId);
+        }
+        return result;
+      }
+      const done = engine?.resolve(result.outcome, Date.now(), ep.id) ?? { ...ep, stage: 'resolved' as const, outcome: result.outcome, resolvedAt: Date.now() };
+      if (result.outcome === 'ok') await this.learnFromOk(done);
+      if (result.outcome !== 'ok') this.deps.haptic('error');
+      await this.persist(done, undefined, result, sessionId);
+      if (!current()) return result;
+      const last = { episode: done, result, at: new Date() };
+      this.set({ check: null, last });
+      let handoff: ContactHandoff | undefined;
+      if (result.contactCall === 'contact_unavailable') handoff = contact.error ?? 'missing_contact';
+      if (result.contactCall === 'explicit_request' || result.contactCall === 'accepted_offer') {
+        // onChange may synchronously end the drive. Recheck immediately before the platform action.
+        if (!current() || !sessionId) handoff = 'cancelled';
+        else if (!contact.phone) handoff = contact.error ?? 'missing_contact';
+        else {
+          try {
+            if (!this.deps.handoffContact) throw new Error('Phone interface unavailable');
+            await this.deps.handoffContact(contact.phone);
+            handoff = 'opened';
+          } catch {
+            handoff = 'open_failed';
+          }
+        }
+      }
+      if (current() && handoff) this.set({ last: { ...last, handoff } });
       return result;
+    } finally {
+      this.checking = false;
     }
-    const done = this.engine?.resolve(result.outcome, Date.now()) ?? { ...ep, outcome: result.outcome, resolvedAt: Date.now() };
-    if (result.outcome === 'ok') await this.learnFromOk(done);
-    if (result.outcome !== 'ok') this.deps.haptic('error');
-    await this.persist(done, undefined, result);
-    this.set({ check: null, last: { episode: done, result, at: new Date() } });
-    return result;
   }
 
-  private async persist(ep: Episode, kindOverride?: string, result?: CheckResult) {
-    if (!this.sessionId) return;
+  private async persist(ep: Episode, kindOverride?: string, result?: CheckResult, sessionId = this.sessionId) {
+    if (!sessionId) return;
     const escalated = ep.outcome === 'not_ok' || ep.outcome === 'no_response';
     await this.deps
       .save({
         id: ep.id,
-        session_id: this.sessionId,
+        session_id: sessionId,
         kind: kindOverride ?? ep.kind,
         value: Math.round(ep.value * 10) / 10,
         threshold: ep.threshold,

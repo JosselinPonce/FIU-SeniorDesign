@@ -11,6 +11,21 @@ const T0 = 1_800_000_000_000;
 const adult = profilePrior({ age: 30, sex: 'male', weight_kg: 80, height_cm: 180, conditions: [], medications: [] });
 const band0 = personalBand(adult, null);
 
+test('simultaneous confirmations queue behind their owner and cannot resolve by a different ID', () => {
+  const e = engine();
+  const events = run(e, 0, 20, () => ({ bpm: 155, spo2: 85 }));
+  const confirmed = events.filter(event => event.type === 'emergency');
+  assert.equal(confirmed.length, 1);
+  const first = confirmed[0]!.episode;
+  assert.equal(first.kind, 'bpm_high');
+  assert.equal(e.resolve('ok', T0 + 20_000, 'wrong-episode'), null);
+  assert.equal(e.pending?.id, first.id);
+  assert.equal(e.resolve('not_ok', T0 + 20_000, first.id)?.id, first.id);
+  const next = run(e, 21, 1, () => ({ bpm: 155, spo2: 85 })).find(event => event.type === 'emergency');
+  assert.equal(next?.episode.kind, 'spo2_low');
+  assert.notEqual(next?.episode.id, first.id);
+});
+
 function engine(prior = adult, band = band0) {
   return new FlagEngine(thresholds(prior, band), id);
 }

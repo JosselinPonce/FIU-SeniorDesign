@@ -69,3 +69,77 @@ test('a button press wins immediately, even mid-listen', async () => {
   assert.deepEqual([r.outcome, r.channel], ['not_ok', 'button']);
   assert.ok(f.cancelled() >= 1);
 });
+
+
+test('explicit contact request skips the call offer and preserves not_ok', async () => {
+  const f = fake(['call my mom']);
+  const result = await new VoiceCheck(f.io, 'en', '', { contactAvailable: true }).run('bpm_high');
+  assert.equal(result.outcome, 'not_ok');
+  assert.equal(result.contactCall, 'explicit_request');
+  assert.equal(f.said.some(s => s.includes('Would you like')), false);
+});
+
+test('call offer accepts natural consent and keeps the wellness outcome', async () => {
+  const f = fake(['not okay', 'go ahead']);
+  const result = await new VoiceCheck(f.io, 'en', '', { contactAvailable: true }).run('bpm_high');
+  assert.equal(result.outcome, 'not_ok');
+  assert.equal(result.contactCall, 'accepted_offer');
+  assert.ok(f.said.includes('Would you like me to call your emergency contact?'));
+});
+
+test('negative offer response does not authorize handoff', async () => {
+  const f = fake(['not okay', 'no thanks']);
+  const result = await new VoiceCheck(f.io, 'en', '', { contactAvailable: true }).run('bpm_high');
+  assert.equal(result.contactCall, 'declined_offer');
+  assert.equal(result.outcome, 'not_ok');
+});
+
+test('failed call-offer capture preserves the NOT OK incident without consent', async () => {
+  let listens = 0;
+  const io: VoiceIO = { speak: async () => {}, cancel: () => {}, listen: async () => {
+    if (++listens === 1) return 'not okay';
+    throw new Error('Recognition unavailable');
+  } };
+  const result = await new VoiceCheck(io, 'en', '', { contactAvailable: true }).run('bpm_high');
+  assert.equal(result.outcome, 'not_ok');
+  assert.equal(result.contactCall, 'unconfirmed_offer');
+});
+
+test('unclear or silent call consent retries exactly once, then stops', async () => {
+  for (const answers of [[null, null], ['maybe', 'what']] as (string | null)[][]) {
+    const f = fake(['not okay', ...answers, 'yes']);
+    const result = await new VoiceCheck(f.io, 'en', '', { contactAvailable: true }).run('bpm_high');
+    assert.equal(result.contactCall, 'unconfirmed_offer');
+    assert.equal(f.said.filter(s => s.includes('Would you like')).length, 2);
+  }
+});
+
+test('wellness button cannot be reused as consent; cancellation ends a pending offer', async () => {
+  let check: VoiceCheck;
+  const f = fake([], { listenDelay: 5 });
+  check = new VoiceCheck(f.io, 'en', '', { contactAvailable: true, onQuestion: q => {
+    if (q === 'wellness') check.answerByButton('not_ok');
+    else {
+      check.answerByButton('ok'); // stale wellness tap must be ignored
+      check.answerByButton('call_no');
+    }
+  } });
+  assert.equal((await check.run('bpm_high')).contactCall, 'declined_offer');
+  check = new VoiceCheck(f.io, 'en', '', { contactAvailable: true, onQuestion: q => {
+    if (q === 'wellness') check.answerByButton('not_ok');
+    else check.cancel();
+  } });
+  await assert.rejects(check.run('bpm_high'), /cancelled/);
+  assert.equal(check.cancelledResult?.outcome, 'not_ok');
+  assert.equal(check.cancelledResult?.contactCall, 'cancelled');
+});
+
+test('emergency-service requests end the contact branch, regardless of queued affirmative responses', async () => {
+  for (const answers of [['call 911', 'yes'], ['not okay', 'call 911', 'yes'], ['not okay', 'call the police', 'yes']]) {
+    const f = fake(answers);
+    const result = await new VoiceCheck(f.io, 'en', '', { contactAvailable: true }).run('bpm_high');
+    assert.equal(result.contactCall, 'emergency_services');
+    assert.equal(result.outcome, 'not_ok');
+    assert.deepEqual(answers, ['yes']);
+  }
+});

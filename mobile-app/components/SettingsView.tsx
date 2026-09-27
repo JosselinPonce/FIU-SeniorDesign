@@ -308,7 +308,7 @@ export function SettingsView(props: {
           }
         />
       </Card>
-      <Text style={st.disclaimer}>Prototype — not a medical device. Alerts use prototype thresholds and escalation is simulated.</Text>
+      <Text style={st.disclaimer}>Prototype — not a medical device. Alerts use prototype thresholds. Real checks can open the saved contact's phone interface with your agreement; demos and rehearsals never do.</Text>
     </ScrollView>
   );
 }

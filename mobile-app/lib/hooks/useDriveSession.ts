@@ -6,6 +6,8 @@
  * reactive surface is a handful of values on a few screens.
  */
 import { useCallback, useEffect, useMemo, useReducer, useRef } from 'react';
+import { Linking } from 'react-native';
+import type { CheckAnswer } from '../voice/voiceCheck';
 import * as Haptics from 'expo-haptics';
 
 import { WheelConnection, type ConnectionState, type RelayStatus, type Source } from '../ble/bleService';
@@ -260,6 +262,7 @@ export function useDriveSession() {
     () =>
       new SafetyController({
         voiceIO: phoneVoiceIO,
+        handoffContact: (phone) => Linking.openURL(`tel:${phone}`),
         releaseAudio,
         save: repo.saveAlert,
         saveAck: repo.setAck,
@@ -353,6 +356,9 @@ export function useDriveSession() {
           crc: deframer.current.crcErrors,
           signal: sq,
         });
+        const rolloverSession = esp32Restarted && sessionRef.current?.status === 'active' ? sessionRef.current : null;
+        // Revoke consent immediately, before queued database work can yield to a dialogue.
+        if (rolloverSession) safety.endSession();
         if (sessionRef.current?.status === 'active') {
           safety.onFrame(f, rx, missingNow, sq);
           live.nudge(); // flags and answers reach the dashboard without waiting for the tick
@@ -360,13 +366,19 @@ export function useDriveSession() {
 
         queue.current = queue.current
           .then(async () => {
-            if (esp32Restarted && sessionRef.current?.status === 'active') {
+            if (rolloverSession && sessionRef.current === rolloverSession) {
               // A restart is a new drive segment: close this session and carry on
               // in a fresh one for the same driver, so no data is dropped.
               const old = sessionRef.current;
               await repo.endSession(old);
+              if (sessionRef.current !== old) return;
               const next = await repo.startSession(old.profile_id, old.storage_mode ?? 'vitals');
+              if (sessionRef.current !== old) {
+                await repo.endSession(next);
+                return;
+              }
               sessionRef.current = next;
+              safety.startSession(next.id);
               seen.current.clear();
               dispatch({ type: 'rollover', session: next });
               void (async () => {
@@ -436,10 +448,13 @@ export function useDriveSession() {
       for (const lang of ['en', 'es'] as const) setPreferredVoice(lang, await repo.getSetting(`voice:${lang}`));
     })();
     return () => {
+      safety.endSession();
+      sessionRef.current = null;
+      selectedProfile.current = null;
       void connection.stop();
       live.stop();
     };
-  }, [connection, live]);
+  }, [connection, live, safety]);
 
   // In the car nobody should have to tap "connect": as soon as a driver is
   // chosen the app keeps a link to the Pi up, reconnecting on its own.
@@ -448,11 +463,16 @@ export function useDriveSession() {
     if (driverId) connection.start();
   }, [driverId, connection]);
 
+  const selectedProfile = useRef<{ id: string } | null>(null);
   const loadBaseline = useCallback(
     async (driver: DriverProfile, reason = 'drive') => {
+      const selection = selectedProfile.current;
       const b = await repo.driverBaseline(driver.id);
-      safety.configure(driver, b, await repo.getAck(driver.id), reason);
+      const ack = await repo.getAck(driver.id);
+      if (selectedProfile.current !== selection || selection?.id !== driver.id) return null;
+      safety.configure(driver, b, ack, reason);
       const trend = computeTrend(await repo.driveMedians(driver.id), Date.now());
+      if (selectedProfile.current !== selection) return null;
       dispatch({ type: 'baseline', baseline: b, trend });
       return trend;
     },
@@ -461,6 +481,9 @@ export function useDriveSession() {
 
   const selectDriver = useCallback(
     (driver: DriverProfile) => {
+      safety.endSession();
+      selectedProfile.current = { id: driver.id };
+      safety.configure(driver, null, { high: null, low: null }, 'profile');
       calRef.current = { hr: driver.cal_hr ?? null, spo2: driver.cal_spo2 ?? null };
       sessionRef.current = null;
       seen.current.clear();
@@ -469,14 +492,19 @@ export function useDriveSession() {
       dispatch({ type: 'driver', driver });
       void loadBaseline(driver, 'profile');
     },
-    [loadBaseline],
+    [loadBaseline, safety],
   );
 
   const startSession = useCallback(async () => {
     if (sessionRef.current || !state.driver) return;
     seen.current.clear();
     dispatch({ type: 'resetSession' });
+    const selection = selectedProfile.current;
     const session = await repo.startSession(state.driver.id, state.storageMode);
+    if (selectedProfile.current !== selection || selection?.id !== state.driver.id) {
+      await repo.endSession(session);
+      return;
+    }
     sessionRef.current = session;
     safety.startSession(session.id);
     dispatch({ type: 'session', session });
@@ -508,7 +536,7 @@ export function useDriveSession() {
       // elevated trend is logged once per week as an advisory on this drive.
       const driver = state.driver;
       const trend = await loadBaseline(driver);
-      if (trend.status === 'elevated') {
+      if (trend?.status === 'elevated') {
         const key = `trend:${driver.id}`;
         const last = Number((await repo.getSetting(key)) ?? 0);
         if (Date.now() - last > 7 * 86_400_000) {
@@ -526,9 +554,13 @@ export function useDriveSession() {
 
   /** Back to the driver list. An active session is ended first, never dropped. */
   const leaveDriver = useCallback(async () => {
+    const selection = selectedProfile.current;
+    safety.cancelCheck();
     if (sessionRef.current) await endSession();
+    if (selectedProfile.current !== selection) return;
+    selectedProfile.current = null;
     dispatch({ type: 'driver', driver: null });
-  }, [endSession]);
+  }, [endSession, safety]);
 
   const setStorageMode = useCallback(async (mode: StorageMode) => {
     await repo.setSetting('storage_mode', mode);
@@ -543,7 +575,7 @@ export function useDriveSession() {
   }, [safety, state.voice]);
 
   /** On-screen answer to the voice check (always available). */
-  const respondAlert = useCallback((response: 'ok' | 'not_ok') => safety.answer(response), [safety]);
+  const respondAlert = useCallback((response: CheckAnswer) => safety.answer(response), [safety]);
 
   return {
     ...state,

@@ -24,8 +24,8 @@ const WATCH_TEXT: Record<string, string> = {
 };
 const OUTCOME_TEXT: Record<string, string> = {
   ok: 'you said you were OK',
-  not_ok: 'you said you were not OK — escalation (simulated)',
-  no_response: 'no answer — escalation (simulated)',
+  not_ok: 'you said you were not OK',
+  no_response: 'no answer — emergency recorded',
 };
 
 /** Phone → Pi → wheel sensor, each hop with its own state. */
@@ -202,6 +202,15 @@ export function DriveView(props: { drive: Drive; busy: boolean; guard: (fn: () =
             {sf.last.result.channel === 'voice' ? ' (by voice)' : sf.last.result.channel === 'button' ? ' (button)' : ''}.
           </Text>
         ) : null}
+        {sf.last?.handoff ? <Text style={st.body}>{
+          sf.last.handoff === 'opened' ? 'Phone interface opened for the saved emergency contact. Call connection is not confirmed.'
+          : sf.last.handoff === 'missing_contact' ? 'No emergency contact number is saved. No phone interface was opened.'
+          : sf.last.handoff === 'invalid_phone' ? 'The saved emergency contact number is invalid. Update the driver profile.'
+          : sf.last.handoff === 'open_failed' ? 'Could not open the phone interface. Use the call buttons below or your phone.'
+          : 'Automatic phone handoff was cancelled.'
+        }</Text> : null}
+        {sf.last?.result.contactCall === 'declined_offer' ? <Text style={st.body}>You declined the phone handoff.</Text> : null}
+        {sf.last?.result.contactCall === 'unconfirmed_offer' ? <Text style={st.body}>No clear call consent was received. The phone interface was not opened.</Text> : null}
         {sf.last && sf.last.result.outcome !== 'ok' ? (
           <View style={st.callRow}>
             {d.driver?.emergency_phone ? (
@@ -247,11 +256,12 @@ export function DriveView(props: { drive: Drive; busy: boolean; guard: (fn: () =
 export function VoiceCheckModal(props: { drive: Drive }) {
   const d = props.drive;
   const sf = d.safety;
+  const offer = sf.check?.question === 'contact_offer';
   return (
     <Modal visible={sf.check !== null} transparent animationType="fade">
         <View style={st.scrim}>
           <View style={st.alertBox}>
-            <Text style={st.alertTitle}>Are you feeling OK?</Text>
+            <Text style={st.alertTitle}>{offer ? 'Would you like me to call your emergency contact?' : 'Are you feeling OK?'}</Text>
             <Text style={st.alertBody}>
               {sf.check ? ALERT_TEXT[sf.check.episode.kind] : ''} ({sf.check ? Math.round(sf.check.episode.value) : ''}
               {sf.check?.episode.kind === 'spo2_low' ? '%' : ' BPM'}).
@@ -263,12 +273,12 @@ export function VoiceCheckModal(props: { drive: Drive }) {
               </Text>
             </View>
             <Text style={st.alertHint}>
-              You can answer out loud or tap below. No answer counts as "not OK". Prototype: escalation is simulated — nobody is
-              contacted. If you need help, pull over and call 911.
+              You can answer out loud or tap below. The phone interface opens only after a call request or agreement.
+              Rehearsals and demos never open it. If you need emergency help, pull over safely and call 911.
             </Text>
-            <Btn title="I'm OK" onPress={() => d.respondAlert('ok')} />
-            <Pressable onPress={() => d.respondAlert('not_ok')} style={st.unwell} accessibilityRole="button">
-              <Text style={st.unwellText}>I'm not OK</Text>
+            <Btn title={offer ? "Open phone interface" : "I'm OK"} onPress={() => d.respondAlert(offer ? 'call_yes' : 'ok')} />
+            <Pressable onPress={() => d.respondAlert(offer ? 'call_no' : 'not_ok')} style={st.unwell} accessibilityRole="button">
+              <Text style={st.unwellText}>{offer ? "No thanks" : "I'm not OK"}</Text>
             </Pressable>
           </View>
         </View>

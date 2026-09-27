@@ -355,6 +355,9 @@ export class FlagEngine {
       const coverage = accepted.length / w;
       const beyond = accepted.length ? accepted.filter(Boolean).length / accepted.length : 0;
       if (coverage >= COVERAGE_MIN && beyond >= BEYOND_MIN) {
+        // Keep other confirmed-ready tracks queued until the active dialogue resolves.
+        // Never overwrite the episode that owns that dialogue in the same feed batch.
+        if (this.awaiting) return [];
         this.tracks.delete(kind);
         ep.stage = 'emergency';
         ep.confirmedAt = t;
@@ -378,9 +381,9 @@ export class FlagEngine {
   }
 
   /** The driver answered (or didn't). Closes the pending emergency. */
-  resolve(response: Response, t: number): Episode | null {
+  resolve(response: Response, t: number, episodeId = this.awaiting?.id): Episode | null {
     const ep = this.awaiting;
-    if (!ep) return null;
+    if (!ep || ep.id !== episodeId) return null;
     this.awaiting = null;
     ep.stage = 'resolved';
     ep.outcome = response;

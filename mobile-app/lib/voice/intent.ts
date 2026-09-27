@@ -24,6 +24,7 @@ import model from './intentModel.ts';
 
 export type Intent = 'ok' | 'not_ok' | 'unclear' | 'silent';
 export type Understood = {
+  contactCallRequested: boolean;
   intent: Intent;
   urgent: boolean;
   confidence: number;
@@ -113,7 +114,7 @@ const SYMPTOM =
 export const OK_MIN = 0.75;
 export const NOT_OK_MIN = 0.5;
 
-export function understand(transcript: string | null | undefined): Understood {
+function wellness(transcript: string | null | undefined): Omit<Understood, 'contactCallRequested'> {
   const t = normalise(transcript ?? '');
   if (!t) return { intent: 'silent', urgent: false, confidence: 1, probs: null, reason: 'empty' };
   const probs = modelProbs(t);
@@ -132,4 +133,41 @@ export function understand(transcript: string | null | undefined): Understood {
   if (probs[1] >= NOT_OK_MIN) return { intent: 'not_ok', urgent: false, confidence: probs[1], probs, reason: 'model' };
   if (probs[0] >= OK_MIN) return { intent: 'ok', urgent: false, confidence: probs[0], probs, reason: 'model' };
   return { intent: 'unclear', urgent: false, confidence: Math.max(...probs), probs, reason: 'model' };
+}
+
+/** Call consent is contextual and rule-based, never a wellness probability. */
+export type CallAnswer = 'yes' | 'no' | 'unclear' | 'silent';
+const CALL_REFUSAL = /\b(don't|dont|do not|never|not now|rather not|no need|no thanks|no thank you|don't want|dont want|do not want|no quiero|no llames|no llamar|ahora no)\b/;
+const UNCERTAIN_CALL = /\b(maybe|perhaps|if|what if|might|possibly|unless|not sure|unsure|quiza|quizas|tal vez)\b/;
+const OTHER_DESTINATION = /\b(911|nine one one|112|999|police|ambulance|taxi|uber|policia|ambulancia)\b/;
+
+/** A service destination excludes automatic contact handoff for the whole dialogue.
+ * Conservatively include mentions/negations: these must never become contact consent. */
+export function mentionsEmergencyServices(transcript: string | null | undefined): boolean {
+  return /\b(911|9 1 1|nine one one|nine eleven|112|999|emergency services|police|ambulance|policia|ambulancia|servicios de emergencia|nueve uno uno)\b/.test(normalise(transcript ?? ''));
+}
+
+export function explicitContactCallRequest(transcript: string): boolean {
+  const t = normalise(transcript).replace(/^no (?=please call\b)/, '');
+  if (CALL_REFUSAL.test(t) || UNCERTAIN_CALL.test(t) || OTHER_DESTINATION.test(t) || /\bno\b/.test(t)) return false;
+  return /^(?:please |(?:can|could|would) you (?:please )?|i need you to |i want you to )?call (?:my (?:emergency contact|contact|mom|mother|dad|father|wife|husband|partner)|them)(?: please| now| for me)?$/.test(t)
+    || /^(?:por favor )?(?:llama|llame) (?:a )?(?:mi (?:contacto de emergencia|contacto|mama|papa|esposa|esposo)|ellos)(?: por favor)?$/.test(t);
+}
+
+export function understandCallAnswer(transcript: string | null | undefined): CallAnswer {
+  const t = normalise(transcript ?? '');
+  if (!t) return 'silent';
+  if (OTHER_DESTINATION.test(t)) return 'unclear';
+  if (CALL_REFUSAL.test(t) || /^(?:no|no please|no por favor)$/.test(t)) return 'no';
+  if (UNCERTAIN_CALL.test(t)) return 'unclear';
+  if (explicitContactCallRequest(t)) return 'yes';
+  if (/^(?:yes|yeah|yep|sure|okay|ok|absolutely|si|claro)(?: please| por favor| go ahead| do it)?$/.test(t)
+    || /^(?:please do|go ahead|please go ahead|do it|make the call|that would help|yes that would help|yes i would|sure please do|adelante|hazlo)$/.test(t)) return 'yes';
+  return 'unclear';
+}
+
+export function understand(transcript: string | null | undefined): Understood {
+  const result = wellness(transcript);
+  const contactCallRequested = explicitContactCallRequest(transcript ?? '');
+  return { ...result, intent: contactCallRequested ? 'not_ok' : result.intent, contactCallRequested };
 }

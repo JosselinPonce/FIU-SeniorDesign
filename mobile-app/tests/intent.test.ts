@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { modelProbs, understand, fnv1a, normalise } from '../lib/voice/intent.ts';
+import { modelProbs, understand, understandCallAnswer, fnv1a, normalise } from '../lib/voice/intent.ts';
 
 const HASHES: Record<string, number> = JSON.parse(
   readFileSync(join(import.meta.dirname, 'fixtures', 'fnv1a.json'), 'utf8'),
@@ -58,4 +58,31 @@ test('safety rules', () => {
     assert.equal(u.intent, intent, `${text} -> ${u.intent} (${u.reason} ${u.probs})`);
     assert.equal(u.urgent, urgent, `${text} urgent`);
   }
+});
+
+
+test('saved-contact requests are separate from urgency and reject negation and other destinations', () => {
+  for (const text of ['Call my mom', 'Call my emergency contact', 'Please call them', 'I need you to call my contact']) {
+    const result = understand(text);
+    assert.equal(result.contactCallRequested, true, text);
+    assert.equal(result.intent, 'not_ok', text);
+  }
+  for (const text of ["don't call my mom", 'do not call them', 'no call my mom', 'call 911', 'help', 'I feel dizzy',
+    'maybe call my mom', 'what if you call my mom', 'can I call my mom', 'she said call my mom']) {
+    assert.equal(understand(text).contactCallRequested, false, text);
+  }
+  assert.equal(understand('call 911').urgent, true);
+});
+
+test('call-offer consent uses natural local rules, not wellness probabilities', () => {
+  for (const text of ['yes please', 'go ahead', 'please do', 'that would help', 'call them', 'sí por favor']) {
+    assert.equal(understandCallAnswer(text), 'yes', text);
+  }
+  for (const text of ['no thanks', "don't call", 'not now', 'no quiero', 'no']) {
+    assert.equal(understandCallAnswer(text), 'no', text);
+  }
+  for (const text of ['I am okay', 'I am not okay', 'maybe', 'call 911', 'yes call 911', 'background noise']) {
+    assert.equal(understandCallAnswer(text), 'unclear', text);
+  }
+  assert.equal(understandCallAnswer(null), 'silent');
 });
