@@ -1,4 +1,5 @@
-// Steering Wheel PPG transmitter -- ESP32 + MAX30102, protocol v3.
+// Steering Wheel PPG transmitter -- ESP32 + four MAX30102 via TCA9548A, protocol v3.
+// One sensor streams at a time; the other three remain in shutdown.
 //
 // Once per second: 100 raw Red/IR samples at 100 Hz -> 25 Hz decimation for
 // the vitals estimator, ALL 100 raw samples bit-packed into the frame (18 bits
@@ -79,12 +80,28 @@ static constexpr int kRawPerFrame = kRawRateHz; // one frame per second
 // Re-measure if the LED current, enclosure or sensor module changes.
 static constexpr uint32_t kFingerIrThreshold = 100000;
 
+// PPG1..PPG4 are MUX channels 0..3, all at the same sensor address (0x57).
+static constexpr uint8_t kMuxAddr = 0x70;
+static constexpr uint8_t kSensorCount = 4;
+static constexpr uint16_t kContactLossSamples = kRawRateHz / 2; // 500 ms continuously below threshold
+static constexpr uint32_t kSearchRetryMs = 2000; // minimum time streaming between scans
+static constexpr uint32_t kWakeSettleMs = 100;
+static constexpr uint8_t kProbeSamples = 20; // 200 ms of fresh IR after settling
+static constexpr uint8_t kProbeContactMin = 16; // at least 80% above threshold
+static constexpr uint32_t kSampleTimeoutMs = 250;
+
 // Plausibility limits, same as the previous firmware.
 static constexpr int32_t kBpmMin = 30, kBpmMax = 220;
 static constexpr int32_t kSpo2Min = 70, kSpo2Max = 100;
 
 // ---------------------------------------------------------------- state ---
 MAX30105 sensor;
+// A single driver handle is safe: every channel uses identical configuration,
+// and acquisition never uses the library's per-object sample ring buffer.
+static uint8_t activeSensor = 0;
+static bool acquisitionReady = false;
+static uint16_t noContactSamples = 0;
+static uint32_t lastSearchMs = 0;
 
 uint32_t irBuffer[kAlgoLen];
 uint32_t redBuffer[kAlgoLen];
@@ -226,6 +243,57 @@ static constexpr uint8_t kMaxSamplesPerRequest = 21; // 21 x 6 = 126 B < Wire's 
 static uint32_t fifoRed[kFifoDepth], fifoIr[kFifoDepth];
 static uint8_t fifoCount = 0, fifoPos = 0;
 
+// Never enable two channels together: every MAX30102 responds at 0x57.
+static bool selectMux(uint8_t channel) {
+  if (channel >= kSensorCount) return false;
+  Wire.beginTransmission(kMuxAddr);
+  Wire.write(static_cast<uint8_t>(1u << channel));
+  return Wire.endTransmission() == 0;
+}
+
+// Verify shutdown before waking another device. A MUX disconnect alone does
+// not stop a sensor's LEDs or ADC. A failed command stops acquisition/search.
+static bool setSensorAwake(uint8_t channel, bool awake) {
+  if (!selectMux(channel)) return false;
+  if (awake) sensor.wakeUp();
+  else sensor.shutDown();
+  Wire.beginTransmission(kSensorAddr);
+  Wire.write(static_cast<uint8_t>(0x09)); // MODE_CONFIG, SHDN is bit 7
+  if (Wire.endTransmission() != 0) return false;
+  if (Wire.requestFrom(static_cast<uint16_t>(kSensorAddr), static_cast<size_t>(1)) != 1) return false;
+  const bool sleeping = (Wire.read() & 0x80) != 0;
+  return sleeping == !awake;
+}
+
+static bool sleepAllSensors() {
+  bool ok = true;
+  for (uint8_t channel = 0; channel < kSensorCount; ++channel) {
+    if (!setSensorAwake(channel, false)) ok = false;
+  }
+  return ok;
+}
+
+// Also used when resuming the SAME sensor after a scan: that scan is a gap in
+// acquisition, so neither its probe data nor its old partial window is valid.
+static void resetSignalState() {
+  fifoCount = fifoPos = 0;
+  histFilled = 0;
+  noContactSamples = 0;
+  heartRate = spo2 = -999;
+  validHeartRate = validSpo2 = 0;
+  memset(fifoRed, 0, sizeof fifoRed);
+  memset(fifoIr, 0, sizeof fifoIr);
+  memset(redBuffer, 0, sizeof redBuffer);
+  memset(irBuffer, 0, sizeof irBuffer);
+  memset(histRed, 0, sizeof histRed);
+  memset(histIr, 0, sizeof histIr);
+  memset(scratchRed, 0, sizeof scratchRed);
+  memset(scratchIr, 0, sizeof scratchIr);
+  memset(frameRed, 0, sizeof frameRed);
+  memset(frameIr, 0, sizeof frameIr);
+  // frameSeq deliberately continues: the Pi still sees one logical stream.
+}
+
 // Pulls every sample currently in the sensor FIFO into fifoRed/fifoIr.
 // Reading FIFO_DATA advances the sensor's read pointer, as the driver relies on.
 static uint8_t drainFifo() {
@@ -259,28 +327,84 @@ static uint8_t drainFifo() {
 
 // Returns the next sample in order. Red and IR always come from the same
 // sensor sample, and every sample the sensor produces is delivered once.
-static void readRawSample(uint32_t& red, uint32_t& ir) {
+static bool readRawSample(uint32_t& red, uint32_t& ir) {
+  const uint32_t started = millis();
   while (fifoPos >= fifoCount) {
     // One sample arrives every 10 ms; yield (delay, not busy-wait) so the BLE
     // stack keeps running while we wait.
-    if (drainFifo() == 0) delay(1);
+    if (drainFifo() == 0) {
+      if (millis() - started >= kSampleTimeoutMs) return false;
+      delay(1);
+    }
   }
   red = fifoRed[fifoPos];
   ir = fifoIr[fifoPos];
   ++fifoPos;
+  return true;
 }
 
-// Averages kDecimation raw samples into one 25 Hz algorithm sample.
-static void readAlgoSample(uint32_t& red, uint32_t& ir) {
-  uint64_t rs = 0, is = 0;
-  for (int k = 0; k < kDecimation; ++k) {
-    uint32_t r, i;
-    readRawSample(r, i);
-    rs += r;
-    is += i;
+static bool startActiveSensor(uint8_t channel) {
+  if (!setSensorAwake(channel, true)) return false;
+  delay(kWakeSettleMs); // fewer than 32 samples can accumulate at 100 Hz
+  sensor.clearFIFO();
+  resetSignalState();
+  activeSensor = channel;
+  acquisitionReady = true;
+  return true;
+}
+
+// Bounded, sequential search. Probe samples never enter frames or history.
+// Largest mean IR among sustained-contact candidates wins (not a pulse-quality
+// verdict). Recheck the previous sensor last in case contact has returned.
+static void searchSensors() {
+  acquisitionReady = false;
+  resetSignalState();
+  lastSearchMs = millis();
+  if (!sleepAllSensors()) {
+    Serial.println("PPG search paused: could not verify all sensors asleep");
+    return;
   }
-  red = rs / kDecimation;
-  ir = is / kDecimation;
+  const uint8_t previous = activeSensor;
+  uint8_t best = previous;
+  uint32_t bestIr = 0;
+  for (uint8_t offset = 1; offset <= kSensorCount; ++offset) {
+    const uint8_t channel = (previous + offset) % kSensorCount;
+    if (!setSensorAwake(channel, true)) {
+      // The wake command may have succeeded even if its readback failed.
+      // Do not wake another channel until shutdown has been verified.
+      if (!setSensorAwake(channel, false)) return;
+      continue;
+    }
+    delay(kWakeSettleMs);
+    sensor.clearFIFO();
+    fifoCount = fifoPos = 0;
+    uint64_t total = 0;
+    uint8_t good = 0, count = 0;
+    for (; count < kProbeSamples; ++count) {
+      uint32_t red, ir;
+      if (!readRawSample(red, ir)) break;
+      total += ir;
+      if (ir >= kFingerIrThreshold) ++good;
+    }
+    const uint32_t mean = count ? total / count : 0;
+    Serial.printf("PPG%u probe ir=%lu contact=%u/%u\n", channel + 1,
+                  static_cast<unsigned long>(mean), good, count);
+    if (!setSensorAwake(channel, false)) return;
+    if (count == kProbeSamples && good >= kProbeContactMin && mean >= kFingerIrThreshold && mean > bestIr) {
+      best = channel;
+      bestIr = mean;
+    }
+  }
+  if (bestIr == 0) {
+    // Every probe has verified shutdown; remain idle until the next search.
+    lastSearchMs = millis();
+    Serial.println("No PPG contact; all sensors asleep, retry later");
+    return;
+  }
+  if (!startActiveSensor(best)) return;
+  lastSearchMs = millis();
+  Serial.printf("PPG%u active (was PPG%u), %s; rebuilding history\n",
+                best + 1, previous + 1, "contact found");
 }
 
 // I2C bus clear (NXP UM10204 section 3.1.16). If the ESP32 resets in the middle
@@ -346,6 +470,24 @@ static bool initSensor() {
   return true;
 }
 
+static bool initSensors() {
+  bool ok = true;
+  // Configure and immediately sleep each channel before touching the next.
+  // Require all four to initialise before streaming, just as the old sketch
+  // waited for its one sensor. Failed startup attempts retry after 1 second.
+  for (uint8_t channel = 0; channel < kSensorCount; ++channel) {
+    if (!selectMux(channel) || !initSensor()) {
+      Serial.printf("PPG%u missing on MUX channel %u\n", channel + 1, channel);
+      ok = false;
+      continue;
+    }
+    // Do not configure (and therefore wake) another channel if this one has
+    // not acknowledged shutdown. The next startup attempt will retry it.
+    if (!setSensorAwake(channel, false)) return false;
+  }
+  return ok;
+}
+
 // Sends one frame as MTU-sized notifications. The receiver's deframer
 // reassembles on the magic bytes and CRC, so the chunk boundary is free.
 static void sendFrame(const uint8_t* data, size_t len) {
@@ -400,35 +542,31 @@ void setup() {
     int sda, scl;
     i2cBusClear(sda, scl);
     Wire.begin(SDA_PIN, SCL_PIN);
-    if (initSensor()) break;
+    if (initSensors()) break;
     char found[64];
     i2cScan(found, sizeof found);
     Wire.end();
     int extSda, extScl;
     externalPullups(extSda, extScl);
-    Serial.printf("MAX30102 not found (attempt %d): I2C ACKs: %s| module pull-ups SDA=%d SCL=%d | "
+    Serial.printf("MUX/four MAX30102 not ready (attempt %d): selected-bus I2C ACKs: %s| module pull-ups SDA=%d SCL=%d | "
                   "bus-idle SDA=%d SCL=%d\n", attempt, found, extSda, extScl, sda, scl);
     if (attempt == 1 || attempt % 10 == 0) {
       Serial.println(extSda || extScl
-          ? "  -> module is wired and powered but not answering at 0x57"
+          ? "  -> check MUX 0x70 and MAX30102 0x57 on each channel 0..3"
           : "  -> no module pull-ups seen: check VIN/3.3V, GND, SDA->21, SCL->22");
     }
     delay(1000);
   }
-  Serial.println("MAX30102 ready");
+  Serial.println("Four MAX30102 ready on MUX 0x70, channels 0..3 (asleep)");
 
   startBle();
   Serial.printf("BLE advertising as %s, requested MTU %u\n", DEVICE_NAME, kRequestedMtu);
 
-  // Prime the algorithm with 4 s of data before the first frame.
-  Serial.println("Priming 4 s buffer - keep finger steady");
-  for (int i = 0; i < kAlgoLen; ++i) {
-    readAlgoSample(redBuffer[i], irBuffer[i]);
-    pushHistory(redBuffer[i], irBuffer[i]);
-  }
-  maxim_heart_rate_and_oxygen_saturation(irBuffer, kAlgoLen, redBuffer,
-                                         &spo2, &validSpo2, &heartRate, &validHeartRate);
-  Serial.println("Streaming");
+  if (!startActiveSensor(0)) Serial.println("PPG1 wake failed; loop will retry a safe search");
+  lastSearchMs = millis() - kSearchRetryMs; // permit the first loss-triggered search
+  // Stream raw frames immediately; vitals stay invalid until 4 s of fresh
+  // history exists. This also lets contact failover work during warm-up.
+  Serial.println("Streaming PPG1; establishing 4 s of history before valid vitals");
 }
 
 // ----------------------------------------------------------------- loop ---
@@ -456,6 +594,15 @@ void loop() {
                   connIntervalUnits * 1.25f, connLatency, connTimeoutUnits * 10u, connParamsStatus);
   }
 
+  // Channel changes only occur between complete frames (or after discarding
+  // a failed partial frame), never inside a raw/decimated sample group.
+  if ((!acquisitionReady || noContactSamples >= kContactLossSamples) &&
+      millis() - lastSearchMs >= kSearchRetryMs) searchSensors();
+  if (!acquisitionReady) {
+    delay(1);
+    return;
+  }
+
   // Slide the Maxim window: keep the newest 75 algorithm samples.
   memmove(redBuffer, redBuffer + kAlgoNewPerSecond, (kAlgoLen - kAlgoNewPerSecond) * sizeof(uint32_t));
   memmove(irBuffer, irBuffer + kAlgoNewPerSecond, (kAlgoLen - kAlgoNewPerSecond) * sizeof(uint32_t));
@@ -467,7 +614,14 @@ void loop() {
     uint64_t rs = 0, is = 0;
     for (int k = 0; k < kDecimation; ++k) {
       uint32_t r, i;
-      readRawSample(r, i);
+      if (!readRawSample(r, i)) {
+        Serial.printf("PPG%u FIFO timeout; discarding partial frame\n", activeSensor + 1);
+        acquisitionReady = false;
+        resetSignalState();
+        return;
+      }
+      if (i >= kFingerIrThreshold) noContactSamples = 0;
+      else if (noContactSamples < kContactLossSamples) ++noContactSamples;
       rs += r;
       is += i;
       frameRed[a * kDecimation + k] = r;  // time = startMs + index * 10 ms (sensor clock)
@@ -480,7 +634,7 @@ void loop() {
   }
   const uint32_t endMs = millis();
 
-  maxim_heart_rate_and_oxygen_saturation(irBuffer, kAlgoLen, redBuffer,
+  if (histFilled >= kAlgoLen) maxim_heart_rate_and_oxygen_saturation(irBuffer, kAlgoLen, redBuffer,
                                          &spo2, &validSpo2, &heartRate, &validHeartRate);
 
   const uint32_t irMean = irTotal / kRawPerFrame;
@@ -517,8 +671,9 @@ void loop() {
   const size_t frameLen = ppg::encodeV3(frame, frameBytes);
   sendFrame(frameBytes, frameLen);
 
-  // Sequence advances whether or not the Pi is listening, so gaps the Pi
-  // sees after a reconnect represent real seconds of lost data.
+  // Sequence advances per completed frame, whether or not the Pi is listening.
+  // Scanning pauses acquisition; that gap is visible in t0Ms, not fake samples
+  // or a sequence reset. Reconnect sequence gaps still count unsent frames.
   ++frameSeq;
 
   // Samples the sensor had to drop because we fell behind (0 when healthy).
