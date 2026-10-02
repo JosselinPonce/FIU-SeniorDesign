@@ -62,12 +62,14 @@ test('safety rules', () => {
 
 
 test('saved-contact requests are separate from urgency and reject negation and other destinations', () => {
-  for (const text of ['Call my mom', 'Call my emergency contact', 'Please call them', 'I need you to call my contact']) {
+  for (const text of ["No, I'm feeling dizzy, please call my mom", 'I feel sick, call my mom', 'Call my mom', 'Call my emergency contact' , 'Please call them', 'I need you to call my contact']) {
     const result = understand(text);
     assert.equal(result.contactCallRequested, true, text);
     assert.equal(result.intent, 'not_ok', text);
   }
   for (const text of ["don't call my mom", 'do not call them', 'no call my mom', 'call 911', 'help', 'I feel dizzy',
+    "No, I'm feeling dizzy, don't call my mom", "No, I'm feeling dizzy, maybe call my mom",
+    "No, I'm feeling dizzy, please call my mom or 911", 'she said I feel sick call my mom',
     'maybe call my mom', 'what if you call my mom', 'can I call my mom', 'she said call my mom']) {
     assert.equal(understand(text).contactCallRequested, false, text);
   }

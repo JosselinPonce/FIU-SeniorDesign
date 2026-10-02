@@ -148,7 +148,13 @@ export function mentionsEmergencyServices(transcript: string | null | undefined)
 }
 
 export function explicitContactCallRequest(transcript: string): boolean {
-  const t = normalise(transcript).replace(/^no (?=please call\b)/, '');
+  const full = normalise(transcript);
+  // Only strip a bounded first-person wellness prefix, never arbitrary reported speech.
+  // Check refusals and excluded destinations against the entire utterance first.
+  if (CALL_REFUSAL.test(full) || UNCERTAIN_CALL.test(full) || OTHER_DESTINATION.test(full) || mentionsEmergencyServices(full)) return false;
+  const t = full
+    .replace(/^(?:no )?(?:i'm|im|i am|i feel) (?:feeling )?(?:dizzy|sick|unwell|not okay|not ok|not well)(?: and)? (?=(?:please )?call\b)/, '')
+    .replace(/^no (?=please call\b)/, '');
   if (CALL_REFUSAL.test(t) || UNCERTAIN_CALL.test(t) || OTHER_DESTINATION.test(t) || /\bno\b/.test(t)) return false;
   return /^(?:please |(?:can|could|would) you (?:please )?|i need you to |i want you to )?call (?:my (?:emergency contact|contact|mom|mother|dad|father|wife|husband|partner)|them)(?: please| now| for me)?$/.test(t)
     || /^(?:por favor )?(?:llama|llame) (?:a )?(?:mi (?:contacto de emergencia|contacto|mama|papa|esposa|esposo)|ellos)(?: por favor)?$/.test(t);

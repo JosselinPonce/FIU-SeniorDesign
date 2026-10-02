@@ -231,7 +231,7 @@ export class SafetyController {
       this.set({ demo: null });
       return null;
     }
-    const result = await this.runCheck(emergency, true);
+    const result = await this.runCheck(emergency, 'demo');
     this.set({ demo: null });
     return result;
   }
@@ -328,10 +328,10 @@ export class SafetyController {
       id: 'rehearsal', kind: 'bpm_high', level: 'warning', stage: 'emergency', startedAt: Date.now(),
       value: 0, threshold: 0, confirmedAt: Date.now(), outcome: null, resolvedAt: null,
     };
-    return this.runCheck(ep, true);
+    return this.runCheck(ep, 'rehearsal');
   }
 
-  private async runCheck(ep: Episode, rehearsal = false): Promise<CheckResult> {
+  private async runCheck(ep: Episode, mode: 'live' | 'rehearsal' | 'demo' = 'live'): Promise<CheckResult> {
     if (ep.kind === 'no_contact' || this.checking) return { outcome: 'ok', urgent: false, channel: 'none', attempts: 0, confidence: null, contactCall: 'not_requested' };
     this.checking = true;
     // Capture ownership and contact before any asynchronous dialogue or persistence.
@@ -371,24 +371,28 @@ export class SafetyController {
     this.voice = null;
     this.deps.releaseAudio?.();
     try {
-      if (rehearsal) {
+      if (mode === 'demo') {
         if (current()) this.set({ check: null });
         return result;
       }
       if (!current()) {
         // Save a known wellness answer to its original incident only. Do not learn,
         // publish stale UI state, or hand off after session/profile cancellation.
-        if (result.outcome !== 'no_response') {
+        if (mode === 'live' && result.outcome !== 'no_response') {
           const done = engine?.resolve(result.outcome, Date.now(), ep.id)
             ?? { ...ep, stage: 'resolved' as const, outcome: result.outcome, resolvedAt: Date.now() };
           await this.persist(done, undefined, { ...result, contactCall: 'cancelled' }, sessionId);
         }
         return result;
       }
-      const done = engine?.resolve(result.outcome, Date.now(), ep.id) ?? { ...ep, stage: 'resolved' as const, outcome: result.outcome, resolvedAt: Date.now() };
-      if (result.outcome === 'ok') await this.learnFromOk(done);
-      if (result.outcome !== 'ok') this.deps.haptic('error');
-      await this.persist(done, undefined, result, sessionId);
+      // Rehearsals may hand off with consent, but never resolve live episodes, save, or learn.
+      const done = (mode === 'live' ? engine?.resolve(result.outcome, Date.now(), ep.id) : null)
+        ?? { ...ep, stage: 'resolved' as const, outcome: result.outcome, resolvedAt: Date.now() };
+      if (mode === 'live') {
+        if (result.outcome === 'ok') await this.learnFromOk(done);
+        if (result.outcome !== 'ok') this.deps.haptic('error');
+        await this.persist(done, undefined, result, sessionId);
+      }
       if (!current()) return result;
       const last = { episode: done, result, at: new Date() };
       this.set({ check: null, last });
@@ -396,7 +400,7 @@ export class SafetyController {
       if (result.contactCall === 'contact_unavailable') handoff = contact.error ?? 'missing_contact';
       if (result.contactCall === 'explicit_request' || result.contactCall === 'accepted_offer') {
         // onChange may synchronously end the drive. Recheck immediately before the platform action.
-        if (!current() || !sessionId) handoff = 'cancelled';
+        if (!current() || !profileId || (mode === 'live' && !sessionId)) handoff = 'cancelled';
         else if (!contact.phone) handoff = contact.error ?? 'missing_contact';
         else {
           try {

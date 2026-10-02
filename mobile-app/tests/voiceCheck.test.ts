@@ -72,7 +72,7 @@ test('a button press wins immediately, even mid-listen', async () => {
 
 
 test('explicit contact request skips the call offer and preserves not_ok', async () => {
-  const f = fake(['call my mom']);
+  const f = fake(["No, I'm feeling dizzy, please call my mom"]);
   const result = await new VoiceCheck(f.io, 'en', '', { contactAvailable: true }).run('bpm_high');
   assert.equal(result.outcome, 'not_ok');
   assert.equal(result.contactCall, 'explicit_request');

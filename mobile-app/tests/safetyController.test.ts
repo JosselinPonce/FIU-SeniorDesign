@@ -47,21 +47,24 @@ function callController(answers: (string | null)[], phone: string | null = '+1 (
   const saved: { id: string; kind: string; response: string | null; session_id: string }[] = [];
   const dialed: string[] = [];
   const states: SafetyState[] = [];
+  const said: string[] = [];
+  let onState = (_state: SafetyState) => {};
   let onListen = () => {};
   let onSave = async () => {};
   let nextId = 0;
   let second = 0;
   const c = new SafetyController({
-    voiceIO: () => ({ speak: async () => {}, listen: async () => { onListen(); return answers.shift() ?? null; }, cancel: () => {} }),
+    voiceIO: () => ({ speak: async text => { said.push(text); }, listen: async () => { onListen(); return answers.shift() ?? null; }, cancel: () => {} }),
     save: async row => { saved.push(row); if (row.response) await onSave(); },
     saveAck: async () => {}, haptic: () => {},
     handoffContact: async number => {
-      assert.equal(saved.at(-1)?.response, 'not_ok', 'incident saved before platform handoff');
+      if (states.at(-1)?.last?.episode.id !== 'rehearsal')
+        assert.equal(saved.at(-1)?.response, 'not_ok', 'incident saved before platform handoff');
       assert.equal(states.at(-1)?.check, null, 'dialogue closed before platform handoff');
       if (openFails) throw new Error('No phone handler');
       dialed.push(number);
     },
-    onChange: state => { states.push(state); }, newId: () => `episode-${++nextId}`,
+    onChange: state => { states.push(state); onState(state); }, newId: () => `episode-${++nextId}`,
   });
   c.configure({ ...profile, emergency_phone: phone, emergency_name: 'Mom' }, null);
   c.startSession('session-1');
@@ -74,7 +77,8 @@ function callController(answers: (string | null)[], phone: string | null = '+1 (
     assert.ok(states.at(-1)?.check, 'real engine triggered dialogue');
   };
   const settle = async () => { for (let n = 0; n < 10; n++) await new Promise<void>(r => setImmediate(r)); };
-  return { c, saved, dialed, states, trigger, settle,
+  return { c, saved, dialed, states, trigger, settle, said,
+    onState: (fn: (state: SafetyState) => void) => { onState = fn; },
     onListen: (fn: () => void) => { onListen = fn; }, onSave: (fn: () => Promise<void>) => { onSave = fn; } };
 }
 
@@ -96,10 +100,71 @@ test('declined, negated, 911 and unanswered requests do not dial', async () => {
   }
 });
 
-test('rehearsal never opens the phone interface', async () => {
+test('Try the voice check opens the saved contact for direct requests and accepted offers without a drive', async () => {
+  for (const direct of [true, false]) {
+    const f = callController(direct ? ["No, I'm feeling dizzy, please call my mom"] : ['not okay', 'yes']);
+    f.c.endSession();
+    assert.equal((await f.c.rehearse()).contactCall, direct ? 'explicit_request' : 'accepted_offer');
+    assert.deepEqual(f.dialed, ['+13055550123']);
+    assert.equal(f.states.at(-1)?.last?.handoff, 'opened');
+    assert.equal(f.said.filter(text => text.includes('Would you like')).length, direct ? 0 : 1);
+    assert.deepEqual(f.saved, []);
+  }
+});
+
+test('rehearsal preserves cancellation, profile and session protections at either question', async () => {
+  for (const offered of [false, true]) for (const change of ['cancel', 'profile', 'end', 'start']) {
+    const f = callController(offered ? ['not okay', 'yes'] : ['call my mom']);
+    f.c.endSession();
+    let listens = 0;
+    f.onListen(() => {
+      if (++listens !== (offered ? 2 : 1)) return;
+      if (change === 'cancel') f.c.cancelCheck();
+      if (change === 'profile') f.c.configure({ ...profile, id: 'other', emergency_phone: '2125550123' }, null);
+      if (change === 'end') f.c.endSession();
+      if (change === 'start') f.c.startSession('new-session');
+    });
+    await f.c.rehearse();
+    assert.deepEqual(f.dialed, [], change);
+    assert.deepEqual(f.saved, []);
+  }
+});
+
+test('rehearsal rechecks cancellation immediately before platform handoff', async () => {
   const f = callController(['call my mom']);
-  assert.equal((await f.c.rehearse()).contactCall, 'explicit_request');
+  f.c.endSession();
+  f.onState(state => {
+    if (state.last?.episode.id === 'rehearsal' && !state.last.handoff) {
+      f.onState(() => {});
+      f.c.cancelCheck();
+    }
+  });
+  await f.c.rehearse();
   assert.deepEqual(f.dialed, []);
+});
+
+test('rehearsal retains refusal, silence, 911 and contact validation protections', async () => {
+  for (const answers of [['call 911', 'yes'], ['not okay', 'call 911', 'yes'], ['not okay', 'no'], ['not okay', null, null]]) {
+    const f = callController(answers);
+    f.c.endSession();
+    await f.c.rehearse();
+    f.c.answer('call_yes');
+    assert.deepEqual(f.dialed, []);
+    assert.deepEqual(f.saved, []);
+  }
+  for (const phone of [null, '911', 'invalid']) {
+    const f = callController(['call my mom'], phone);
+    await f.c.rehearse();
+    assert.deepEqual(f.dialed, []);
+    assert.equal(f.states.at(-1)?.last?.handoff, phone ? 'invalid_phone' : 'missing_contact');
+  }
+});
+
+test('rehearsal reports native handoff failure without recording an incident', async () => {
+  const f = callController(['call my mom'], '3055550123', true);
+  f.c.endSession();
+  await f.c.rehearse();
+  assert.equal(f.states.at(-1)?.last?.handoff, 'open_failed');
   assert.deepEqual(f.saved, []);
 });
 

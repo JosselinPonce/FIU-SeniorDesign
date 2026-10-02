@@ -159,7 +159,17 @@ export function SettingsView(props: {
             );
           }}
         />
+        <Text style={st.note}>This test can open your saved contact's phone interface if you request or agree to it. iOS still requires you to complete the call.</Text>
         {rehearsal ? <Text style={st.note}>{rehearsal}</Text> : null}
+        {rehearsal && sf.last?.episode.id === 'rehearsal' && sf.last.handoff ? (
+          <Text style={st.note}>{
+            sf.last.handoff === 'opened' ? 'Phone interface opened. Call connection is not confirmed.'
+            : sf.last.handoff === 'missing_contact' ? 'No emergency contact number is saved.'
+            : sf.last.handoff === 'invalid_phone' ? 'The saved emergency contact number is invalid.'
+            : sf.last.handoff === 'open_failed' ? 'Could not open the phone interface.'
+            : 'Phone handoff was cancelled.'
+          }</Text>
+        ) : null}
         <Text style={st.note}>
           Speech is handled by the phone itself (no paid services). The check speaks at full volume through the speaker or your
           car's Bluetooth, even on silent; turn the phone's volume up. For the most natural voice, download a free Premium or
@@ -308,7 +318,7 @@ export function SettingsView(props: {
           }
         />
       </Card>
-      <Text style={st.disclaimer}>Prototype — not a medical device. Alerts use prototype thresholds. Real checks can open the saved contact's phone interface with your agreement; demos and rehearsals never do.</Text>
+      <Text style={st.disclaimer}>Prototype — not a medical device. Alerts use prototype thresholds. Real checks and Try the voice check can open the saved contact's phone interface with your agreement. Simulated vitals demos never do.</Text>
     </ScrollView>
   );
 }

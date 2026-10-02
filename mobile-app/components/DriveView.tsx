@@ -274,7 +274,7 @@ export function VoiceCheckModal(props: { drive: Drive }) {
             </View>
             <Text style={st.alertHint}>
               You can answer out loud or tap below. The phone interface opens only after a call request or agreement.
-              Rehearsals and demos never open it. If you need emergency help, pull over safely and call 911.
+              Simulated vitals demos never open it. If you need emergency help, pull over safely and call 911.
             </Text>
             <Btn title={offer ? "Open phone interface" : "I'm OK"} onPress={() => d.respondAlert(offer ? 'call_yes' : 'ok')} />
             <Pressable onPress={() => d.respondAlert(offer ? 'call_no' : 'not_ok')} style={st.unwell} accessibilityRole="button">
