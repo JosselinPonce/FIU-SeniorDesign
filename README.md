@@ -1,14 +1,36 @@
 # FIU-SeniorDesign — Biometric Steering Wheel (Team 18)
 
+> **Branch: `samantha/multi-ppg`.** The multi-PPG documentation below describes this branch only. Luis’s original guide is retained as the ecosystem reference.
+
 A steering wheel that watches the driver's heart rate and blood oxygen. It
 learns what is normal for each driver, and checks in by voice when something
 stays unusual. **Student prototype — not a medical device.**
 
 ```
-MAX30102 --I2C--> ESP32 --BLE--> Raspberry Pi 5 --BLE--> iPhone app --cellular--> Supabase --> website
+4 MAX30102 --MUX/I2C--> ESP32 --BLE--> Raspberry Pi 5 --BLE--> iPhone app --cellular--> Supabase --> website
 100 Hz PPG         472-byte        logs + relays          stores, flags,       database,        live dashboard
                    packet/s        verbatim               voice check          storage
 ```
+
+## Multi-PPG implementation
+
+The ESP32 now selects one of four PPG modules through a TCA9548A MUX and
+retains the existing single-source packet format. Firmware starts automatically
+when powered; development and flashing use Luis's terminal workflow.
+
+- **[Multi-PPG technical guide (PDF)](docs/Team18_Multi_PPG_Implementation_Guide.pdf)**
+- [Editable guide](docs/MULTI_PPG_IMPLEMENTATION_GUIDE.md)
+- [ESP32 README and terminal commands](system/esp32/README.md)
+
+The guide explains every implementation file, the distinction between raw
+samples and result frames, the observed delay before accepted readings, and
+why `-999?` changed to `--` only in USB diagnostics. The earlier multi-PPG
+notes are consolidated into this edition. Luis's original ecosystem guide
+remains available below.
+
+**Current verification boundary:** four-channel selection and contact switching
+were exercised. Some accepted vitals remain inconsistent; measurement accuracy
+and live ESP32 → Pi → phone delivery have not been verified in this extension.
 
 ## Start here
 
@@ -35,7 +57,7 @@ MAX30102 --I2C--> ESP32 --BLE--> Raspberry Pi 5 --BLE--> iPhone app --cellular--
 
 ```
 cd mobile-app && npm ci && npm test            # 53 app tests (protocol vs firmware, codec, flags, voice, learning)
-cd system && python3 -m unittest discover -s tests   # 20 protocol/firmware tests
+cd system && python3 -m unittest discover -s tests   # 21 protocol/firmware tests
 system/esp32/flash_esp32.sh /dev/ttyUSB0       # flash the ESP32 (needs arduino-cli; see the guide)
 cd website && npm ci && npm run dev            # dashboard (needs website/.env)
 cd mobile-app && npm run tune                  # team tuning report from Supabase

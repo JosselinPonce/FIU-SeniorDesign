@@ -3,7 +3,9 @@
 Team 18 · FIU Senior Design\
 Prepared October 4, 2026 · Branch `samantha/multi-ppg`\
 Firmware implementation snapshot: `49918f10384f903df1c0768757f4bf7168f55ddc`\
-Current workflow revision: editor-specific tasks removed; use Luis's terminal commands.
+Documentation edition: consolidated technical guide · Navy edition · October 4, 2026.
+
+**Branch scope: `samantha/multi-ppg` only.** This is the current guide for this branch. It replaces the earlier multi-PPG edition; it does not redefine the implementation on `LuisFullSystem`, `main`, or other branches.
 
 This guide documents the ESP32 extension from one PPG sensor to four selectable PPG sensors. It explains every file in the implementation commit, what changed, how to run it on Fedora, and what the tests do and do not establish. It accompanies Luis's **Team18_System_Guide.pdf** and its repository source, `docs/SYSTEM_GUIDE.md`.
 
@@ -32,6 +34,50 @@ The diagram describes the intended data path, not proof that every link was test
 Git ancestry was checked: Luis's team-repository commit `f2c6b3c` is the parent of Samantha's `e01b611` (“Add multi-PPG sensor failover”). Samantha's change touched only `system/esp32/ppg_transmitter/ppg_transmitter.ino`. Our subsequent commit `49918f1` adds the selection refinements, diagnostics, supporting tools, tests, and notes described here.
 
 The Pi, mobile app, website, shared protocol files, `ppg_frame.h`, and `ppg_vitals.h` were compared with `origin/LuisFullSystem` and remained unchanged at this snapshot. Luis's estimator was retained; we did not replace it with the Maxim comparison algorithm.
+
+### Repository map: what runs where
+
+The folders separate deployment targets. They are not all flashed onto the ESP32. The following map covers the ecosystem folders and the files directly involved in acquisition, transport, tests, and documentation. Luis's original guide provides the full mobile/database implementation reference.
+
+| Folder | Responsibility | Runs on / deployment |
+|---|---|---|
+| `system/esp32/` | Acquisition, MUX selection, packet production and host upload tools | Sketch/headers compile to ESP32 firmware; scripts run on a development computer |
+| `system/common/` | Master Python packet decoder and Bluetooth link helpers | Shared source; copied into Pi and laptop packages |
+| `system/pi/` | Receive ESP32 BLE packets, validate/log them, and relay to phone | Raspberry Pi, using the existing service installer |
+| `system/laptop/` | Optional graphical waveform/viewer and direct BLE bench connection | Development/bench computer; not required in the vehicle |
+| `system/tests/` | Protocol, estimator and simulated MUX regression checks | Development computer or CI |
+| `mobile-app/` | Phone UI, BLE client, drive storage, analysis, voice interaction and sync | Phone build; development/build tools run elsewhere |
+| `mobile-app/supabase/` | Database schema, migrations and application scripts | SQL applied to the configured Supabase project |
+| `website/` | Web dashboard consuming stored/live cloud data | Web hosting and a browser |
+| `docs/` | Human-readable system and multi-PPG guides, hardware documents | Documentation, not runtime code |
+| `.github/workflows/` | Repository automation, including Luis's iOS build workflow | GitHub Actions when configured/triggered |
+
+### ESP32 and transport file reference
+
+| File | Detailed role |
+|---|---|
+| `system/esp32/ppg_transmitter/ppg_transmitter.ino` | Owns initialization, sensor state, buffering, estimator calls and BLE notifications |
+| `system/esp32/ppg_transmitter/ppg_vitals.h` | Pure C++ pulse estimator: baseline removal, normalized autocorrelation, rate selection and red/IR ratio calculation; retained from Luis |
+| `system/esp32/ppg_transmitter/ppg_frame.h` | Packs fields and paired 18-bit samples into the fixed protocol layout and appends CRC; retained from Luis |
+| `system/esp32/flash_esp32.sh` | Host-side compile/upload wrapper using Arduino CLI and 40 MHz DIO settings; not executed on the microcontroller |
+| `system/esp32/decode_serial_capture.py` | Offline diagnostic packet-to-CSV converter; no sensor-control responsibility |
+| `system/esp32/README.md` | Current terminal quick-start and link to this guide |
+| `system/common/ppg_protocol.py` | Python frame decoder, CRC checks, reassembly and shared packet constants |
+| `system/common/bluez_links.py` | Linux BlueZ connection-management helpers |
+| `system/pi/ppg_relay.py` | Scans/connects to ESP32, subscribes to notifications, reassembles packets and serves the phone-side relay |
+| `system/pi/ppg_monitor.py` and `ppg-monitor` | Pi status display and launcher; separate from the relay's transport logic |
+| `system/pi/setup_pi.sh` | Installs/configures the existing Pi environment and boot service |
+| `system/pi/wheels/` | Bundled Python dependencies for the documented Pi installation; not firmware |
+| `system/pi/ppg_protocol.py` and `bluez_links.py` | Deployment copies of the shared Python modules; tests check consistency |
+| `system/laptop/ppg_viewer.py` and `run_viewer.sh` | Optional desktop viewer and launcher; their shared-module copies follow the same consistency rule |
+| `system/tests/test_protocol.py` | Python protocol/reassembly checks and host C++ checks, including decoder/encoder compatibility |
+| `system/tests/test_frame_host.cpp` | Exercises C++ packet encoding on the computer so the Python decoder can verify it |
+
+### Phone, database and web responsibilities
+
+Within `mobile-app/`, `components/` presents the interface; `lib/ble/` handles phone BLE and protocol interpretation; `lib/hooks/useDriveSession.ts` connects received frames to the drive workflow; `lib/db/` handles local records and synchronization; `lib/archive/` manages raw-data archives; `lib/analysis/` contains the existing baseline/flag logic; and `lib/voice/` implements voice-check behavior. These are inherited components, not rewritten for four PPGs.
+
+`mobile-app/supabase/apply_all.sql` assembles Luis's migrations. `revert_all.sql` and `legacy_samantha.sql` have separate, documented purposes and should not be run merely to enable the MUX. No database migration was needed for this source-selection change. The website consumes the existing cloud representation; it receives no new four-channel packet structure.
 
 ## 2. Hardware and the meaning of “one sensor”
 
@@ -84,15 +130,13 @@ With no contact, each rejected probe is shut down; all modules sleep during the 
 
 A brief below-threshold interruption also clears estimator history, even if it is too short to trigger channel switching. FIFO timeouts discard partial frames. Detected overflows discard the current frame and rebuild history. Failed shutdown verification stops the search before another sensor is awakened. A physically stuck bus may still require hardware intervention.
 
-## 4. Every file in commit 49918f1
+## 4. Current implementation files and their responsibilities
 
-That commit modified two existing files and added six files. The editor-specific task file has since been removed from the working tree. Section 4.1 records that removal; the other seven files remain. The following sections distinguish firmware, host tools, tests, and documentation.
+The files below describe the current branch. Firmware changes originate in commit `49918f1`; subsequent workflow and documentation changes are incorporated into this edition.
 
-### 4.1 `.vscode/tasks.json` — removed; terminal workflow retained
+### 4.1 `system/esp32/flash_esp32.sh` — terminal compile and upload
 
-Commit `49918f1` originally added three optional editor shortcuts for uploading firmware, opening the serial monitor, and following a captured log. At the user's request, this file has now been removed so the shared workflow is editor-independent.
-
-The shortcuts only wrapped commands; they contained no sensor algorithm or deployment logic. Their removal does not change firmware or require another upload. The actual flashing implementation remains Luis's unchanged `system/esp32/flash_esp32.sh`.
+Luis's unchanged shell script is the shared upload entry point. It locates Arduino CLI, accepts a serial port or detects one, checks access, compiles for the classic ESP32 with 40 MHz DIO flash settings, and uploads the firmware. No editor-specific task file is included or required.
 
 Run these from the repository root in any terminal, with Arduino CLI installed and serial access configured:
 
@@ -183,17 +227,15 @@ python3 system/esp32/decode_serial_capture.py capture.log > samples.csv
 
 A normal serial log has no RAW records and yields only the CSV header. Raw capture must be enabled in the firmware build first. This tool decodes samples; it does not independently determine clinical accuracy.
 
-### 4.7 `system/esp32/MULTI_PPG.md` — new implementation notes
+### 4.7 `system/esp32/README.md` — current quick-start
 
-This is the concise technical reference: branch ancestry, MUX wiring, selection policy, warm-up, packet compatibility, Fedora commands, and the progression of bench observations. Early dated subsections describe what was known then; later subsections record the subsequent finger and waveform tests.
+This file links to the current PDF and editable guide, explains the firmware folder, and provides terminal commands for flashing, monitoring, logging, and testing. It distinguishes standalone operation from optional development tools and states the remaining validation limits.
 
-It documents the distinction between contact and pulse quality, the meaning of `--` versus wire-format `-999`, and diagnostic capture usage. Paths under `/tmp` are local session artifacts, not permanent repository assets; they may disappear after a reboot.
+### 4.8 Guide source, PDF, and builder — maintained documentation
 
-### 4.8 `system/esp32/BENCH_REVIEW.md` — new review of a recorded run
+`docs/MULTI_PPG_IMPLEMENTATION_GUIDE.md` is the editable technical source. `docs/Team18_Multi_PPG_Implementation_Guide.pdf` is its navy-styled rendered edition. `docs/tools/build_multi_ppg_guide.py` produces the PDF, including its cover, linked contents, tables and page numbers. The builder runs only on a development computer; it has no role in acquisition or transport.
 
-This report analyzes one specific 148-frame run. It records accepted/rejected output by sensor, the PPG1 40 → 77 BPM jump, PPG2 instability, and the more consistent PPG4 intervals. “Latest” in that file means the run reviewed when the report was written, not a live-updating result.
-
-It explicitly separates algorithm acceptance from accuracy and proposes reference-comparison tests. It does not contain a firmware fix for the observed rate jumps or certify the measurements.
+The previous separate implementation and bench notes have been removed after their findings were consolidated here. The root `README.md` links to this branch's current guide and quick-start. Local `/tmp` captures are temporary artifacts, not permanent repository documentation.
 
 ## 5. What the Pi receives and what it does not
 
@@ -274,6 +316,62 @@ Ctrl+C stops the terminal process, not the firmware. `/tmp` logs are temporary. 
 | `ovf=` | Reported FIFO overflow counter |
 | `win=` | Time spent collecting this frame; not alone a precise sensor-clock measurement |
 
+### Why the display changed from `-999?` to `--`
+
+The original serial line used a numeric sentinel plus a validity suffix. For example, `bpm=-999? spo2=-999?` means neither result was accepted. `-999` is the software's missing-result marker, not a measured negative heart rate. The question mark was added by the serial formatting expression when its validity flag was false.
+
+The current serial formatter produces `bpm=-- spo2=--` and a reason. The actual code prints **two dashes**, not three; “---” in conversation refers to this unavailable-value display. The new strings are created only after the numeric packet is constructed and sent. Neither the original `heartRate`/`spo2` initialization nor the wire-format invalid values were replaced by text.
+
+| Stage | Before | Current behavior |
+|---|---|---|
+| Estimator cannot accept a result | Invalid flag; no accepted estimate | Same acceptance logic |
+| Numeric packet field | `-999` | `-999` |
+| Packet validity flags | Clear for the invalid estimate | Same flags |
+| USB screen | `-999?` | `--` with explicit reason |
+| Pi/phone parsing | Existing binary decoder | Same binary decoder |
+
+This is a presentation change, not an accuracy correction or a substitute for a missing measurement. An accepted result can still be wrong, as the bench review demonstrates. No last-known value is substituted to conceal a rejected window.
+
+### “Nine readings, then a result on the tenth”: observed delay versus code
+
+The user observed repeated unavailable readings before a value appeared around the tenth reading. That observation belongs in the troubleshooting record. **The inspected Luis, Samantha and current sketches do not contain a rule that waits for exactly ten serial readings before calculating.** A result near that point can reflect sufficient history plus the first window that passes quality checks; the exact cause of an unrecorded interval cannot be reconstructed from the observation alone.
+
+“Reading” can mean three different things:
+
+| Unit | Configured quantity | Meaning |
+|---|---|---|
+| Raw sample pair | 100 per nominal second | One paired red/IR optical measurement; not one computed heartbeat |
+| Estimator sample | 25 per nominal second | Average of four raw pairs |
+| Completed frame/status line | About one per nominal second during acquisition | A packet containing 100 raw pairs and a vitals estimate or invalid markers |
+
+Nine raw pairs represent roughly 90 ms, which is not enough for this estimator's pulse window. Nine completed frames represent roughly nine seconds of samples. Scanning, contact loss, and processing affect wall-clock timing, so these units must not be confused.
+
+The source history shows three stages:
+
+1. **Luis's single-sensor firmware:** `setup()` primes 100 estimator samples at 25 Hz, approximately four seconds, before entering the streaming loop. That is a four-second buffer, not a ten-frame counter.
+2. **Samantha's original four-sensor firmware:** streams frames while accumulating fresh history; estimation waits until `histFilled >= kAlgoLen`, with `kAlgoLen = 100`. Early frames can contain raw data and invalid vitals.
+3. **Current firmware:** the transmitted estimator is attempted at `kVitalsMinSamples = 75`, approximately three seconds. The Maxim comparison still needs 100 samples. These two calculations therefore can become available at different times.
+
+For uninterrupted contact, the current sequence is:
+
+```text
+First completed frame   25 history samples   WARMUP; vitals unavailable
+Second completed frame  50 history samples   WARMUP; vitals unavailable
+Third completed frame   75 history samples   First estimate ATTEMPT
+Later frames           100 ... 200 samples   Re-estimate; history grows to 8 s
+After 200 samples       Rolling 8 s history  Discard oldest as new data arrives
+```
+
+After the third frame, a poor waveform can still produce `NO_ACCEPTED_PULSE` for the fourth, ninth, tenth, or later frame. The calculation is being attempted; it is not necessarily being skipped. A contact interruption clears history and restarts warm-up. The frame counter continues across switches, so `#9` means the tenth completed frame since boot, not necessarily the tenth frame of the present finger placement.
+
+In the recorded initial test, frame `#9` happened to contain an accepted estimate, but frame `#3` had already contained one and frame `#10` differed substantially. That recording does not support an “only calculate on the tenth reading” rule. In a subsequent clean capture, two warm-up frames were followed by 38 consecutive accepted frames. Neither example establishes measurement accuracy.
+
+### What the estimator actually checks
+
+`ppg_vitals.h` removes a local baseline and lightly smooths the IR waveform, then searches plausible beat periods by normalized autocorrelation. It selects a qualifying local peak with periodicity at least 0.5 and a resulting rate within the configured 30–220 BPM range. SpO2 depends on an accepted pulse and an admissible red/IR AC-to-DC ratio lookup. Strong DC light return can establish contact while these pulse checks still fail.
+
+The quality gate explains why optical contact and a visible LED do not guarantee a number. Its limitations also matter: an incorrect period can pass the gate. The code does not compare against a reference instrument and does not certify a reading merely by printing `OK`.
+
 For optional waveform capture, close the monitor, then build and upload a separate diagnostic build:
 
 ```bash
@@ -322,7 +420,25 @@ Hardware serial output showed all four channels responding, real contact selecti
 
 No synchronized reference was recorded. Therefore no BPM error or SpO2 accuracy can honestly be calculated for those runs. No live Pi or phone receipt was verified; logs showed `link=down`.
 
-For the next bench assessment, record an independent reference at matching times, assess each module separately, repeat placements, and retain invalid/missing results. Report average absolute BPM error, largest errors, and valid-output coverage. Reference-device averaging and our 3–8 second window affect timing comparisons. The detailed proposal is in `system/esp32/BENCH_REVIEW.md`; its suggested engineering targets are not medical certification criteria.
+For the next bench assessment, record an independent reference at matching times, assess each module separately, repeat placements, and retain invalid/missing results. Report average absolute BPM error, largest errors, and valid-output coverage. Reference-device averaging and our 3–8 second window affect timing comparisons. Use the repeatable comparison procedure below; its suggested engineering targets are not medical certification criteria.
+
+### Preserved observations from the superseded notes
+
+An initial 84-frame test selected PPG4, then PPG2, then PPG1, preserving frame numbering across the switches. PPG4 produced 12 tracking frames out of 60; PPG2 produced 3 out of 20; PPG1's four-frame contact never reached tracking. This demonstrated selection and also exposed poor measurement availability.
+
+A later diagnostic capture mirrored CRC-protected packets over USB and replayed their paired samples through the unchanged C++ estimator. One 20-frame placement yielded no accepted estimates. A steadier PPG4 placement yielded two warm-up frames, 38 consecutive accepted estimates at 78–83 BPM, and an invalid frame during removal. No ADC clipping was seen in those inspected windows. Motion, pressure and placement are possible contributors; the recording does not isolate them experimentally.
+
+The separate 148-frame review recorded PPG2 values of 41 BPM / 88% SpO2 after interrupted contact and PPG1's 40 → 77 BPM transition. These are device outputs, not independently validated physiological events. There was no synchronized reference measurement, and no firmware change was made merely to smooth those values.
+
+### Repeatable comparison procedure
+
+1. Record each PPG separately for 60–120 seconds with a simultaneous independent reference. Repeat each placement three times.
+2. Preserve startup, rejected frames and interruptions in the record. Evaluate stationary operation first; assess controlled movement separately.
+3. Align the time intervals and account for the reference's display averaging and the ESP32's 3–8 second estimation window.
+4. Report mean absolute BPM error, signed bias, largest differences and valid-output coverage per module. Report SpO2 differences in percentage points.
+5. Define pass/fail criteria before the comparison. A proposed team bench target is 95% of matched accepted BPM estimates within ±5 BPM, with at least 90% valid coverage after a declared warm-up. These are provisional engineering goals, not demonstrated results or medical certification limits.
+
+Agreement with another oximeter is only an agreement check; a stable displayed number alone is not evidence of accuracy. No reference-based error metric can be calculated retrospectively from our serial log alone.
 
 ## 10. Commit history and the next ecosystem phase
 
@@ -351,7 +467,7 @@ Do not change the Pi protocol to represent four sources: this design still sends
 
 ## 11. Source map and document maintenance
 
-Primary project sources are Luis's supplied `Team18_System_Guide.pdf`, `docs/SYSTEM_GUIDE.md`, commits `f2c6b3c`, `e01b611`, and `49918f1`, and the eight files explained in section 4. The summary of bench observations is drawn from the session's recorded output and the committed notes; it is not an independent reference measurement.
+Primary project sources are Luis's supplied `Team18_System_Guide.pdf`, `docs/SYSTEM_GUIDE.md`, commits `f2c6b3c`, `e01b611`, and `49918f1`, and the current files explained in section 4. The two former multi-PPG notes have been consolidated and removed; their evidence is retained above. The summary of bench observations is drawn from the session's recorded output and the historical committed notes; it is not an independent reference measurement.
 
 The editable source for this guide is `docs/MULTI_PPG_IMPLEMENTATION_GUIDE.md`. The companion PDF is `docs/Team18_Multi_PPG_Implementation_Guide.pdf`. The additional `docs/tools/build_multi_ppg_guide.py` renders this Markdown into the PDF; it is documentation tooling only and is separate from the eight implementation files.
 
