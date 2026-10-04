@@ -47,6 +47,11 @@
 #include "ppg_frame.h"
 #include "ppg_vitals.h"
 
+// Bench-only serial mirror of the existing CRC-protected packet. BLE is unchanged.
+#ifndef PPG_SERIAL_RAW
+#define PPG_SERIAL_RAW 0
+#endif
+
 // ---------------------------------------------------------------- pins ----
 #define SDA_PIN 21
 #define SCL_PIN 22
@@ -84,7 +89,8 @@ static constexpr uint32_t kFingerIrThreshold = 100000;
 static constexpr uint8_t kMuxAddr = 0x70;
 static constexpr uint8_t kSensorCount = 4;
 static constexpr uint16_t kContactLossSamples = kRawRateHz / 2; // 500 ms continuously below threshold
-static constexpr uint32_t kSearchRetryMs = 2000; // minimum time streaming between scans
+static constexpr uint32_t kSearchRetryMs = 250; // short idle pause between bounded scans
+static constexpr int kVitalsMinSamples = 75; // first estimate after 3 s at 25 Hz
 static constexpr uint32_t kWakeSettleMs = 100;
 static constexpr uint8_t kProbeSamples = 20; // 200 ms of fresh IR after settling
 static constexpr uint8_t kProbeContactMin = 16; // at least 80% above threshold
@@ -343,19 +349,8 @@ static bool readRawSample(uint32_t& red, uint32_t& ir) {
   return true;
 }
 
-static bool startActiveSensor(uint8_t channel) {
-  if (!setSensorAwake(channel, true)) return false;
-  delay(kWakeSettleMs); // fewer than 32 samples can accumulate at 100 Hz
-  sensor.clearFIFO();
-  resetSignalState();
-  activeSensor = channel;
-  acquisitionReady = true;
-  return true;
-}
-
-// Bounded, sequential search. Probe samples never enter frames or history.
-// Largest mean IR among sustained-contact candidates wins (not a pulse-quality
-// verdict). Recheck the previous sensor last in case contact has returned.
+// First sustained-contact candidate wins. Once selected, do not scan other
+// channels until contact is lost or acquisition fails. Probe data is discarded.
 static void searchSensors() {
   acquisitionReady = false;
   resetSignalState();
@@ -365,13 +360,11 @@ static void searchSensors() {
     return;
   }
   const uint8_t previous = activeSensor;
-  uint8_t best = previous;
-  uint32_t bestIr = 0;
   for (uint8_t offset = 1; offset <= kSensorCount; ++offset) {
     const uint8_t channel = (previous + offset) % kSensorCount;
     if (!setSensorAwake(channel, true)) {
-      // The wake command may have succeeded even if its readback failed.
-      // Do not wake another channel until shutdown has been verified.
+      // Wake may have succeeded even when readback failed. Never move on
+      // unless this sensor acknowledges shutdown.
       if (!setSensorAwake(channel, false)) return;
       continue;
     }
@@ -389,22 +382,21 @@ static void searchSensors() {
     const uint32_t mean = count ? total / count : 0;
     Serial.printf("PPG%u probe ir=%lu contact=%u/%u\n", channel + 1,
                   static_cast<unsigned long>(mean), good, count);
-    if (!setSensorAwake(channel, false)) return;
-    if (count == kProbeSamples && good >= kProbeContactMin && mean >= kFingerIrThreshold && mean > bestIr) {
-      best = channel;
-      bestIr = mean;
+    if (count == kProbeSamples && good >= kProbeContactMin && mean >= kFingerIrThreshold) {
+      // Other sensors are already asleep; leave this one awake. Clear the
+      // probe samples so a frame/history can only contain fresh data.
+      sensor.clearFIFO();
+      resetSignalState();
+      activeSensor = channel;
+      acquisitionReady = true;
+      lastSearchMs = millis();
+      Serial.printf("PPG%u active; others asleep; collecting 3 s of clean history\n", channel + 1);
+      return;
     }
+    if (!setSensorAwake(channel, false)) return;
   }
-  if (bestIr == 0) {
-    // Every probe has verified shutdown; remain idle until the next search.
-    lastSearchMs = millis();
-    Serial.println("No PPG contact; all sensors asleep, retry later");
-    return;
-  }
-  if (!startActiveSensor(best)) return;
   lastSearchMs = millis();
-  Serial.printf("PPG%u active (was PPG%u), %s; rebuilding history\n",
-                best + 1, previous + 1, "contact found");
+  Serial.println("No PPG contact; all sensors asleep, retrying");
 }
 
 // I2C bus clear (NXP UM10204 section 3.1.16). If the ESP32 resets in the middle
@@ -562,11 +554,8 @@ void setup() {
   startBle();
   Serial.printf("BLE advertising as %s, requested MTU %u\n", DEVICE_NAME, kRequestedMtu);
 
-  if (!startActiveSensor(0)) Serial.println("PPG1 wake failed; loop will retry a safe search");
-  lastSearchMs = millis() - kSearchRetryMs; // permit the first loss-triggered search
-  // Stream raw frames immediately; vitals stay invalid until 4 s of fresh
-  // history exists. This also lets contact failover work during warm-up.
-  Serial.println("Streaming PPG1; establishing 4 s of history before valid vitals");
+  activeSensor = kSensorCount - 1; // first sequential search starts on PPG1
+  searchSensors();
 }
 
 // ----------------------------------------------------------------- loop ---
@@ -609,6 +598,7 @@ void loop() {
 
   const uint32_t startMs = millis();
   uint64_t irTotal = 0;
+  bool continuousContact = true;
 
   for (int a = 0; a < kAlgoNewPerSecond; ++a) {
     uint64_t rs = 0, is = 0;
@@ -622,6 +612,14 @@ void loop() {
       }
       if (i >= kFingerIrThreshold) noContactSamples = 0;
       else if (noContactSamples < kContactLossSamples) ++noContactSamples;
+      if (i < kFingerIrThreshold) continuousContact = false;
+      if (noContactSamples >= kContactLossSamples) {
+        Serial.printf("PPG%u contact lost; discarding partial frame and searching\n", activeSensor + 1);
+        acquisitionReady = false;
+        resetSignalState();
+        lastSearchMs = millis() - kSearchRetryMs;
+        return;
+      }
       rs += r;
       is += i;
       frameRed[a * kDecimation + k] = r;  // time = startMs + index * 10 ms (sensor clock)
@@ -634,6 +632,21 @@ void loop() {
   }
   const uint32_t endMs = millis();
 
+  // A FIFO overflow makes the timeline discontinuous. Never publish vitals
+  // or raw data from that window as though it were sampled continuously.
+  const uint8_t ovf = sensor.readRegister8(kSensorAddr, kRegFifoOvf);
+  if (ovf) {
+    Serial.printf("PPG%u FIFO overflow=%u; discarding frame and rebuilding history\n", activeSensor + 1, ovf);
+    sensor.clearFIFO();
+    resetSignalState();
+    return;
+  }
+  // A brief contact interruption must not leave old-finger data in the next
+  // estimate, even if it was too short to trigger a channel change.
+  if (!continuousContact) {
+    histFilled = 0;
+    validHeartRate = validSpo2 = 0;
+  }
   if (histFilled >= kAlgoLen) maxim_heart_rate_and_oxygen_saturation(irBuffer, kAlgoLen, redBuffer,
                                          &spo2, &validSpo2, &heartRate, &validHeartRate);
 
@@ -643,7 +656,7 @@ void loop() {
   // Vitals come from ppg::estimate (see ppg_vitals.h for why it replaced
   // Maxim's). Maxim still runs above, but only for comparison on serial.
   ppg::Vitals vit{0, 0, 0, 0, false, false};
-  if (finger && histFilled >= kAlgoLen) {  // need >= 4 s of data
+  if (finger && histFilled >= kVitalsMinSamples) {  // 3 s minimum, grows to 8 s
     vit = ppg::estimate(histRed, histIr, scratchRed, scratchIr, histFilled, kAlgoFs,
                         kBpmMin, kBpmMax, uch_spo2_table, 184);
   }
@@ -670,23 +683,58 @@ void loop() {
 
   const size_t frameLen = ppg::encodeV3(frame, frameBytes);
   sendFrame(frameBytes, frameLen);
+#if PPG_SERIAL_RAW
+  // <100 ms at 115200 baud, below the 320 ms FIFO capacity. One buffered
+  // line avoids per-sample serial blocking. Decode with the existing v3 codec.
+  char rawLine[2 * sizeof(frameBytes) + 1];
+  static const char hex[] = "0123456789abcdef";
+  for (size_t i = 0; i < frameLen; ++i) {
+    rawLine[2*i] = hex[frameBytes[i] >> 4];
+    rawLine[2*i+1] = hex[frameBytes[i] & 15];
+  }
+  rawLine[2*frameLen] = 0;
+  Serial.printf("RAW ppg=%u %s\n", activeSensor + 1, rawLine);
+#endif
 
   // Sequence advances per completed frame, whether or not the Pi is listening.
   // Scanning pauses acquisition; that gap is visible in t0Ms, not fake samples
   // or a sequence reset. Reconnect sequence gaps still count unsent frames.
   ++frameSeq;
 
-  // Samples the sensor had to drop because we fell behind (0 when healthy).
-  const uint8_t ovf = sensor.readRegister8(kSensorAddr, kRegFifoOvf);
-  if (ovf) sensor.writeRegister8(kSensorAddr, kRegFifoOvf, 0);
   const uint16_t crc = frameBytes[frameLen - 2] | (frameBytes[frameLen - 1] << 8);
   // maxim= is the old algorithm's answer, printed for comparison only.
-  Serial.printf("#%lu bpm=%ld%s spo2=%ld%s q=%.2f R=%.3f maxim=%ld/%ld ir=%lu finger=%d win=%lums ovf=%u link=%s mtu=%u len=%u conns=%lu lastdisc=0x%02X crc=%04X\n",
+  const char* state = !continuousContact ? "CONTACT_UNSTABLE" :
+      histFilled < kVitalsMinSamples ? "WARMUP" :
+      !vit.hrValid || !vit.spo2Valid ? "LOW_QUALITY" : "TRACKING";
+  // Explain rejection on USB serial; packet sentinels and flags stay unchanged.
+  // A zero packet quality means no accepted period, not zero optical signal.
+  float bestCorrelation = 0;
+  if (continuousContact && histFilled >= kVitalsMinSamples) {
+    for (int lag = 6; lag <= 50; ++lag) {
+      const float value = ppg::autocorr(scratchIr, histFilled, lag);
+      if (value > bestCorrelation) bestCorrelation = value;
+    }
+  }
+  const char* reason = !continuousContact ? "CONTACT_INTERRUPTED" :
+      histFilled < kVitalsMinSamples ? "COLLECTING_SAMPLES" :
+      !vit.hrValid ? "NO_ACCEPTED_PULSE" :
+      !vit.spo2Valid ? "SPO2_RATIO_REJECTED" : "OK";
+  char bpmText[12], satText[12], maximHrText[12], maximSatText[12];
+  if (vit.hrValid) snprintf(bpmText, sizeof bpmText, "%ld", static_cast<long>(bpm));
+  else strcpy(bpmText, "--");
+  if (vit.spo2Valid) snprintf(satText, sizeof satText, "%ld", static_cast<long>(sat));
+  else strcpy(satText, "--");
+  if (validHeartRate) snprintf(maximHrText, sizeof maximHrText, "%ld", static_cast<long>(heartRate));
+  else strcpy(maximHrText, "--");
+  if (validSpo2) snprintf(maximSatText, sizeof maximSatText, "%ld", static_cast<long>(spo2));
+  else strcpy(maximSatText, "--");
+  Serial.printf("PPG%u state=%s reason=%s history=%.1fs peak=%.2f ",
+                activeSensor + 1, state, reason, histFilled / kAlgoFs, bestCorrelation);
+  Serial.printf("#%lu bpm=%s spo2=%s q=%.2f R=%.3f maxim=%s/%s ir=%lu finger=%d win=%lums ovf=%u link=%s mtu=%u len=%u conns=%lu lastdisc=0x%02X crc=%04X\n",
                 static_cast<unsigned long>(frame.seq),
-                static_cast<long>(bpm), vit.hrValid ? "" : "?",
-                static_cast<long>(sat), vit.spo2Valid ? "" : "?",
+                bpmText, satText,
                 vit.periodicity, vit.ratio,
-                static_cast<long>(validHeartRate ? heartRate : -999), static_cast<long>(validSpo2 ? spo2 : -999),
+                maximHrText, maximSatText,
                 static_cast<unsigned long>(irMean), finger,
                 static_cast<unsigned long>(endMs - startMs), ovf,
                 clientConnected ? "up" : "down",

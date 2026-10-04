@@ -1,0 +1,54 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "ESP32: build and upload",
+      "type": "shell",
+      "command": "bash",
+      "args": [
+        "${workspaceFolder}/system/esp32/flash_esp32.sh",
+        "/dev/ttyUSB0"
+      ],
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated"
+      }
+    },
+    {
+      "label": "ESP32: serial monitor",
+      "type": "process",
+      "command": "${env:HOME}/.local/bin/arduino-cli",
+      "args": [
+        "monitor",
+        "-p",
+        "/dev/ttyUSB0",
+        "-c",
+        "baudrate=115200"
+      ],
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "focus": true
+      }
+    },
+    {
+      "label": "ESP32: view live test log",
+      "type": "process",
+      "command": "tail",
+      "args": [
+        "-n",
+        "40",
+        "-f",
+        "/tmp/team18-esp32-serial.log"
+      ],
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "focus": true
+      }
+    }
+  ]
+}
