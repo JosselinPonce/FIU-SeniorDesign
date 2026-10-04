@@ -53,7 +53,12 @@ Serial additionally shows `PPG1`–`PPG4` and `WARMUP`, `CONTACT_UNSTABLE`,
 `LOW_QUALITY`, or `TRACKING`. The `maxim=` field is a diagnostic comparison,
 not the transmitted estimator. `link=down` means the Pi is not connected.
 
-## Fedora and VS Code
+## Fedora terminal workflow
+
+The optional `.vscode/tasks.json` trial shortcuts have been removed. The
+flash script is unchanged from Luis's version. Once flashed, the ESP32 starts
+automatically when powered; terminal commands are only for updates and
+diagnostics.
 
 Installed for this workstation: `~/.local/bin/arduino-cli` 1.5.1,
 ESP32 core 3.3.12, SparkFun MAX3010x library 1.1.2.
@@ -66,8 +71,8 @@ sudo setfacl -m u:$(id -un):rw /dev/ttyUSB0
 ```
 
 This temporary permission lasts until unplugging. Close serial monitors
-before uploading. VS Code's **Terminal -> Run Task** offers **ESP32: build
-and upload** and **ESP32: serial monitor**. Or use its terminal (Ctrl+`):
+before uploading. Use Luis's existing script and Arduino CLI from the
+repository root in any terminal:
 
 ```bash
 bash system/esp32/flash_esp32.sh /dev/ttyUSB0
@@ -94,8 +99,8 @@ threshold must be checked against the actual four modules and mounting.
   900–1,150 and no false contact. Finger vitals, physical failover, and the
   live Pi/phone connection still require the interactive bench test.
 - During this session the serial log is `/tmp/team18-esp32-serial.log`.
-  While capture runs, use **ESP32: view live test log** or
-  `tail -f /tmp/team18-esp32-serial.log` in the VS Code terminal. Do not open
+  While capture runs, use `tail -f /tmp/team18-esp32-serial.log`
+  in another terminal. Do not open
   a second serial monitor on the same port.
 
 ### First interactive finger test
