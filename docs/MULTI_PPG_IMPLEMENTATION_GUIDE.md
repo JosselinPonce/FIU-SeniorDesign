@@ -1,3 +1,5 @@
+> **Acquisition update — October 4, 2026:** The current firmware now keeps all four PPGs continuously sampling, with independent histories and one outgoing source per complete packet. The sleeping/sequential acquisition sections below describe the earlier implementation. See [the current acquisition guide](../system/esp32/mux_diagnostic/README.md) and [the live handoff verification](bench/CONTINUOUS_PPG_HANDOFF_2026-10-04.md). The existing PDF has not yet been regenerated for this architecture change.
+
 # Biometric Steering Wheel — Multi-PPG Implementation Guide
 
 Team 18 · FIU Senior Design\

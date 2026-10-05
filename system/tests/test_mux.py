@@ -1,4 +1,4 @@
-"""Exercise the actual ESP32 sketch with a simulated bus; no hardware needed."""
+"""Exercise the shared production acquisition engine with independent synthetic PPGs."""
 import pathlib
 import shutil
 import subprocess

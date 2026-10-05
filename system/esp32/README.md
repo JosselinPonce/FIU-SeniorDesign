@@ -3,8 +3,14 @@
 > **Branch: `samantha/multi-ppg`.** The multi-PPG documentation below describes this branch only. Luis’s original guide is retained as the ecosystem reference.
 
 Four MAX30102 modules connect through one TCA9548A MUX. The ESP32 selects
-one module with sustained optical contact, keeps the others asleep, and
-builds Luis's existing single-source protocol-v3 stream for the Raspberry Pi.
+one usable source for Luis's existing protocol-v3 stream for the Raspberry Pi.
+All four modules remain awake and sample continuously. Each has independent
+contact, timing and waveform history, so a qualified backup does not restart
+its estimator when the outgoing source changes.
+
+**Current acquisition behavior supersedes the earlier sleeping-sensor design
+in the implementation PDF.** See [the continuous acquisition guide](mux_diagnostic/README.md)
+for the current dashboard, warm backup selection and packet-boundary handoff.
 
 **Power on starts the flashed firmware automatically.** No editor, laptop,
 terminal, or USB permission command is required during normal operation.
@@ -24,6 +30,8 @@ path, avoiding multiple competing editions.
 | Path | Purpose |
 |---|---|
 | `ppg_transmitter/ppg_transmitter.ino` | Startup, MUX selection, acquisition, history and BLE transmission |
+| `ppg_transmitter/ppg_multi.h` | Per-channel histories, quality, deterministic selection and one-source packets |
+| `ppg_transmitter/sample_clock.h` | Measured estimator time basis for each source |
 | `ppg_transmitter/ppg_vitals.h` | Luis's unchanged pulse/SpO2 estimator |
 | `ppg_transmitter/ppg_frame.h` | Luis's unchanged binary encoder and CRC |
 | `flash_esp32.sh` | Luis's terminal compile/upload script |
@@ -53,16 +61,24 @@ See the guide for temporary access and Luis's persistent udev rule.
 
 ## Interpreting output
 
-- `WARMUP`: accumulating clean history; first estimate attempted after about three seconds.
-- `NO_ACCEPTED_PULSE`: an estimate was attempted but rejected. There is no fixed tenth-reading trigger.
-- `bpm=-- spo2=--`: unavailable USB display. BLE still carries numeric `-999` and original validity flags.
-- `bpm=` / `spo2=`: main estimates; `maxim=` is a separate serial-only comparison.
-- `link=down`: no BLE client connection; Pi receipt is not established.
+The normal transmitter prints one compact line per 100-sample packet.
+Unavailable USB vitals display `--`; BLE preserves `-999` and validity flags.
+`link=down` means Pi receipt is not established.
 
-**Validation status:** selection and contact switching were exercised; 21
-host tests passed. Some accepted rate estimates jumped substantially.
-Measurement accuracy and live ESP32 → Pi → phone delivery remain unverified.
-The MUX selects contact, not the best pulse-quality sensor.
+The dashboard-enabled build uses the same transmitter and BLE implementation,
+with additional USB JSON telemetry. All four sensor counters and histories
+advance continuously. The first usable channel in order 0–3 is selected at a
+complete packet boundary; every packet contains 100 red/IR pairs from exactly
+one source. Initial contact still needs enough samples for a usable estimate,
+but another sensor's history is retained through a handoff. With no usable
+contact, the firmware continues a single raw stream with invalid vital flags;
+it does not invent valid measurements. Acquisition faults can still cause gaps.
+
+Host tests cover warm backup failover, channel priority, packet isolation,
+cadence under simulated contact loss, timing correction, protocol CRC and the
+UI. Live hardware, reference accuracy and Pi/phone delivery must be checked
+separately. Keeping all four awake increases sensor activity and power use
+compared with the old sleep policy.
 
 ## Tests and PDF build
 
