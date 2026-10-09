@@ -15,11 +15,13 @@
  *    uploads whatever that missed (drives recorded offline, failed pushes).
  *    The app stays fully usable with the radio off either way.
  */
+import { syncProfiles } from './profileSync';
 import { getDatabase } from './database';
 import { LiveUploader } from './liveSync';
 import { processPendingDeletes } from './deletion';
 
 export type SyncResult = {
+  profiles: number;
   sessions: number;
   events: number;
   errors: string[];
@@ -43,7 +45,8 @@ export async function syncToSupabase(): Promise<SyncResult> {
      WHERE s.sync_status = 'local' AND s.status != 'active'
      ORDER BY s.started_at`,
   );
-  const result: SyncResult = { sessions: 0, events: 0, errors: [] };
+  const profileResult = await syncProfiles();
+  const result: SyncResult = { ...profileResult, sessions: 0, events: 0 };
   const up = new LiveUploader(() => 'pi_lost');
   for (const s of pending) {
     await up.finish(s.id);
@@ -58,7 +61,7 @@ export async function syncToSupabase(): Promise<SyncResult> {
 }
 
 /** How much is waiting to upload, for a "Sync (N)" button. */
-export async function pendingCount(): Promise<{ sessions: number; events: number }> {
+export async function pendingCount(): Promise<{ profiles: number; sessions: number; events: number }> {
   const db = await getDatabase();
   const s = await db.getFirstAsync<{ c: number }>(
     `SELECT COUNT(*) AS c FROM drive_sessions
@@ -67,5 +70,6 @@ export async function pendingCount(): Promise<{ sessions: number; events: number
   const e = await db.getFirstAsync<{ c: number }>(
     "SELECT COUNT(*) AS c FROM telemetry_events WHERE sync_status = 'local'",
   );
-  return { sessions: s?.c ?? 0, events: e?.c ?? 0 };
+  const p = await db.getFirstAsync<{ c: number }>("SELECT COUNT(*) AS c FROM app_settings q JOIN driver_profiles p ON q.key = 'profile_sync:' || p.id");
+  return { profiles: p?.c ?? 0, sessions: s?.c ?? 0, events: e?.c ?? 0 };
 }

@@ -19,6 +19,7 @@ const SAMPLE: Record<Lang, (name: string) => string> = {
 export function VoicePicker(props: { lang: Lang; driverName: string }) {
   const [voices, setVoices] = useState<VoiceChoice[] | null>(null);
   const [chosen, setChosen] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const [playing, setPlaying] = useState<string | null>(null);
 
   useEffect(() => {
@@ -35,8 +36,10 @@ export function VoicePicker(props: { lang: Lang; driverName: string }) {
     const voice = id ?? voices?.[0]?.id;
     if (voice) {
       setPlaying(voice);
-      await previewVoice(props.lang, voice, SAMPLE[props.lang](props.driverName));
-      setPlaying(null);
+      setError(null);
+      try { await previewVoice(props.lang, voice, SAMPLE[props.lang](props.driverName)); }
+      catch (error) { setError(error instanceof Error ? error.message : String(error)); }
+      finally { setPlaying(null); }
     }
   }
 
@@ -59,6 +62,7 @@ export function VoicePicker(props: { lang: Lang; driverName: string }) {
     <View style={{ gap: 6 }}>
       {row(null, 'Automatic', `Best installed: ${voices[0]!.name} (${voices[0]!.tier})`)}
       {voices.map((v) => row(v.id, v.name, `${v.tier} · ${v.language}`))}
+      {error ? <Text style={{ color: C.bad }}>{error}</Text> : null}
       <Text style={st.note}>Tap a voice to hear it. Your choice is used for this driver's language on this phone.</Text>
     </View>
   );

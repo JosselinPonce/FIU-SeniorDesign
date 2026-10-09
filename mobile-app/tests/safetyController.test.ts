@@ -293,3 +293,116 @@ test('simultaneous HR and oxygen episodes have separate, correctly owned dialogu
   assert.equal(f.saved.find(row => row.id === secondEpisode.id && row.response !== null)?.response, 'ok');
   assert.deepEqual(f.dialed, ['+13055550123'], 'one incident answer must not authorize two handoffs');
 });
+
+function assistantFixture(phone: string | null = '+1 (305) 555-0123', fail = false) {
+  const dialed: string[] = [], saved: unknown[] = [];
+  const c = new SafetyController({ voiceIO: () => ({ speak: async () => {}, listen: async () => null, cancel: () => {} }),
+    handoffContact: async phone => { if (fail) throw new Error('Unavailable'); dialed.push(phone); },
+    save: async row => { saved.push(row); }, saveAck: async () => {}, haptic: () => {}, onChange: () => {}, newId: () => 'unused' });
+  c.configure({ ...profile, emergency_phone: phone }, null);
+  return { c, dialed, saved };
+}
+test('assistant reuses direct and offered consent without recording or learning an incident', async () => {
+  for (const [text, offered] of [["No, I'm feeling dizzy, please call Mom", false], ['yes please', true]] as const) {
+    const f = assistantFixture();
+    assert.equal(await f.c.assistantContact(text, offered, () => true), 'opened');
+    assert.deepEqual(f.dialed, ['+13055550123']); assert.equal(f.saved.length, 0);
+  }
+});
+test('assistant refuses ambiguous, negated, out-of-context and emergency-service consent', async () => {
+  for (const [text, offered] of [['yes', false], ['maybe call Mom', true], ['do not call Mom', true], ['call 911', true], ['no thanks', true]] as const) {
+    const f = assistantFixture();
+    assert.equal(await f.c.assistantContact(text, offered, () => true), 'not_authorized'); assert.equal(f.dialed.length, 0);
+  }
+});
+test('assistant validates contacts and visibly reports handoff failure', async () => {
+  for (const [phone, expected] of [[null, 'missing_contact'], ['911', 'invalid_phone'], ['abc', 'invalid_phone']] as const) {
+    const f = assistantFixture(phone);
+    assert.equal(await f.c.assistantContact('call Mom', false, () => true), expected); assert.equal(f.dialed.length, 0);
+  }
+  assert.equal(await assistantFixture('+13055550123', true).c.assistantContact('call Mom', false, () => true), 'open_failed');
+});
+test('assistant cancellation and profile changes at the final ownership check revoke handoff', async () => {
+  const f = assistantFixture();
+  assert.equal(await f.c.assistantContact('call Mom', false, () => false), 'cancelled');
+  let checks = 0;
+  assert.equal(await f.c.assistantContact('call Mom', false, () => {
+    if (++checks === 2) f.c.configure({ ...profile, id: 'different', emergency_phone: '+12125550123' }, null);
+    return true;
+  }), 'cancelled');
+  assert.equal(f.dialed.length, 0);
+});
+
+test('conversation ownership is captured before async work and revoked by session/profile changes', async () => {
+  for (const change of ['cancel', 'profile', 'session', 'end']) {
+    const f = assistantFixture(); const owner = f.c.assistantOwnership(); assert.equal(owner(), true);
+    if (change === 'cancel') f.c.cancelCheck();
+    if (change === 'profile') f.c.configure({ ...profile, id: 'other' }, null);
+    if (change === 'session') f.c.startSession('new');
+    if (change === 'end') f.c.endSession();
+    assert.equal(owner(), false);
+    assert.equal(await f.c.assistantContact('call Mom', false, owner), 'cancelled'); assert.equal(f.dialed.length, 0);
+  }
+});
+
+test('same-UUID profile edit revokes old assistant consent and refreshes its validated contact', async () => {
+  const f = assistantFixture();
+  const oldOwner = f.c.assistantOwnership();
+  const ack = { high: 115, low: null };
+  f.c.refreshProfile({ ...profile, display_name: 'Updated Driver', updated_at: '2026-10-08', emergency_phone: '+12125550123' }, null, ack);
+  assert.equal(oldOwner(), false);
+  assert.equal(await f.c.assistantContact('yes please', true, oldOwner), 'cancelled');
+  assert.deepEqual(f.dialed, []);
+  assert.equal(await f.c.assistantContact('call my mom', false, f.c.assistantOwnership()), 'opened');
+  assert.deepEqual(f.dialed, ['+12125550123']);
+  assert.deepEqual(f.saved, []);
+});
+
+test('existing safety workflow uses edited contact and revokes an in-flight old contact check', async () => {
+  const f = callController(['call my mom']);
+  f.c.endSession();
+  f.c.refreshProfile({ ...profile, emergency_phone: '+12125550123' }, null, { high: null, low: null });
+  await f.c.rehearse();
+  assert.deepEqual(f.dialed, ['+12125550123']);
+  const stale = callController(['call my mom']);
+  stale.c.endSession();
+  stale.onState(state => {
+    if (state.check?.phase === 'speaking') {
+      stale.onState(() => {});
+      stale.c.refreshProfile({ ...profile, emergency_phone: '+12125550123' }, null, { high: null, low: null });
+    }
+  });
+  await stale.c.rehearse();
+  assert.deepEqual(stale.dialed, []);
+});
+
+test('profile refresh applies existing health calculations and keeps prior acknowledgments', () => {
+  const f = callController([]);
+  f.c.endSession();
+  const ack = { high: 115, low: 48 };
+  f.c.refreshProfile({ ...profile, age: 68, conditions: '["copd","arrhythmia"]', emergency_phone: null }, null, ack);
+  const state = f.states.at(-1)!;
+  assert.deepEqual(state.ack, ack);
+  assert.equal(state.prior?.knownArrhythmia, true);
+  assert.notEqual(state.prior?.spo2Baseline, null);
+  assert.ok(state.prior?.explain.some(x => x.includes('age 68')));
+});
+
+test('SafetyController independently validates the newly supported direct request variants', async () => {
+  for (const text of ['Can you call my mum?', "I'm a little dizzy, can you call my mom for me please?"]) {
+    const f = assistantFixture();
+    assert.equal(await f.c.assistantContact(text, false, f.c.assistantOwnership()), 'opened');
+    assert.deepEqual(f.dialed, ['+13055550123']);
+  }
+  for (const text of ['Do not call my mum', 'Maybe call my mum', 'If I feel dizzy call my mum', '"Call my mum"', 'Call my mum or 911']) {
+    const f = assistantFixture();
+    assert.equal(await f.c.assistantContact(text, false, f.c.assistantOwnership()), 'not_authorized');
+    assert.deepEqual(f.dialed, []);
+  }
+});
+
+test('assistant contact availability exposes only validated status, not the phone number', () => {
+  assert.equal(assistantFixture().c.assistantContactAvailability(), 'available');
+  assert.equal(assistantFixture(null).c.assistantContactAvailability(), 'missing_contact');
+  assert.equal(assistantFixture('911').c.assistantContactAvailability(), 'invalid_phone');
+});

@@ -13,6 +13,7 @@ import { Btn, C, Card, Row, SectionTitle, fmtClock, fmtDuration } from './ui';
 import { VoicePicker } from './VoicePicker';
 import { CalibrationCard } from './CalibrationCard';
 import { ThresholdHistory } from './ThresholdHistory';
+import { ResponsivenessDiagnostics } from './ResponsivenessDiagnostics';
 
 type Drive = ReturnType<typeof useDriveSession>;
 
@@ -37,6 +38,7 @@ export function SettingsView(props: {
   setAutoOn: (v: boolean) => void;
   onWiped: () => Promise<void>;
   onShowIntro: () => void;
+  onEditProfile: () => void;
 }) {
   const d = props.drive;
   const [direct, setDirect] = useState(false);
@@ -57,13 +59,13 @@ export function SettingsView(props: {
     setSyncing(true);
     try {
       const p = await pendingCount();
-      if (p.sessions === 0) {
+      if (p.sessions === 0 && p.profiles === 0) {
         setSyncMsg('Everything is already in the cloud.');
         return;
       }
-      setSyncMsg(`Uploading ${p.sessions} drive(s)…`);
+      setSyncMsg(`Uploading ${p.profiles} profile(s) and ${p.sessions} drive(s)…`);
       const r = await syncToSupabase();
-      setSyncMsg(r.errors.length ? `Couldn't reach the cloud: ${r.errors[0]}` : `Uploaded ${r.sessions} drive(s), ${r.events} readings.`);
+      setSyncMsg(r.errors.length ? `Couldn't reach the cloud: ${r.errors[0]}` : `Uploaded ${r.profiles} profile(s), ${r.sessions} drive(s), ${r.events} readings.`);
     } finally {
       setSyncing(false);
     }
@@ -71,6 +73,14 @@ export function SettingsView(props: {
 
   return (
     <ScrollView contentContainerStyle={st.container}>
+      <Card>
+        <SectionTitle>Driver profile</SectionTitle>
+        <Text style={st.note}>{d.driver?.display_name}</Text>
+        <Text style={st.note}>{d.driver?.emergency_phone ? `Emergency contact: ${d.driver.emergency_name || 'Saved contact'} · ${d.driver.emergency_phone}` : 'No emergency contact configured. Saved-contact phone handoff is unavailable.'}</Text>
+        <Btn title="Edit Driver Profile" onPress={props.onEditProfile} />
+        <Text style={st.note}>Profiles are saved on this phone. Cloud updates retry when online; emergency contacts stay on this phone.</Text>
+        {d.hasActiveSession ? <Text style={st.note}>End and save the current drive before editing.</Text> : null}
+      </Card>
       <Card>
         <SectionTitle>What to save</SectionTitle>
         {MODES.map((m) => (
@@ -94,6 +104,7 @@ export function SettingsView(props: {
 
       <Card>
         <SectionTitle>Safety checks</SectionTitle>
+        {__DEV__ ? <ResponsivenessDiagnostics /> : null}
         {sf.th && sf.prior ? (
           <>
             <Row label="Warning if heart rate above" value={`${sf.th.highWarn} BPM`} />
@@ -226,7 +237,7 @@ export function SettingsView(props: {
             The database is missing the v3 update, so some live details (link state, alerts, archives) aren't uploaded yet.
           </Text>
         ) : null}
-        <Btn title="Upload waiting drives" kind="ghost" busy={syncing} onPress={uploadBacklog} />
+        <Btn title="Upload waiting profiles and drives" kind="ghost" busy={syncing} onPress={uploadBacklog} />
         {syncMsg ? <Text style={st.note}>{syncMsg}</Text> : null}
       </Card>
 

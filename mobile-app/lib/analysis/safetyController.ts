@@ -1,3 +1,4 @@
+import { explicitContactCallRequest, mentionsEmergencyServices, understandCallAnswer } from '../voice/intent.ts';
 /**
  * Glue between the live frames, the flag engine, the rhythm monitor and the
  * voice check -- with no React in it, so it can be reasoned about (and
@@ -160,6 +161,12 @@ export class SafetyController {
       .catch(() => undefined);
   }
 
+  /** Saved profile edits revoke existing consent even when the UUID is unchanged. */
+  refreshProfile(p: DriverProfile, baseline: Baseline | null, ack: Ack) {
+    this.cancelCheck();
+    this.configure(p, baseline, ack, 'profile_edit');
+  }
+
   /** Settings → "Reset": back to the profile/baseline lines. */
   async resetAck() {
     if (!this.profile) return;
@@ -192,6 +199,7 @@ export class SafetyController {
   async simulate(scenario: DemoScenario): Promise<CheckResult | null> {
     const th = this.state.th;
     if (!th || this.state.check || this.state.demo) return null;
+    const generation = this.generation;
     const value =
       scenario === 'high_critical' ? th.highCrit + 9
       : scenario === 'high_warning' ? Math.min(th.highCrit - 1, th.highWarn + 6)
@@ -203,6 +211,7 @@ export class SafetyController {
     const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
     let emergency: Episode | null = null;
     for (let s = 0; s < 90 && !emergency; s += 1) {
+      if (generation !== this.generation) { this.set({ demo: null, tracking: null }); return null; }
       const abnormal = s >= 10; // 10 normal seconds first, like a real drive
       const jitter = ((s * 7) % 5) - 2;
       const r: Reading = {
@@ -227,6 +236,7 @@ export class SafetyController {
       await sleep(250);
     }
     this.set({ tracking: null });
+    if (generation !== this.generation) { this.set({ demo: null }); return null; }
     if (!emergency) {
       this.set({ demo: null });
       return null;
@@ -258,6 +268,41 @@ export class SafetyController {
 
   answer(r: CheckAnswer) {
     this.voice?.answerByButton(r);
+  }
+
+  /** Read-only contact capability for offers; never returns a number or grants consent. */
+  assistantContactAvailability(): 'available' | 'missing_contact' | 'invalid_phone' {
+    const contact = contactPhone(this.profile?.emergency_phone);
+    return contact.phone ? 'available' : contact.error ?? 'missing_contact';
+  }
+
+  /** Capture ownership before a standalone conversation starts, not at handoff. */
+  assistantOwnership(): () => boolean {
+    const generation = this.generation, sessionId = this.sessionId, profileId = this.profile?.id;
+    return () => !!profileId && !this.checking && generation === this.generation
+      && sessionId === this.sessionId && profileId === this.profile?.id;
+  }
+
+  /** Standalone assistant handoff: same deterministic consent/contact/ownership protections.
+   * Never resolves a vital episode, saves an incident, or changes thresholds. */
+  async assistantContact(transcript: string, offered: boolean, isCurrent: () => boolean): Promise<ContactHandoff | 'not_authorized'> {
+    if (mentionsEmergencyServices(transcript) || !(explicitContactCallRequest(transcript)
+        || (offered && understandCallAnswer(transcript) === 'yes'))) return 'not_authorized';
+    const generation = this.generation;
+    const sessionId = this.sessionId;
+    const profile = this.profile ? { ...this.profile } : null;
+    const current = () => isCurrent() && !this.checking && generation === this.generation
+      && sessionId === this.sessionId && profile?.id === this.profile?.id;
+    if (!profile || !current()) return 'cancelled';
+    const contact = contactPhone(profile.emergency_phone);
+    if (!contact.phone) return contact.error ?? 'missing_contact';
+    // No asynchronous work between final ownership check and the platform handoff.
+    if (!current()) return 'cancelled';
+    try {
+      if (!this.deps.handoffContact) return 'open_failed';
+      await this.deps.handoffContact(contact.phone);
+      return 'opened'; // opening the phone interface never proves call completion
+    } catch { return 'open_failed'; }
   }
 
   onFrame(f: Frame, rx: Date, missingBefore: number, sq: SignalQuality | null = null) {

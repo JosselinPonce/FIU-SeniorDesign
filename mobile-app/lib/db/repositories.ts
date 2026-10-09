@@ -5,6 +5,7 @@
  * storage layer can change (or gain a Supabase sync step) without touching UI.
  */
 import { getDatabase } from './database';
+import { validateProfile, updateProfileRecord, profileSyncKey } from './profileEditing';
 import { bytesToBase64, uuidv4, type Frame } from '../ble/protocol';
 import type { SignalQuality } from '../analysis/signal';
 import { learnBaseline, type Baseline } from '../analysis/baseline';
@@ -126,6 +127,7 @@ export async function listProfiles(): Promise<DriverProfile[]> {
 export async function createProfile(
   input: NewProfileInput,
 ): Promise<DriverProfile> {
+  input = validateProfile(input);
   const name = input.display_name.trim();
   if (!name) {
     throw new Error('Driver name cannot be empty');
@@ -147,28 +149,31 @@ export async function createProfile(
     emergency_name: input.emergency_name?.trim() || null,
     emergency_phone: input.emergency_phone?.trim() || null,
   };
-  await db.runAsync(
-    `INSERT INTO driver_profiles
-       (id, custom_id, display_name, weight_kg, age, height_cm, gender,
-        created_at, updated_at, conditions, medications, language, emergency_name, emergency_phone)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [
-      profile.id,
-      profile.custom_id,
-      profile.display_name,
-      profile.weight_kg,
-      profile.age,
-      profile.height_cm,
-      profile.gender,
-      profile.created_at,
-      profile.updated_at,
-      profile.conditions!,
-      profile.medications!,
-      profile.language!,
-      profile.emergency_name ?? null,
-      profile.emergency_phone ?? null,
-    ],
-  );
+  await db.withExclusiveTransactionAsync(async tx => {
+    await tx.runAsync(
+      `INSERT INTO driver_profiles
+         (id, custom_id, display_name, weight_kg, age, height_cm, gender,
+          created_at, updated_at, conditions, medications, language, emergency_name, emergency_phone)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        profile.id,
+        profile.custom_id,
+        profile.display_name,
+        profile.weight_kg,
+        profile.age,
+        profile.height_cm,
+        profile.gender,
+        profile.created_at,
+        profile.updated_at,
+        profile.conditions!,
+        profile.medications!,
+        profile.language!,
+        profile.emergency_name ?? null,
+        profile.emergency_phone ?? null,
+      ],
+    );
+    await tx.runAsync('INSERT INTO app_settings (key, value) VALUES (?, ?)', [profileSyncKey(profile.id), profile.updated_at]);
+  });
   return profile;
 }
 
@@ -230,30 +235,11 @@ export async function getProfile(id: string): Promise<DriverProfile | null> {
 }
 
 /** Updates an existing profile (the form's edit mode). */
-export async function updateProfile(id: string, input: NewProfileInput): Promise<void> {
-  const name = input.display_name.trim();
-  if (!name) throw new Error('Driver name cannot be empty');
+export async function updateProfile(id: string, input: NewProfileInput, revision?: string): Promise<DriverProfile> {
   const db = await getDatabase();
-  await db.runAsync(
-    `UPDATE driver_profiles SET custom_id = ?, display_name = ?, weight_kg = ?, age = ?, height_cm = ?, gender = ?,
-       conditions = ?, medications = ?, language = ?, emergency_name = ?, emergency_phone = ?, updated_at = ?
-     WHERE id = ?`,
-    [
-      input.custom_id?.trim() || null,
-      name,
-      input.weight_kg ?? null,
-      input.age ?? null,
-      input.height_cm ?? null,
-      input.gender ?? null,
-      JSON.stringify(input.conditions ?? []),
-      JSON.stringify(input.medications ?? []),
-      input.language ?? 'en',
-      input.emergency_name?.trim() || null,
-      input.emergency_phone?.trim() || null,
-      nowIso(),
-      id,
-    ],
-  );
+  let saved!: DriverProfile;
+  await db.withExclusiveTransactionAsync(async tx => { saved = await updateProfileRecord(tx, id, input, revision); });
+  return saved;
 }
 
 export async function deleteProfile(id: string): Promise<void> {

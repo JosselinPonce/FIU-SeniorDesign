@@ -147,20 +147,34 @@ export function mentionsEmergencyServices(transcript: string | null | undefined)
   return /\b(911|9 1 1|nine one one|nine eleven|112|999|emergency services|police|ambulance|policia|ambulancia|servicios de emergencia|nueve uno uno)\b/.test(normalise(transcript ?? ''));
 }
 
-export function explicitContactCallRequest(transcript: string): boolean {
+// Reject explicit quotations before normalisation removes their punctuation.
+function quotedSpeech(text: string): boolean {
+  return /["“”]|(?:^|\s)['‘].*['’](?:$|\s|[.,!?])/.test(text);
+}
+
+export function contactRequestDecision(transcript: string): { explicit: boolean; reason: string } {
+  if (quotedSpeech(transcript)) return { explicit: false, reason: 'quoted_speech' };
   const full = normalise(transcript);
   // Only strip a bounded first-person wellness prefix, never arbitrary reported speech.
   // Check refusals and excluded destinations against the entire utterance first.
-  if (CALL_REFUSAL.test(full) || UNCERTAIN_CALL.test(full) || OTHER_DESTINATION.test(full) || mentionsEmergencyServices(full)) return false;
+  if (CALL_REFUSAL.test(full)) return { explicit: false, reason: 'refusal' };
+  if (UNCERTAIN_CALL.test(full)) return { explicit: false, reason: 'uncertain_or_hypothetical' };
+  if (OTHER_DESTINATION.test(full) || mentionsEmergencyServices(full)) return { explicit: false, reason: 'excluded_destination' };
   const t = full
-    .replace(/^(?:no )?(?:i'm|im|i am|i feel) (?:feeling )?(?:dizzy|sick|unwell|not okay|not ok|not well)(?: and)? (?=(?:please )?call\b)/, '')
+    .replace(/^(?:no )?(?:i'm|im|i am|i feel) (?:feeling )?(?:a little |a bit |slightly |really |very )?(?:dizzy|sick|unwell|not okay|not ok|not well)(?: and)? (?=(?:please |(?:can|could|would) you (?:please )?|i need you to |i want you to )?call\b)/, '')
     .replace(/^no (?=please call\b)/, '');
-  if (CALL_REFUSAL.test(t) || UNCERTAIN_CALL.test(t) || OTHER_DESTINATION.test(t) || /\bno\b/.test(t)) return false;
-  return /^(?:please |(?:can|could|would) you (?:please )?|i need you to |i want you to )?call (?:my (?:emergency contact|contact|mom|mother|dad|father|wife|husband|partner)|them)(?: please| now| for me)?$/.test(t)
+  if (/\bno\b/.test(t)) return { explicit: false, reason: 'negation' };
+  const explicit = /^(?:please |(?:can|could|would) you (?:please )?|i need you to |i want you to )?call (?:my (?:emergency contact|contact|mom|mum|mother|dad|father|wife|husband|partner)|mom|mum|mother|dad|father|them)(?: please| now| for me| for me please)?$/.test(t)
     || /^(?:por favor )?(?:llama|llame) (?:a )?(?:mi (?:contacto de emergencia|contacto|mama|papa|esposa|esposo)|ellos)(?: por favor)?$/.test(t);
+  return { explicit, reason: explicit ? 'explicit_request' : 'no_matching_direct_request' };
+}
+
+export function explicitContactCallRequest(transcript: string): boolean {
+  return contactRequestDecision(transcript).explicit;
 }
 
 export function understandCallAnswer(transcript: string | null | undefined): CallAnswer {
+  if (quotedSpeech(transcript ?? '')) return 'unclear';
   const t = normalise(transcript ?? '');
   if (!t) return 'silent';
   if (OTHER_DESTINATION.test(t)) return 'unclear';

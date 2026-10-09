@@ -2,9 +2,12 @@
  * Choose who is driving, or add a new driver. Selecting a driver is how the
  * app knows whose baseline to compare against (proposal: user profiles).
  */
-import { useState } from 'react';
-import { Alert, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { useEffect, useState } from 'react';
+import { Alert, Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 
+import { measurementsFromMetric, enterWeight, enterHeightCm, selectHeight, switchHeightUnit, switchWeightUnit,
+  metricMeasurements, measurementLabel, type HeightUnit, type WeightUnit } from '../lib/db/profileMeasurements';
+import { profileFormValues } from '../lib/db/profileEditing';
 import * as repo from '../lib/db/repositories';
 import { deleteDriverEverywhere } from '../lib/db/deletion';
 import type { DriverProfile, Gender } from '../lib/db/repositories';
@@ -30,18 +33,23 @@ export function DriverPicker(props: {
   profiles: DriverProfile[];
   onPick: (p: DriverProfile) => void;
   onCreated: () => Promise<void>;
+  editProfile?: DriverProfile;
+  onSaveProfile?: (input: repo.NewProfileInput) => Promise<void>;
+  onCancelEdit?: () => void;
 }) {
-  const [adding, setAdding] = useState(props.profiles.length === 0);
+  const [adding, setAdding] = useState(!!props.editProfile || props.profiles.length === 0);
   const [editing, setEditing] = useState<DriverProfile | null>(null);
   const blank = { custom_id: '', display_name: '', weight_kg: '', age: '', height_cm: '', emergency_name: '', emergency_phone: '' };
   const [form, setForm] = useState(blank);
+  const [measurements, setMeasurements] = useState(() => measurementsFromMetric());
+  const [heightSelector, setHeightSelector] = useState<'feet' | 'inches' | null>(null);
   const [gender, setGender] = useState<Gender | null>(null);
   const [conditions, setConditions] = useState<string[]>([]);
   const [medications, setMedications] = useState<string[]>([]);
   const [language, setLanguage] = useState<'en' | 'es'>('en');
   const toggle = (list: string[], set: (v: string[]) => void, key: string) =>
     set(list.includes(key) ? list.filter((k) => k !== key) : [...list, key]);
-  const liveBmi = bmi(Number(form.weight_kg) || null, Number(form.height_cm) || null);
+  const liveBmi = bmi(measurements.weightKg, measurements.heightCm);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -58,21 +66,17 @@ export function DriverPicker(props: {
   /** Long-press a driver: reopen the form with their details. */
   function edit(p: DriverProfile) {
     setEditing(p);
-    setForm({
-      custom_id: p.custom_id ?? '',
-      display_name: p.display_name,
-      weight_kg: p.weight_kg ? String(p.weight_kg) : '',
-      age: p.age ? String(p.age) : '',
-      height_cm: p.height_cm ? String(p.height_cm) : '',
-      emergency_name: p.emergency_name ?? '',
-      emergency_phone: p.emergency_phone ?? '',
-    });
-    setGender(p.gender);
-    setConditions(repo.parseList(p.conditions));
-    setMedications(repo.parseList(p.medications));
-    setLanguage(p.language === 'es' ? 'es' : 'en');
+    const values = profileFormValues(p);
+    setForm(values.form);
+    setMeasurements(measurementsFromMetric(p.height_cm, p.weight_kg));
+    setGender(values.gender);
+    setConditions(values.conditions);
+    setMedications(values.medications);
+    setLanguage(values.language);
     setAdding(true);
   }
+
+  useEffect(() => { if (props.editProfile) edit(props.editProfile); }, [props.editProfile]);
 
   async function create() {
     try {
@@ -82,13 +86,12 @@ export function DriverPicker(props: {
         return;
       }
       setBusy(true);
-      const save = editing ? (input: repo.NewProfileInput) => repo.updateProfile(editing.id, input) : repo.createProfile;
+      const save = props.onSaveProfile ?? (editing ? (input: repo.NewProfileInput) => repo.updateProfile(editing.id, input, editing.updated_at) : repo.createProfile);
       await save({
         custom_id: form.custom_id,
         display_name: form.display_name,
-        weight_kg: optionalNumber(form.weight_kg, 'Weight'),
+        ...metricMeasurements(measurements),
         age: optionalNumber(form.age, 'Age'),
-        height_cm: optionalNumber(form.height_cm, 'Height'),
         gender,
         conditions,
         medications,
@@ -96,7 +99,9 @@ export function DriverPicker(props: {
         emergency_name: form.emergency_name,
         emergency_phone: form.emergency_phone,
       });
+      if (props.onSaveProfile) return;
       setForm(blank);
+      setMeasurements(measurementsFromMetric());
       setGender(null);
       setConditions([]);
       setMedications([]);
@@ -117,6 +122,8 @@ export function DriverPicker(props: {
       placeholder={placeholder}
       placeholderTextColor={C.faint}
       keyboardType={numeric ? 'decimal-pad' : 'default'}
+      accessibilityLabel={key === 'emergency_name' ? 'Emergency contact name' : key === 'emergency_phone' ? 'Emergency contact phone' : placeholder}
+      editable={!busy}
       value={form[key]}
       onChangeText={(v) => setForm((f) => ({ ...f, [key]: v }))}
     />
@@ -124,13 +131,13 @@ export function DriverPicker(props: {
 
   return (
     <ScrollView contentContainerStyle={st.container} automaticallyAdjustKeyboardInsets={true} keyboardDismissMode="interactive" keyboardShouldPersistTaps="handled">
-      <Text style={st.hello}>Who's driving?</Text>
-      <Text style={st.lead}>
+      <Text style={st.hello}>{props.editProfile ? 'Edit Driver Profile' : "Who's driving?"}</Text>
+      <Text style={st.lead}>{props.editProfile ? 'Changes apply to this driver. Existing drives, calibration and learned baselines are preserved.' : <>
         Pick a driver so readings are saved to the right profile and compared with their usual range. Long-press a driver to
         edit their profile.
-      </Text>
+      </>}</Text>
 
-      {props.profiles.map((p) => (
+      {(props.editProfile ? [] : props.profiles).map((p) => (
         <Pressable
           key={p.id}
           accessibilityRole="button"
@@ -161,17 +168,62 @@ export function DriverPicker(props: {
       ))}
 
       {!adding ? (
-        <Btn title="+ Add a driver" kind="ghost" onPress={() => setAdding(true)} />
+        <Btn title="+ Add a driver" kind="ghost" onPress={() => { setMeasurements(measurementsFromMetric()); setAdding(true); }} />
       ) : (
         <Card>
           <SectionTitle>{editing ? `Edit ${editing.display_name}` : 'New driver'}</SectionTitle>
           {input('display_name', 'Name *')}
           {input('custom_id', 'Subject ID (e.g. SUBJ-001)')}
-          <View style={st.row3}>
-            <View style={{ flex: 1 }}>{input('age', 'Age', true)}</View>
-            <View style={{ flex: 1 }}>{input('weight_kg', 'Weight kg', true)}</View>
-            <View style={{ flex: 1 }}>{input('height_cm', 'Height cm', true)}</View>
-          </View>
+          {input('age', 'Age', true)}
+          <Text style={st.label}>Height (optional)</Text>
+          <View style={st.genders}>{(['ft/in', 'cm'] as HeightUnit[]).map(unit =>
+            <Pressable key={unit} accessibilityRole="radio" accessibilityLabel={`Height unit ${unit}`}
+              accessibilityState={{ selected: measurements.heightUnit === unit }} disabled={busy}
+              style={[st.chip, measurements.heightUnit === unit && st.chipOn]}
+              onPress={() => { try { setMeasurements(switchHeightUnit(measurements, unit)); setError(null); }
+                catch (e) { setError((e as Error).message); } }}>
+              <Text style={[st.chipText, measurements.heightUnit === unit && st.chipTextOn]}>{unit}</Text>
+            </Pressable>)}</View>
+          {measurements.heightUnit === 'cm' ? <TextInput style={st.input} placeholder="Height cm" accessibilityLabel="Height centimeters"
+            placeholderTextColor={C.faint} keyboardType="decimal-pad" editable={!busy} value={measurements.heightText}
+            onChangeText={text => setMeasurements(s => enterHeightCm(s, text))} /> :
+            <View style={{ gap: 8 }}><View style={st.row3}>
+              <Btn style={{ flex: 1 }} title={measurements.feet == null ? 'Select feet' : `${measurements.feet} ft`} disabled={busy} onPress={() => setHeightSelector('feet')} />
+              <Btn style={{ flex: 1 }} title={measurements.inches == null ? 'Select inches' : `${measurementLabel(measurements.inches)} in`} disabled={busy} onPress={() => setHeightSelector('inches')} />
+            </View>
+              <Btn title="Clear height" kind="ghost" disabled={busy} onPress={() => setMeasurements(s => selectHeight(s, null, null))} />
+            </View>}
+          {measurements.heightError ? <Text style={st.error}>{measurements.heightError}</Text> : null}
+          <Text style={st.label}>Weight (optional)</Text>
+          <View style={st.genders}>{(['lbs', 'kg'] as WeightUnit[]).map(unit =>
+            <Pressable key={unit} accessibilityRole="radio" accessibilityLabel={`Weight unit ${unit}`}
+              accessibilityState={{ selected: measurements.weightUnit === unit }} disabled={busy}
+              style={[st.chip, measurements.weightUnit === unit && st.chipOn]}
+              onPress={() => { try { setMeasurements(switchWeightUnit(measurements, unit)); setError(null); }
+                catch (e) { setError((e as Error).message); } }}>
+              <Text style={[st.chipText, measurements.weightUnit === unit && st.chipTextOn]}>{unit}</Text>
+            </Pressable>)}</View>
+          <TextInput style={st.input} placeholder={`Weight ${measurements.weightUnit}`} accessibilityLabel={`Weight ${measurements.weightUnit}`}
+            placeholderTextColor={C.faint} keyboardType="decimal-pad" editable={!busy} value={measurements.weightText}
+            onChangeText={text => setMeasurements(s => enterWeight(s, text))} />
+          {measurements.weightError ? <Text style={st.error}>{measurements.weightError}</Text> : null}
+          <Text style={st.hint}>Unit switches preserve the exact measurement. Display values may be rounded; saved values stay in cm and kg.</Text>
+          <Modal visible={heightSelector !== null} transparent animationType="fade" onRequestClose={() => setHeightSelector(null)}>
+            <View style={st.selectorBackdrop}><Card style={st.selectorCard}>
+              <SectionTitle>Select {heightSelector}</SectionTitle>
+              <ScrollView>
+                {(heightSelector === 'feet' ? Array.from({ length: 33 }, (_, i) => i) :
+                  [...Array.from({ length: 12 }, (_, i) => i), ...(measurements.inches != null && !Number.isInteger(measurements.inches) ? [measurements.inches] : [])].sort((a,b) => a-b))
+                  .map(value => <Btn key={value} title={`${measurementLabel(value)} ${heightSelector === 'feet' ? 'ft' : 'in'}`}
+                    kind="ghost" onPress={() => {
+                      setMeasurements(s => selectHeight(s, heightSelector === 'feet' ? value : s.feet,
+                        heightSelector === 'inches' ? value : s.inches));
+                      setHeightSelector(null);
+                    }} />)}
+              </ScrollView>
+              <Btn title="Cancel" kind="ghost" onPress={() => setHeightSelector(null)} />
+            </Card></View>
+          </Modal>
           {liveBmi ? (
             <Text style={st.hint}>
               BMI {liveBmi} · {bmiCategory(liveBmi)} (calculated from height and weight)
@@ -181,6 +233,7 @@ export function DriverPicker(props: {
             {GENDERS.map((g) => (
               <Pressable
                 key={g.key}
+                disabled={busy}
                 onPress={() => setGender(gender === g.key ? null : g.key)}
                 style={[st.chip, gender === g.key && st.chipOn]}
               >
@@ -194,6 +247,7 @@ export function DriverPicker(props: {
             {CONDITIONS.map((c) => (
               <Pressable
                 key={c.key}
+                disabled={busy}
                 onPress={() => toggle(conditions, setConditions, c.key)}
                 style={[st.chip, conditions.includes(c.key) && st.chipOn]}
                 accessibilityRole="checkbox"
@@ -208,6 +262,7 @@ export function DriverPicker(props: {
             {MEDICATIONS.map((m) => (
               <Pressable
                 key={m.key}
+                disabled={busy}
                 onPress={() => toggle(medications, setMedications, m.key)}
                 style={[st.chip, medications.includes(m.key) && st.chipOn]}
                 accessibilityRole="checkbox"
@@ -225,7 +280,7 @@ export function DriverPicker(props: {
                 ['es', 'Español'],
               ] as ['en' | 'es', string][]
             ).map(([k, label]) => (
-              <Pressable key={k} onPress={() => setLanguage(k)} style={[st.chip, language === k && st.chipOn]}>
+              <Pressable key={k} disabled={busy} onPress={() => setLanguage(k)} style={[st.chip, language === k && st.chipOn]}>
                 <Text style={[st.chipText, language === k && st.chipTextOn]}>{label}</Text>
               </Pressable>
             ))}
@@ -233,9 +288,10 @@ export function DriverPicker(props: {
           <Text style={st.label}>Emergency contact (optional, stays on this phone)</Text>
           {input('emergency_name', 'Name')}
           {input('emergency_phone', 'Phone', false)}
+          {!form.emergency_phone.trim() ? <Text style={st.hint}>No emergency contact number is configured. Saved-contact phone handoff will be unavailable.</Text> : null}
           {error ? <Text style={st.error}>{error}</Text> : null}
           <Btn title="Save driver" onPress={create} busy={busy} />
-          {editing ? (
+          {editing && !props.editProfile ? (
             <Btn
               title={`Delete ${editing.display_name}`}
               kind="danger"
@@ -255,6 +311,7 @@ export function DriverPicker(props: {
                         setEditing(null);
                         setAdding(false);
                         setForm(blank);
+                setMeasurements(measurementsFromMetric());
                         await props.onCreated();
                         if (where === 'queued') {
                           Alert.alert('Deleted on this phone', 'The dashboard copy will be deleted automatically the next time the phone is online.');
@@ -269,10 +326,13 @@ export function DriverPicker(props: {
           {props.profiles.length ? <Btn
               title="Cancel"
               kind="ghost"
+              disabled={busy}
               onPress={() => {
+                if (props.onCancelEdit) { props.onCancelEdit(); return; }
                 setAdding(false);
                 setEditing(null);
                 setForm(blank);
+                setMeasurements(measurementsFromMetric());
               }}
             /> : null}
         </Card>
@@ -282,6 +342,8 @@ export function DriverPicker(props: {
 }
 
 const st = StyleSheet.create({
+  selectorBackdrop: { flex: 1, backgroundColor: '#0006', justifyContent: 'center', padding: 20 },
+  selectorCard: { maxHeight: '70%' },
   container: { padding: 20, paddingTop: 70, gap: 12, backgroundColor: C.bg, flexGrow: 1 },
   hello: { fontSize: 30, fontWeight: '800', color: C.ink },
   lead: { fontSize: 15, color: C.sub, marginBottom: 6, lineHeight: 21 },

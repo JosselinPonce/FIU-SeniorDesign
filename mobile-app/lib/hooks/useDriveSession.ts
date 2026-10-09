@@ -15,6 +15,9 @@ import { Deframer, SeqTracker, uuidv4 } from '../ble/protocol';
 import { LiveUploader, type LinkState, type LiveStatus } from '../db/liveSync';
 import * as repo from '../db/repositories';
 import { syncToSupabase } from '../db/sync';
+import { saveSelectedProfile } from '../db/profileEditing';
+import { syncProfiles } from '../db/profileSync';
+import { appAudio } from '../voice/audioOwnership';
 import { processPendingDeletes } from '../db/deletion';
 import type { DriveSession, DriverProfile, StorageMode } from '../db/repositories';
 import { foldSession, type ArchiveInfo } from '../archive/archiveStore';
@@ -241,6 +244,9 @@ export function useDriveSession() {
 
   // Refs: the BLE callback is created once and must see current values.
   const sessionRef = useRef<DriveSession | null>(null);
+  const profileEdit = useRef<string | null>(null);
+  const startingSession = useRef(false);
+  const endingSession = useRef(false);
   const deframer = useRef(new Deframer());
   const seq = useRef(new SeqTracker());
   const avgBpm = useRef<number[]>([]);
@@ -440,7 +446,7 @@ export function useDriveSession() {
   useEffect(() => {
     void (async () => {
       // Sessions a crash left open: close them locally, then publish that.
-      void processPendingDeletes().catch(() => undefined);
+      void processPendingDeletes().then(() => syncProfiles()).catch(() => undefined);
       const closed = await repo.recoverInterruptedSessions();
       if (closed) void syncToSupabase().catch(() => undefined);
       dispatch({ type: 'storageMode', mode: await repo.getStorageMode() });
@@ -495,61 +501,116 @@ export function useDriveSession() {
     [loadBaseline, safety],
   );
 
-  const startSession = useCallback(async () => {
-    if (sessionRef.current || !state.driver) return;
-    seen.current.clear();
-    dispatch({ type: 'resetSession' });
+  const beginProfileEdit = useCallback(async () => {
+    if (!state.driver || sessionRef.current || startingSession.current || endingSession.current || profileEdit.current)
+      throw new Error('End and save the current drive before editing.');
+    const id = state.driver.id;
+    profileEdit.current = id;
+    const selection = { id };
+    selectedProfile.current = selection; // invalidate pending baseline/profile loads
+    safety.cancelCheck();
+    try {
+      await appAudio.stopActive();
+      const latest = await repo.getProfile(id);
+      if (selectedProfile.current !== selection || !latest) throw new Error('The selected driver changed or was removed.');
+      await loadBaseline(latest, 'profile');
+      if (selectedProfile.current !== selection) throw new Error('The selected driver changed.');
+      dispatch({ type: 'driverUpdated', driver: latest });
+      return latest;
+    } catch (e) { profileEdit.current = null; throw e; }
+  }, [state.driver, safety, loadBaseline]);
+
+  const saveProfileEdit = useCallback(async (original: DriverProfile, input: repo.NewProfileInput) => {
     const selection = selectedProfile.current;
-    const session = await repo.startSession(state.driver.id, state.storageMode);
-    if (selectedProfile.current !== selection || selection?.id !== state.driver.id) {
-      await repo.endSession(session);
-      return;
-    }
-    sessionRef.current = session;
-    safety.startSession(session.id);
-    dispatch({ type: 'session', session });
-    live.follow(session.id);
-    // Microphone + speech permission now, so an emergency is never blocked by a dialog.
-    if (!state.voice?.granted) dispatch({ type: 'voice', voice: await prepareVoice() });
+    const current = () => profileEdit.current === original.id && selection === selectedProfile.current
+      && selection?.id === original.id && !sessionRef.current && !startingSession.current && !endingSession.current;
+    await saveSelectedProfile(original, input, {
+      isCurrent: current,
+      cancel: async () => { safety.cancelCheck(); await appAudio.stopActive(); },
+      save: repo.updateProfile,
+      load: async saved => {
+        const [baseline, ack, medians] = await Promise.all([
+          repo.driverBaseline(saved.id), repo.getAck(saved.id), repo.driveMedians(saved.id),
+        ]);
+        return { baseline, ack, trend: computeTrend(medians, Date.now()) };
+      },
+      publish: (saved, context) => {
+        safety.refreshProfile(saved, context.baseline, context.ack);
+        calRef.current = { hr: saved.cal_hr ?? null, spo2: saved.cal_spo2 ?? null };
+        dispatch({ type: 'driverUpdated', driver: saved });
+        dispatch({ type: 'baseline', baseline: context.baseline, trend: context.trend });
+      },
+    });
+    void syncProfiles().catch(() => undefined);
+  }, [safety]);
+
+  const closeProfileEdit = useCallback(() => { profileEdit.current = null; }, []);
+  useEffect(() => {
+    const timer = setInterval(() => { void syncProfiles().catch(() => undefined); }, 60_000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const startSession = useCallback(async () => {
+    if (sessionRef.current || !state.driver || profileEdit.current || startingSession.current || endingSession.current) return;
+    startingSession.current = true;
+    try {
+      seen.current.clear();
+      dispatch({ type: 'resetSession' });
+      const selection = selectedProfile.current;
+      const session = await repo.startSession(state.driver.id, state.storageMode);
+      if (selectedProfile.current !== selection || selection?.id !== state.driver.id) {
+        await repo.endSession(session);
+        return;
+      }
+      sessionRef.current = session;
+      safety.startSession(session.id);
+      dispatch({ type: 'session', session });
+      live.follow(session.id);
+      // Microphone + speech permission now, so an emergency is never blocked by a dialog.
+      if (!state.voice?.granted) dispatch({ type: 'voice', voice: await prepareVoice() });
+    } finally { startingSession.current = false; }
   }, [state.driver, state.storageMode, state.voice, live, safety]);
 
   const endSession = useCallback(async () => {
     const session = sessionRef.current;
-    if (!session) return;
-    safety.endSession();
-    const ended = await repo.endSession(session);
-    sessionRef.current = null;
-    dispatch({ type: 'session', session: ended });
-    await queue.current; // every frame of this session is stored before folding
-    if (ended.storage_mode === 'full') {
-      dispatch({ type: 'fold', fold: { state: 'folding' } });
-      try {
-        const info = await foldSession(ended.id, 'smart-wheel-app');
-        dispatch({ type: 'fold', fold: info ? { state: 'done', info } : { state: 'idle' } });
-      } catch (e) {
-        dispatch({ type: 'fold', fold: { state: 'failed', error: e instanceof Error ? e.message : String(e) } });
-      }
-    }
-    await live.finish(ended.id);
-    if (state.driver) {
-      // This drive now counts toward the baseline and the weekly trend. An
-      // elevated trend is logged once per week as an advisory on this drive.
-      const driver = state.driver;
-      const trend = await loadBaseline(driver);
-      if (trend?.status === 'elevated') {
-        const key = `trend:${driver.id}`;
-        const last = Number((await repo.getSetting(key)) ?? 0);
-        if (Date.now() - last > 7 * 86_400_000) {
-          await repo.setSetting(key, String(Date.now()));
-          await repo.saveAlert({
-            id: uuidv4(), session_id: ended.id, kind: 'hr_trend', value: trend.delta, threshold: 4,
-            started_at: new Date().toISOString(), prompted_at: null, response: null, responded_at: null,
-            escalated: 0, level: 'notice', channel: null, answer_confidence: null,
-          });
+    if (!session || endingSession.current) return;
+    endingSession.current = true;
+    try {
+      safety.endSession();
+      const ended = await repo.endSession(session);
+      sessionRef.current = null;
+      dispatch({ type: 'session', session: ended });
+      await queue.current; // every frame of this session is stored before folding
+      if (ended.storage_mode === 'full') {
+        dispatch({ type: 'fold', fold: { state: 'folding' } });
+        try {
+          const info = await foldSession(ended.id, 'smart-wheel-app');
+          dispatch({ type: 'fold', fold: info ? { state: 'done', info } : { state: 'idle' } });
+        } catch (e) {
+          dispatch({ type: 'fold', fold: { state: 'failed', error: e instanceof Error ? e.message : String(e) } });
         }
       }
-      void live.finish(ended.id); // re-push: uploads the new snapshot / advisory rows
-    }
+      await live.finish(ended.id);
+      if (state.driver) {
+        // This drive now counts toward the baseline and the weekly trend. An
+        // elevated trend is logged once per week as an advisory on this drive.
+        const driver = state.driver;
+        const trend = await loadBaseline(driver);
+        if (trend?.status === 'elevated') {
+          const key = `trend:${driver.id}`;
+          const last = Number((await repo.getSetting(key)) ?? 0);
+          if (Date.now() - last > 7 * 86_400_000) {
+            await repo.setSetting(key, String(Date.now()));
+            await repo.saveAlert({
+              id: uuidv4(), session_id: ended.id, kind: 'hr_trend', value: trend.delta, threshold: 4,
+              started_at: new Date().toISOString(), prompted_at: null, response: null, responded_at: null,
+              escalated: 0, level: 'notice', channel: null, answer_confidence: null,
+            });
+          }
+        }
+        void live.finish(ended.id); // re-push: uploads the new snapshot / advisory rows
+      }
+    } finally { endingSession.current = false; }
   }, [live, safety, loadBaseline, state.driver]);
 
   /** Back to the driver list. An active session is ended first, never dropped. */
@@ -587,9 +648,16 @@ export function useDriveSession() {
     stopConnecting: useCallback(() => connection.stop(), [connection]),
     setAllowDirect: useCallback((v: boolean) => connection.setAllowDirect(v), [connection]),
     startSession,
+    beginProfileEdit,
+    saveProfileEdit,
+    closeProfileEdit,
     endSession,
     setStorageMode,
     respondAlert,
+    assistantContactAvailability: useCallback(() => safety.assistantContactAvailability(), [safety]),
+    assistantOwnership: useCallback(() => safety.assistantOwnership(), [safety]),
+    assistantContact: useCallback((text: string, offered: boolean, current: () => boolean) =>
+      safety.assistantContact(text, offered, current), [safety]),
     rehearseVoice,
     /** Demo: fabricated readings through the real engine + voice check. Nothing saved. */
     simulate: useCallback(

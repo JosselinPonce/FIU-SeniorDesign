@@ -1,3 +1,5 @@
+import { appAudio } from './audioOwnership';
+import { responsiveness, responsivenessProbe } from './responsivenessDiagnostics';
 /**
  * Phone implementation of VoiceIO: free, on-device speech in and out.
  *
@@ -78,12 +80,21 @@ export function setPreferredVoice(lang: Lang, id: string | null) {
 
 /** Speaks a short sample with a specific voice, at prompt volume. */
 export async function previewVoice(lang: Lang, id: string, text: string) {
-  Speech.stop();
-  promptAudio();
-  await new Promise<void>((resolve) =>
-    Speech.speak(text, { language: LOCALE[lang], voice: id, rate: 0.95, volume: 1.0, onDone: () => resolve(), onStopped: () => resolve(), onError: () => resolve() }),
-  );
-  releaseAudio();
+  let finished: Promise<void> = Promise.resolve();
+  const release = await appAudio.acquire('optional', async () => { await Speech.stop(); await finished; await waitForSpeechIdle(); });
+  try {
+    promptAudio();
+    finished = new Promise<void>((resolve) =>
+      Speech.speak(text, { language: LOCALE[lang], voice: id, rate: 0.95, volume: 1.0,
+        onDone: () => resolve(), onStopped: () => resolve(), onError: () => resolve() }),
+    );
+    await finished;
+  } finally {
+    if (Platform.OS === 'ios') {
+      try { ExpoSpeechRecognitionModule.setAudioSessionActiveIOS(false, { notifyOthersOnDeactivation: true }); } catch {}
+    }
+    release();
+  }
 }
 
 async function bestVoice(lang: Lang): Promise<string | undefined> {
@@ -118,22 +129,66 @@ function promptAudio() {
 }
 
 /** Let other audio (music, navigation) return to full volume afterwards. */
-export function releaseAudio() {
-  if (Platform.OS !== 'ios') return;
-  try {
-    ExpoSpeechRecognitionModule.setAudioSessionActiveIOS(false, { notifyOthersOnDeactivation: true });
-  } catch {
-    // nothing active
+let releaseSafetyAudio: (() => void) | null = null;
+let safetyReleasePending: Promise<void> = Promise.resolve();
+
+async function waitForSpeechIdle() {
+  for (let attempt = 0; attempt < 40; attempt++) {
+    const [speaking, recognition] = await Promise.all([
+      Speech.isSpeakingAsync(), ExpoSpeechRecognitionModule.getStateAsync(),
+    ]);
+    if (!speaking && recognition === 'inactive') return;
+    await new Promise<void>(resolve => setTimeout(resolve, 50));
   }
+  throw new Error('Speech cleanup has not completed. Audio ownership remains reserved.');
+}
+
+export function releaseAudio() {
+  const release = releaseSafetyAudio;
+  if (!release) return; // no session was acquired; never deactivate optional audio
+  const timing = responsivenessProbe('warning', 'release audio');
+  safetyReleasePending = (async () => {
+    await waitForSpeechIdle();
+    timing('speech and recognition idle');
+    if (Platform.OS === 'ios') {
+      ExpoSpeechRecognitionModule.setAudioSessionActiveIOS(false, { notifyOthersOnDeactivation: true });
+    }
+    if (releaseSafetyAudio === release) releaseSafetyAudio = null;
+    release();
+    timing('session deactivation returned; ownership released');
+  })();
+  // Keep a failed cleanup lock rather than allowing overlapping audio. Later
+  // checks still have on-screen buttons; restarting resets a stuck native session.
+  void safetyReleasePending.catch(() => {});
 }
 
 export function phoneVoiceIO(): VoiceIO {
   let cancelListen: (() => void) | null = null;
+  let cancelEpoch = 0;
+  let cleanupNeeded = false;
+  async function acquire() {
+    const epoch = cancelEpoch;
+    await safetyReleasePending;
+    if (cleanupNeeded) { await waitForSpeechIdle(); cleanupNeeded = false; }
+    if (epoch !== cancelEpoch) throw new Error("Voice check cancelled");
+    if (!releaseSafetyAudio) {
+      const release = await appAudio.acquire("safety", async () => {});
+      if (epoch !== cancelEpoch) { release(); throw new Error("Voice check cancelled"); }
+      releaseSafetyAudio = release;
+    }
+  }
 
   return {
     async speak(text, lang) {
+      const timing = responsivenessProbe('warning', 'playback');
+      const epoch = cancelEpoch;
+      await acquire();
+      timing('audio ownership acquired');
       const voice = await bestVoice(lang);
+      timing('voice selected', { voiceId: voice ?? undefined, locale: LOCALE[lang] });
+      if (epoch !== cancelEpoch) throw new Error("Voice check cancelled");
       promptAudio();
+      timing('playback session setup returned');
       await new Promise<void>((resolve) => {
         Speech.speak(text, {
           language: LOCALE[lang],
@@ -141,14 +196,20 @@ export function phoneVoiceIO(): VoiceIO {
           rate: 0.95,
           volume: 1.0,
           useApplicationAudioSession: true,
-          onDone: () => resolve(),
-          onStopped: () => resolve(),
-          onError: () => resolve(),
+          onStart: () => timing('playback started'),
+          onDone: () => { timing('playback completed'); resolve(); },
+          onStopped: () => { timing('playback stopped'); resolve(); },
+          onError: () => { timing('playback error'); resolve(); },
         });
       });
     },
 
-    listen(lang, ms, hints) {
+    async listen(lang, ms, hints) {
+      const timing = responsivenessProbe('warning', 'recognition');
+      const epoch = cancelEpoch;
+      await acquire();
+      timing('audio ownership acquired');
+      if (epoch !== cancelEpoch) return null;
       return new Promise<string | null>((resolve) => {
         let best = '';
         let finished = false;
@@ -159,6 +220,8 @@ export function phoneVoiceIO(): VoiceIO {
           clearTimeout(timer);
           for (const s of subs) s.remove();
           cancelListen = null;
+          cleanupNeeded = true;
+          timing('listen resolved; abort requested', { hasText: !!value });
           try {
             ExpoSpeechRecognitionModule.abort();
           } catch {
@@ -166,22 +229,36 @@ export function phoneVoiceIO(): VoiceIO {
           }
           resolve(value);
         };
-        const timer = setTimeout(() => finish(best || null), ms);
-        cancelListen = () => finish(null);
+        const timer = setTimeout(() => { timing('window timeout', { hasText: !!best }); finish(best || null); }, ms);
+        cancelListen = () => { timing('cancel requested'); finish(null); };
 
         try {
+          if (__DEV__ && responsiveness.isEnabled()) {
+            // Diagnostic registration failure must never prevent recognition.
+            for (const [event, point] of [
+              ['audiostart', 'microphone capture started'], ['audioend', 'microphone capture ended'],
+              ['speechstart', 'speech activity started'], ['speechend', 'speech activity ended'],
+            ] as const) {
+              try { subs.push(ExpoSpeechRecognitionModule.addListener(event, () => timing(point))); }
+              catch { /* Optional instrumentation only. */ }
+            }
+          }
           subs.push(
             ExpoSpeechRecognitionModule.addListener('result', (e) => {
               const text = e.results[0]?.transcript ?? '';
+              if (text && !e.isFinal) timing('first partial received');
+              if (e.isFinal) timing('final callback received', { isFinal: true, hasText: !!text });
               if (text) best = text;
               if (e.isFinal && best) finish(best);
             }),
             ExpoSpeechRecognitionModule.addListener('error', () => {
+              timing('recognition error event');
               // no-speech, not-allowed, network...: keep the window open so the
               // buttons still work; resolve with whatever was heard at the end.
             }),
           );
           const onDevice = ExpoSpeechRecognitionModule.supportsOnDeviceRecognition();
+          timing('recognition start requested', { locale: LOCALE[lang], onDeviceRequired: onDevice });
           ExpoSpeechRecognitionModule.start({
             lang: LOCALE[lang],
             interimResults: true,
@@ -197,14 +274,18 @@ export function phoneVoiceIO(): VoiceIO {
               mode: 'default',
             },
           });
+          timing('recognition start call returned');
         } catch {
+          timing('recognition setup threw');
           // Recognition unavailable: wait out the window (buttons still work).
         }
       });
     },
 
     cancel() {
-      Speech.stop();
+      cancelEpoch += 1;
+      cleanupNeeded = true;
+      void Speech.stop();
       cancelListen?.();
     },
   };

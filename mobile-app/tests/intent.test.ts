@@ -88,3 +88,40 @@ test('call-offer consent uses natural local rules, not wellness probabilities', 
   }
   assert.equal(understandCallAnswer(null), 'silent');
 });
+
+test('bounded natural wellness prefixes support direct requests without weakening exclusions', () => {
+  for (const text of ["No, I'm a little dizzy, can you call my mom?", "I'm a bit dizzy, could you please call my mom?",
+    "I feel slightly sick, would you call my emergency contact?", "I'm feeling a little dizzy, please call Mom"]) {
+    assert.equal(understand(text).contactCallRequested, true, text);
+  }
+  for (const text of ["No, I'm a little dizzy, can you not call my mom?", "I'm a little dizzy, don't call my mom",
+    "I'm a little dizzy, maybe can you call my mom", "If I'm a little dizzy, can you call my mom?",
+    "She said I'm a little dizzy can you call my mom", '"Can you call my mom?"',
+    "I'm a little dizzy, can you call my mom or 911?", "I'm a little dizzy, can I call my mom?"]) {
+    assert.equal(understand(text).contactCallRequested, false, text);
+  }
+});
+
+test('quoted agreement or contact requests cannot authorize a contact offer', () => {
+  for (const text of ['"Yes please"', '“Can you call my mom?”', "'Call my mom'", 'She said yes please']) {
+    assert.equal(understandCallAnswer(text), 'unclear', text);
+  }
+});
+
+test('narrow mum and polite for-me variants retain refusal, quotation, uncertainty and service exclusions', async () => {
+  const { explicitContactCallRequest, contactRequestDecision } = await import('../lib/voice/intent.ts');
+  for (const text of ["I'm a little dizzy, can you call my mom?", 'Can you call my mum?',
+    "I'm a little dizzy, can you call my mom for me please?", 'Please call my mum for me please']) {
+    assert.equal(explicitContactCallRequest(text), true, text);
+    assert.equal(contactRequestDecision(text).reason, 'explicit_request');
+  }
+  for (const text of ['Do not call my mum', 'Can you not call my mom for me please?', 'Maybe call my mum',
+    "If I'm dizzy, can you call my mum?", 'What if you call my mom for me please?', 'She said call my mum',
+    '"Can you call my mum?"', "'Call my mum'", 'Call my mum or 911', 'Call my mum not the ambulance',
+    'Can I call my mum?', 'Call my mum or someone else', 'Can you call my mum unless I say no'])
+    assert.equal(explicitContactCallRequest(text), false, text);
+  assert.equal(contactRequestDecision('Do not call my mum').reason, 'refusal');
+  assert.equal(contactRequestDecision('Maybe call my mum').reason, 'uncertain_or_hypothetical');
+  assert.equal(contactRequestDecision('Call my mum or 911').reason, 'excluded_destination');
+  assert.equal(contactRequestDecision('"Call my mum"').reason, 'quoted_speech');
+});

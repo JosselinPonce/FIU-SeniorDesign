@@ -1,0 +1,7 @@
+{
+  "name": "local-foundation-models",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Isolated Foundation Models availability prototype",
+  "main": "index.ts"
+}

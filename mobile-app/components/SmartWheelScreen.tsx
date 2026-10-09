@@ -10,7 +10,10 @@ import { StatusBar } from 'expo-status-bar';
 import { useDriveSession } from '../lib/hooks/useDriveSession';
 import * as repo from '../lib/db/repositories';
 import type { DriverProfile } from '../lib/db/repositories';
-import { C } from './ui';
+import { Btn, C } from './ui';
+import { appAudio } from '../lib/voice/audioOwnership';
+import { DriverAssistant } from './DriverAssistant';
+import { LocalAITest } from '../modules/local-foundation-models/LocalAITest';
 import { DriverPicker } from './DriverPicker';
 import { DriveView, VoiceCheckModal } from './DriveView';
 import { HistoryView } from './HistoryView';
@@ -24,7 +27,13 @@ export default function SmartWheelScreen() {
   const [profiles, setProfiles] = useState<DriverProfile[] | null>(null);
   const [tab, setTab] = useState<Tab>('drive');
   const [busy, setBusy] = useState(false);
+  const [editingProfile, setEditingProfile] = useState<DriverProfile | null>(null);
+  const [editOpening, setEditOpening] = useState(false);
+  const [assistantOpen, setAssistantOpen] = useState(false);
+  const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
+  const [diagnosticBusy, setDiagnosticBusy] = useState(false);
   const [autoOn, setAutoOn] = useState(true);
+  useEffect(() => { if (drive.safety.check) setAssistantOpen(false); }, [drive.safety.check]);
   // First run: the introduction (null = still loading the flag).
   const [showIntro, setShowIntro] = useState<boolean | null>(null);
   useEffect(() => {
@@ -62,6 +71,27 @@ export default function SmartWheelScreen() {
     ]);
   }
 
+  async function openProfileEditor(afterSave = false) {
+    if (editOpening) return;
+    if (drive.hasActiveSession && !afterSave) {
+      Alert.alert('End and save this drive?', 'Profile editing is available after the drive has been saved.', [
+        { text: 'Keep driving', style: 'cancel' },
+        { text: 'End & save', onPress: () => guard(async () => {
+          try { await drive.endSession(); await openProfileEditor(true); }
+          catch (e) { Alert.alert('Could not finish saving the drive', e instanceof Error ? e.message : String(e)); }
+        }) },
+      ]);
+      return;
+    }
+    setEditOpening(true);
+    setAssistantOpen(false);
+    try { setEditingProfile(await drive.beginProfileEdit()); }
+    catch (e) { Alert.alert('Cannot edit profile', e instanceof Error ? e.message : String(e)); }
+    finally { setEditOpening(false); }
+  }
+
+  function closeEditor() { drive.closeProfileEdit(); setEditingProfile(null); }
+
   if (showIntro) {
     return (
       <>
@@ -79,21 +109,43 @@ export default function SmartWheelScreen() {
     );
   }
 
+  // Diagnostics stay before driver selection, without competing safety audio.
+  if (__DEV__ && diagnosticsOpen && !drive.driver) {
+    return <View style={{ flex: 1 }}>
+      <LocalAITest onAudioBusyChange={setDiagnosticBusy} />
+      <View style={{ padding: 18 }}><Btn title="Back to DriveSense" disabled={diagnosticBusy}
+        onPress={() => setDiagnosticsOpen(false)} /></View>
+    </View>;
+  }
+
   if (!drive.driver) {
     return (
       <>
         <StatusBar style="dark" />
         <DriverPicker profiles={profiles} onPick={drive.selectDriver} onCreated={reload} />
+        {__DEV__ ? <View style={{ padding: 18 }}><Btn title="Local AI diagnostics" kind="ghost" disabled={!appAudio.available} onPress={() => { if (appAudio.available) setDiagnosticsOpen(true); }} /></View> : null}
       </>
     );
   }
+
+  if (editOpening) return <View style={st.center}><ActivityIndicator /><Text>Loading driver profile…</Text></View>;
+
+  if (editingProfile) return <>
+    <StatusBar style="dark" />
+    <DriverPicker profiles={[editingProfile]} editProfile={editingProfile} onPick={() => {}} onCreated={reload}
+      onCancelEdit={closeEditor} onSaveProfile={async input => {
+        await drive.saveProfileEdit(editingProfile, input);
+        await reload();
+        closeEditor();
+      }} />
+  </>;
 
   return (
     <View style={st.root}>
       <StatusBar style="dark" />
       <View style={st.header}>
         <View style={{ flex: 1 }}>
-          <Text style={st.brand}>Smart Wheel</Text>
+          <Text style={st.brand}>DriveSense</Text>
           <Text style={st.driver} numberOfLines={1}>
             {drive.driver.display_name}
             {drive.driver.custom_id ? <Text style={st.cid}>  {drive.driver.custom_id}</Text> : null}
@@ -103,6 +155,14 @@ export default function SmartWheelScreen() {
           <Text style={st.switchText}>Switch driver</Text>
         </Pressable>
       </View>
+
+      {tab === 'drive' ? <View style={{ paddingHorizontal: 18, paddingVertical: 6 }}>
+        <Btn title="Driver Assistant" disabled={!!drive.safety.check} onPress={() => setAssistantOpen(true)} />
+      </View> : null}
+      <DriverAssistant visible={assistantOpen} onClose={() => setAssistantOpen(false)} language={drive.driver.language ?? 'en'}
+        ownershipKey={`${drive.driver.id}:${drive.session?.id ?? ''}:${drive.session?.status ?? ''}`}
+        contactName={drive.driver.emergency_name} contactAvailability={drive.assistantContactAvailability}
+        handoff={drive.assistantContact} captureOwnership={drive.assistantOwnership} />
 
       <View style={{ flex: 1 }}>
         {tab === 'drive' ? <DriveView drive={drive} busy={busy} guard={guard} /> : null}
@@ -117,6 +177,7 @@ export default function SmartWheelScreen() {
               await reload();
               setTab('drive');
             }}
+            onEditProfile={() => { void openProfileEditor(); }}
             onShowIntro={() => setShowIntro(true)}
           />
         ) : null}

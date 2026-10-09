@@ -18,6 +18,7 @@
  * The first such error makes that table fall back to its older column set, so
  * live upload keeps working on an older database instead of silently stopping.
  */
+import { cloudProfile } from './profileEditing';
 import { supabase } from '../supabase';
 import { getDatabase } from './database';
 import { parseList, type DriveAlertRow, type DriveSession, type DriverProfile, type TelemetryEvent } from './repositories';
@@ -154,25 +155,7 @@ export class LiveUploader {
         const err = await this.upsert(
           'driver_profiles',
           [
-            {
-              id: profile.id,
-              custom_id: profile.custom_id,
-              display_name: profile.display_name,
-              weight_kg: profile.weight_kg,
-              age: profile.age,
-              height_cm: profile.height_cm,
-              gender: profile.gender,
-              created_at: profile.created_at,
-              updated_at: profile.updated_at,
-              // v4. The emergency contact is deliberately NOT uploaded: the
-              // phone is what escalates, so the number never needs to leave it.
-              conditions: parseList(profile.conditions),
-              medications: parseList(profile.medications),
-              language: profile.language ?? 'en',
-              cal_hr: profile.cal_hr ?? null,
-              cal_spo2: profile.cal_spo2 ?? null,
-              cal_at: profile.cal_at ?? null,
-            },
+            cloudProfile(profile),
           ],
           ['conditions', 'medications', 'language', 'cal_hr', 'cal_spo2', 'cal_at'],
         );
