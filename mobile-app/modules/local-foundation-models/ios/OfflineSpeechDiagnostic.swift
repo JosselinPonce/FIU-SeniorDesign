@@ -111,6 +111,7 @@ final class OfflineSpeechDiagnostic {
     var finalizationStarted: TimeInterval?
     var endpointReason = "none"
     var audioEnded = false
+    var taskFinishRequested = false
     var observers: [NSObjectProtocol] = []
     var tapInstalled = false
     var sessionOwned = false
@@ -356,6 +357,7 @@ final class OfflineSpeechDiagnostic {
     current.finalizationStarted = ProcessInfo.processInfo.systemUptime
     stopCapture(current)
     endRequestAudio(current)
+    finishRecognitionTask(current)
     // Keep recognition alive; cancelling here would prevent Apple's final callback.
     publishProgress(current)
     let grace = min(2.5, max(0, current.deadline - ProcessInfo.processInfo.systemUptime))
@@ -371,6 +373,13 @@ final class OfflineSpeechDiagnostic {
     guard !current.audioEnded else { return }
     current.audioEnded = true
     current.request?.endAudio()
+  }
+
+  private func finishRecognitionTask(_ current: Capture) {
+    guard capture === current, current.phase == "finalizing", current.audioEnded,
+          !current.taskFinishRequested, let task = current.task else { return }
+    current.taskFinishRequested = true
+    task.finish() // graceful completion only; Apple's nonempty final is still required
   }
 
   private func publishProgress(_ current: Capture) {

@@ -17,7 +17,7 @@ export function reportedDrivingConcern(raw: string): { symptoms: string[]; worse
   for (const [key, words] of patterns) {
     const cleaned = text.replace(new RegExp(`\\b(?:not|never|no longer|no|don't feel|dont feel|do not feel)(?: feeling| very| really| any)? (?:${words})\\b`, 'g'), '');
     const self = new RegExp(`\\b(?:i'm|im|i am|i feel|i have|i feel like i'm|i feel like i am)(?: feeling| getting| still)?(?: a little| a bit| slightly| really| very)? (?:${words})\\b`);
-    const fragment = new RegExp(`^(?:no )?(?:feeling |a little |a bit |still )?(?:${words})\\b`);
+    const fragment = new RegExp(`^(?:no )?(?:feeling |still )?(?:a little |a bit )?(?:${words})\\b`);
     if (self.test(cleaned) || fragment.test(cleaned)
       || key === 'breathing' && /\bi (?:can't|cannot|can not) breathe\b/.test(cleaned)
       || key === 'faintness' && /\bi (?:might faint|might pass out|am about to faint|am going to faint)\b/.test(cleaned)) symptoms.push(key);

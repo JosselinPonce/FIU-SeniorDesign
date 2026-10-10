@@ -58,6 +58,18 @@ sit sitting place away traffic attention noticed difficult difficultly easy ease
  sorry uncomfortable discomfort hear manage manageable settled steadier steady sound changes changed since`).split(/\s+/));
 const UNSAFE = /\b(call|called|calling|dial|dialed|dialing|contacted|contacting|dispatch|ambulance|police|911|diagnos\w*|medic\w*|treatment|heart attack|stroke|disease|monitor\w*|tracking|record\w*|promise|guarantee)\b|help is (?:coming|on the way)|(?:keep|continue|resume) driving|(?:safe|okay|ok|fine) to drive|(?:you (?:are|seem)|you're) (?:safe|fine|okay|ok|healthy)|(?:don't|do not|shouldn't|should not|mustn't|must not|won't|will not|never|no need to)(?: need to| have to)? (?:stop|pull|rest)|ignore/i;
 
+/** Dialogue context only, never contact consent or an inference that parking is safe. */
+export function drivingSafetyAnswer(text: string, precedingPrompt: string): 'not_parked' | 'parked' | 'improving' | null {
+  const answer = text.toLowerCase().replace(/’/g, "'").replace(/[.,!?]/g, '').trim();
+  const parkingQuestion = /(?:^|[.!]\s*)are you safely parked\?\s*$/i.test(precedingPrompt);
+  if (/^(?:no[ ,]* )?(?:i'm |i am )?(?:not (?:safely )?parked(?: yet)?|still driving)$/.test(answer)
+      || parkingQuestion && /^(?:no|not yet|no not yet)$/.test(answer)) return 'not_parked';
+  if (/^(?:yes )?(?:i'm|i am) safely parked(?: now)?$/.test(answer)
+      || parkingQuestion && /^(?:yes|yes i am|yes now|i am)$/.test(answer)) return 'parked';
+  if (/^(?:yes )?(?:(?:i'm|i am|i feel|feeling|it's|it is)(?: getting| feeling)? )?better(?: now)?$/.test(answer)) return 'improving';
+  return null;
+}
+
 export function conversationalReply(value: DriverInterpretation, previous: string[] = [], safetyGuidanceDelivered = false): { text: string; usedFallback: boolean; fallbackReason?: string } {
   // Reuse the existing shape/advisory gate without taking its canned output.
   safeSpokenReply(value, '');
@@ -68,7 +80,13 @@ export function conversationalReply(value: DriverInterpretation, previous: strin
   const words = text.toLowerCase().replace(/’/g, "'").match(/[a-z]+(?:'[a-z]+)?/g) ?? [];
   const bounded = text.length > 0 && text.length <= 240 && words.length <= 30
     && /^[a-zA-Z\s.,?!'’—-]+$/.test(text) && (text.match(/\?/g)?.length ?? 0) <= 1;
-  const safe = !unsafeGenerated && !UNSAFE.test(text.replace(/’/g, "'")) && !/\b(?:drive|driving)\b/i.test(text) && words.every(word => WORDS.has(word));
+  const safetyQuestion = /(?:^|[.!]\s*)are you safely parked\?\s*$/i.test(text);
+  const diagnosticQuestion = /(?:better or worse|what feels|what.*(?:changed|different)|discomfort|symptom)/i.test(text) && text.includes('?')
+    || /\btell me (?:what (?:you notice|feels|has changed)|more about (?:your|the) (?:symptoms|discomfort))\b/i.test(text);
+  const assumesParked = /\bparked\b/i.test(text.replace(/are you safely parked\?/ig, ''));
+  const safe = !unsafeGenerated && !UNSAFE.test(text.replace(/’/g, "'")) && !/\b(?:drive|driving)\b/i.test(text)
+    && !assumesParked && !diagnosticQuestion && words.every(word => WORDS.has(word))
+    && (!(value.wellness === 'not_ok' || safetyGuidanceDelivered) || !text.includes('?') || safetyQuestion);
   // Unwell replies must contain actionable advice with an explicit safe qualifier.
   const guidance = safetyGuidanceDelivered || value.wellness !== 'not_ok' || /pull over (?:safely|when (?:it is |it's )?safe)/i.test(text.replace(/’/g, "'"));
   const comparable = (s: string) => s.toLowerCase().replace(/’/g, "'").replace(/[^a-z' ]/g, '').replace(/\s+/g, ' ').trim();
@@ -78,14 +96,13 @@ export function conversationalReply(value: DriverInterpretation, previous: strin
   const repeated = isRepeated(text);
   if (bounded && safe && guidance && !repeated) return { text, usedFallback: false };
   const options = value.wellness === 'not_ok' && safetyGuidanceDelivered
-    ? ['Is the discomfort getting better or worse?', 'What feels different now?', 'Tell me what you notice.']
+    ? ['Please focus on stopping safely.']
     : value.wellness === 'not_ok'
-    ? ["I'm sorry you're feeling unwell. Please pull over when it's safe. Are you safely parked?",
-      "Please stay safely parked, or pull over when it's safe. Is the discomfort getting better or worse?",
-      "Please pull over when it's safe. Tell me what's changed.", "Please pull over when it's safe. Take a moment to rest."]
+    ? ["Please pull over when it's safe. Are you safely parked?",
+      "Please pull over when it's safe."]
     : value.wellness === 'uncertain'
-      ? ['Could you tell me a little more about how you feel?', 'What feels uncomfortable right now?', 'Has anything changed since we started talking?', 'Take your time. Tell me what you notice.']
-      : ['Thanks for telling me. How are you feeling now?', 'Is there anything else you want to talk about?', "I'm glad you told me. Has anything changed?", 'Thanks for checking in.'];
+      ? ['Could you clarify your answer?', 'Thanks for letting me know.']
+      : ['Thanks for checking in.', 'Thanks for letting me know.'];
   return { text: options.find(option => !isRepeated(option)) ?? options[options.length - 1]!,
     usedFallback: true, fallbackReason: !bounded ? 'length_or_format' : !safe ? 'unsafe_or_outside_vocabulary'
       : !guidance ? 'missing_safe_pull_over_guidance' : 'repeated_reply_or_question' };

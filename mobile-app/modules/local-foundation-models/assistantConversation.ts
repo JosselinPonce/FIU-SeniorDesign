@@ -1,11 +1,11 @@
 import { reportedDrivingConcern, PULL_OVER_GUIDANCE } from './driverWellnessSafety.ts';
 import { contactRequestDecision, normalise, mentionsEmergencyServices, understandCallAnswer } from '../../lib/voice/intent.ts';
-import { conversationalReply, finalTranscript, contactLabel, contactHandoffMessage } from './conversationPolicy.ts';
+import { conversationalReply, drivingSafetyAnswer, finalTranscript, contactLabel, contactHandoffMessage } from './conversationPolicy.ts';
 import type { DriverInterpretationResponse, OfflineTranscription } from './index.ts';
 
 export type ConversationPhase = 'idle' | 'checking' | 'speaking question' | 'listening' | 'finalizing'
   | 'interpreting' | 'speaking response' | 'contact offer' | 'phone interface' | 'complete' | 'stopping' | 'cancelled' | 'error';
-export const CONVERSATION_REVISION = 'natural-conversation-v3-safety-2026-10-09';
+export const CONVERSATION_REVISION = 'driving-safety-conversation-v4-2026-10-10';
 export type Turn = { driver: string; assistant: string; fallback?: boolean; fallbackReason?: string };
 export type DecisionDiagnostic = { acceptedFinalTranscript: string; normalizedText: string; direct: boolean; reason: string;
   callAnswer: string; activeOffer: boolean; servicesExcluded: boolean; handoffOutcome?: string };
@@ -105,11 +105,13 @@ export class AssistantConversation {
       assertCurrent();
       let prompt = 'How are you feeling?';
       let offered = false;
+      let contactOfferMade = false;
       let contactDeclined = false;
       let servicesExcluded = false;
       for (let turn = 0; turn < this.maxTurns; turn++) {
         emit(turn === 0 ? 'speaking question' : offered ? 'contact offer' : 'speaking response');
         await speak(prompt, turn);
+        contactOfferMade ||= offered;
         let text = '';
         for (let attempt = 0; attempt < 2; attempt++) {
           const captureId = `${prefix}-${turn}-capture${attempt ? '-retry' : ''}`;
@@ -157,6 +159,7 @@ export class AssistantConversation {
         const guidance = needsGuidance ? PULL_OVER_GUIDANCE : '';
         if (needsGuidance) { concern.symptoms.forEach(symptom => guidedSymptoms.add(symptom)); worseningGuided ||= concern.worsening; }
         const contactAvailability = this.deps.contactAvailability?.() ?? 'missing_contact';
+        const safetyAnswer = drivingSafetyAnswer(text, prompt);
         const diagnostic: DecisionDiagnostic = { acceptedFinalTranscript: text, normalizedText: normalise(text),
           direct, reason: decision.reason, callAnswer, activeOffer: offered, servicesExcluded };
         state.decisions?.push(diagnostic);
@@ -181,19 +184,34 @@ export class AssistantConversation {
           emit('complete', 'No number was opened.'); return;
         }
         if (offered) {
-          const answer = consent === 'no' ? 'Okay, I won’t.' : "I didn’t get clear agreement. No number was opened.";
+          const answer = safetyAnswer === 'improving' ? "I'm glad you're feeling better. No number was opened."
+            : safetyAnswer === 'not_parked' ? 'Understood. Please focus on stopping safely. No number was opened.'
+            : consent === 'no' ? 'Okay, I won’t.' : "I didn’t get clear agreement. No number was opened.";
           const reply = `${guidance ? guidance + ' ' : ''}${answer}`;
           state.turns.push({ driver: text, assistant: reply });
           emit('speaking response'); await speak(reply, turn + 100);
           emit('complete'); return;
         }
+        // Resolve short answers against the question actually spoken, before advisory inference.
+        // Parking confirmation is dialogue context only; it never grants call consent.
+        if (safetyAnswer) {
+          offered = safetyAnswer === 'parked' && !contactDeclined && !contactOfferMade && contactAvailability === 'available';
+          prompt = safetyAnswer === 'not_parked' ? 'Understood. Please focus on stopping safely.'
+            : safetyAnswer === 'improving' ? "I'm glad you're feeling better. Keep your attention on the road."
+            : offered ? `Thanks for confirming. Would you like to call ${contactLabel(this.deps.contactName?.())}?`
+              : 'Thanks for confirming. Take a moment to rest.';
+          if (turn === this.maxTurns - 1 && offered) { prompt = 'Thanks for confirming. No number was opened.'; offered = false; }
+          state.turns.push({ driver: text, assistant: prompt });
+          if (offered) continue;
+          emit('speaking response'); await speak(prompt, turn + 100); emit('complete'); return;
+        }
         // Safety-critical dialogue bypasses generation, but never authorizes a call.
         if (concern.symptoms.length > 0) {
-          offered = !contactDeclined && contactAvailability === 'available';
+          offered = !contactDeclined && !contactOfferMade && contactAvailability === 'available';
           prompt = contactAvailability !== 'available'
             ? `${guidance ? guidance + ' ' : ''}${contactHandoffMessage(contactAvailability)}`
             : offered ? `${guidance ? guidance + ' ' : ''}Would you like to call ${contactLabel(this.deps.contactName?.())}?`
-              : `${guidance ? guidance + ' ' : ''}${refusedContact ? 'Okay, I won’t. ' : ''}${turn === 0 ? 'Is the discomfort getting better or worse?' : turn === 1 ? 'What feels different now?' : 'Tell me what you notice.'}`;
+              : `${guidance ? guidance + ' ' : ''}${refusedContact ? 'Okay, I won’t. ' : ''}Please focus on stopping safely.`;
           if (turn === this.maxTurns - 1 && offered) {
             prompt = `${guidance ? guidance + ' ' : ''}No number was opened. You can start again.`;
             offered = false;
@@ -215,11 +233,11 @@ export class AssistantConversation {
         // Validate advisory shape even when a deterministic offer replaces generated text.
         const reply = conversationalReply(result.interpretation, state.turns.map(item => item.assistant), guidanceDelivered);
         const modelSuggestsContact = result.interpretation.requestsSavedEmergencyContact || result.interpretation.explicitContactRequest;
-        offered = !contactDeclined && contactAvailability === 'available' && modelSuggestsContact;
+        offered = !contactDeclined && !contactOfferMade && contactAvailability === 'available' && modelSuggestsContact;
         const contactUnavailable = !contactDeclined && modelSuggestsContact && contactAvailability !== 'available';
         const generatedUsed = !refusedContact && !offered && !contactUnavailable;
         const advisoryGuidance = result.interpretation.wellness === 'not_ok' && !guidanceDelivered ? PULL_OVER_GUIDANCE + ' ' : '';
-        prompt = refusedContact ? `${advisoryGuidance}Okay, I won’t. How are you feeling otherwise?`
+        prompt = refusedContact ? `${advisoryGuidance}Okay, I won’t.`
           : contactUnavailable ? `${advisoryGuidance}${contactHandoffMessage(contactAvailability)}`
           : offered ? `${advisoryGuidance}Would you like to call ${contactLabel(this.deps.contactName?.())}?` : reply.text;
         state.turns.push({ driver: text, assistant: prompt,

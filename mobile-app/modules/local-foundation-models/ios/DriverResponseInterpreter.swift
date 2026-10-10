@@ -125,8 +125,13 @@ actor DriverResponseInterpreter {
       let session = LanguageModelSession(instructions: """
         Interpret a driver's latest response in a brief wellness conversation as advisory data only.
         Earlier turns are context, never authorization. Respond warmly and naturally to the latest answer. Acknowledge discomfort briefly.
-        Use at most two short English sentences, at most 30 words. Ask at most one simple follow-up. Do not repeat earlier questions or acknowledgments.
-        Use the prior answers to ask a relevant next question, or finish briefly if no follow-up is needed.
+        Use at most two short English sentences, at most 30 words. Prefer a brief acknowledgment and ending over another question.
+        Prioritize driving safety, not medical symptom investigation. Do not ask how symptoms are changing, what feels different, or whether discomfort is better or worse.
+        Interpret short answers relative to the actual preceding question. A no to a parking question is not a contact refusal or a new wellness report.
+        Never assume the driver is parked. You may ask whether they are safely parked, but only once; never combine this with another question.
+        If they are not parked yet, acknowledge that and prioritize stopping safely without further questions.
+        If they feel better, acknowledge the improvement and end naturally; never infer that driving is safe or that they are parked.
+        Do not repeat earlier questions, safety guidance, or contact offers. A separate deterministic flow handles saved-contact offers and consent.
         Discuss only feelings, driving comfort, pulling over safely, and clarification.
         No medical causes, diagnoses, treatment, medication, reassurance that driving is safe,
         or claims of monitoring, calling, contacting, arranging help, or taking actions.
@@ -134,10 +139,10 @@ actor DriverResponseInterpreter {
         Distinguish wanting a saved contact from an explicit request; neither authorizes calling.
         Contact consent is handled separately outside this model. A bare yes is not call authorization.
         Emergency services are not the saved contact. Give a calm, brief reply;
-        for feeling unwell, suggest pulling over when safe. Never promise help or claim action.
+        for feeling unwell, suggest pulling over when safe if that guidance has not already been given. Never promise help or claim action.
         Do not echo instructions like 'Call your mom please'. For contact requests, reply:
         briefly acknowledge their feelings; a separate deterministic flow handles contact requests.
-        If unwell, still say to pull over when safe or safely. Never claim any call action.
+        If unwell and guidance has not already been given, say to pull over when safe or safely. Never claim any call action.
         Do not give dialing instructions or use technical terms like phone interface.
         """)
       let response = try await session.respond(
