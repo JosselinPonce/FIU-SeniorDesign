@@ -3,7 +3,7 @@
  * Settings) under a header that always shows who is driving and lets you
  * switch drivers.
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Pressable, StyleSheet, Text, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 
@@ -19,6 +19,9 @@ import { DriveView, VoiceCheckModal } from './DriveView';
 import { HistoryView } from './HistoryView';
 import { SettingsView } from './SettingsView';
 import { Onboarding } from './Onboarding';
+import { assistantModeSettings, routeAssistantLaunch, snapshotAssistantLaunch, type AssistantMode, type AssistantLaunch } from '../lib/assistant/mode';
+
+const modeSettings = assistantModeSettings(repo);
 
 type Tab = 'drive' | 'history' | 'settings';
 
@@ -30,10 +33,42 @@ export default function SmartWheelScreen() {
   const [editingProfile, setEditingProfile] = useState<DriverProfile | null>(null);
   const [editOpening, setEditOpening] = useState(false);
   const [assistantOpen, setAssistantOpen] = useState(false);
+  const [assistantMode, setAssistantMode] = useState<AssistantMode | null>(null);
+  const [assistantModeError, setAssistantModeError] = useState('');
+  const [modeSaving, setModeSaving] = useState(false);
+  const modeSavePending = useRef(false);
+  const [assistantLaunch, setAssistantLaunch] = useState<AssistantLaunch | null>(null);
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const [diagnosticBusy, setDiagnosticBusy] = useState(false);
   const [autoOn, setAutoOn] = useState(true);
   useEffect(() => { if (drive.safety.check) setAssistantOpen(false); }, [drive.safety.check]);
+  useEffect(() => {
+    let current = true;
+    void modeSettings.load().then(mode => { if (current) setAssistantMode(mode); })
+      .catch(() => { if (current) setAssistantModeError('Could not load Assistant Mode. Please restart the app.'); });
+    return () => { current = false; };
+  }, []);
+
+  async function selectAssistantMode(mode: AssistantMode) {
+    if (!assistantMode || modeSavePending.current || assistantOpen || drive.safety.check || drive.safety.demo) return;
+    modeSavePending.current = true;
+    setModeSaving(true);
+    try {
+      await modeSettings.save(mode);
+      setAssistantMode(mode);
+      setAssistantModeError('');
+    } catch { setAssistantModeError('Could not save Assistant Mode. Your selection has not changed.'); }
+    finally { modeSavePending.current = false; setModeSaving(false); }
+  }
+
+  function openAssistant() {
+    if (!assistantMode || modeSavePending.current || drive.safety.check || drive.safety.demo) return;
+    const launch = snapshotAssistantLaunch(assistantMode);
+    routeAssistantLaunch(launch, {
+      coreTools: () => { setAssistantOpen(false); setAssistantLaunch(launch); setTab('settings'); },
+      local: () => { setAssistantLaunch(launch); setAssistantOpen(true); },
+    });
+  }
   // First run: the introduction (null = still loading the flag).
   const [showIntro, setShowIntro] = useState<boolean | null>(null);
   useEffect(() => {
@@ -157,9 +192,13 @@ export default function SmartWheelScreen() {
       </View>
 
       {tab === 'drive' ? <View style={{ paddingHorizontal: 18, paddingVertical: 6 }}>
-        <Btn title="Driver Assistant" disabled={!!drive.safety.check} onPress={() => setAssistantOpen(true)} />
+        <Btn title={assistantMode === 'core' ? 'Driver Assistant — CORE tools' : 'Driver Assistant'}
+          disabled={!assistantMode || modeSaving || assistantMode === 'connected' || !!drive.safety.check || !!drive.safety.demo}
+          onPress={openAssistant} />
+        {assistantMode === 'connected' ? <Text>CONNECTED AI — Not configured. Choose CORE or LOCAL AI in Settings.</Text> : null}
+        {assistantModeError ? <Text accessibilityLiveRegion="polite">{assistantModeError}</Text> : null}
       </View> : null}
-      <DriverAssistant visible={assistantOpen} onClose={() => setAssistantOpen(false)} language={drive.driver.language ?? 'en'}
+      <DriverAssistant visible={assistantOpen && assistantLaunch?.destination === 'local'} onClose={() => setAssistantOpen(false)} language={drive.driver.language ?? 'en'}
         ownershipKey={`${drive.driver.id}:${drive.session?.id ?? ''}:${drive.session?.status ?? ''}`}
         contactName={drive.driver.emergency_name} contactAvailability={drive.assistantContactAvailability}
         handoff={drive.assistantContact} captureOwnership={drive.assistantOwnership} />
@@ -170,11 +209,18 @@ export default function SmartWheelScreen() {
         {tab === 'settings' ? (
           <SettingsView
             drive={drive}
+            assistantMode={assistantMode}
+            assistantModeBusy={!assistantMode || modeSaving || assistantOpen || !!drive.safety.check || !!drive.safety.demo}
+            assistantModeError={assistantModeError}
+            onAssistantModeChange={selectAssistantMode}
             autoOn={autoOn}
             setAutoOn={setAutoOn}
             onWiped={async () => {
               await drive.leaveDriver();
               await reload();
+              setAssistantOpen(false);
+              setAssistantLaunch(null);
+              setAssistantMode(await modeSettings.load());
               setTab('drive');
             }}
             onEditProfile={() => { void openProfileEditor(); }}

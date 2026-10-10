@@ -1,3 +1,4 @@
+import { recognitionEvidence } from '../lib/voice/coreRecognition.ts';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
@@ -11,9 +12,10 @@ function fake(answers: (string | null)[], opts: { listenDelay?: number } = {}) {
     speak: async (text) => {
       said.push(text);
     },
-    listen: async () => {
+    listen: async (_lang, _ms, _hints, captureId) => {
       await new Promise((r) => setTimeout(r, opts.listenDelay ?? 1));
-      return answers.shift() ?? null;
+      const text = answers.shift();
+      return text == null ? null : recognitionEvidence(captureId, { status: 'success', transcript: text, finalTranscript: text, isFinal: true, finalResultReceived: true });
     },
     cancel: () => {
       cancelled += 1;

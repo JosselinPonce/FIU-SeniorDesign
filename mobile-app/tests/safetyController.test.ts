@@ -1,3 +1,4 @@
+import { recognitionEvidence, type CoreRecognition } from '../lib/voice/coreRecognition.ts';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
@@ -43,7 +44,7 @@ test('demo: low oxygen with silence → no response', async () => {
 });
 
 
-function callController(answers: (string | null)[], phone: string | null = '+1 (305) 555-0123', openFails = false) {
+function callController(answers: (string | null)[], phone: string | null = '+1 (305) 555-0123', openFails = false, recognition: (r: CoreRecognition) => CoreRecognition = r => r) {
   const saved: { id: string; kind: string; response: string | null; session_id: string }[] = [];
   const dialed: string[] = [];
   const states: SafetyState[] = [];
@@ -54,7 +55,7 @@ function callController(answers: (string | null)[], phone: string | null = '+1 (
   let nextId = 0;
   let second = 0;
   const c = new SafetyController({
-    voiceIO: () => ({ speak: async text => { said.push(text); }, listen: async () => { onListen(); return answers.shift() ?? null; }, cancel: () => {} }),
+    voiceIO: () => ({ speak: async text => { said.push(text); }, listen: async (_lang, _ms, _hints, captureId) => { onListen(); const text = answers.shift(); return text == null ? null : recognition(recognitionEvidence(captureId, { status: 'success', transcript: text, finalTranscript: text, isFinal: true, finalResultReceived: true })); }, cancel: () => {} }),
     save: async row => { saved.push(row); if (row.response) await onSave(); },
     saveAck: async () => {}, haptic: () => {},
     handoffContact: async number => {
@@ -405,4 +406,23 @@ test('assistant contact availability exposes only validated status, not the phon
   assert.equal(assistantFixture().c.assistantContactAvailability(), 'available');
   assert.equal(assistantFixture(null).c.assistantContactAvailability(), 'missing_contact');
   assert.equal(assistantFixture('911').c.assistantContactAvailability(), 'invalid_phone');
+});
+
+
+test('live warning persists NOT OK but rejects partial, timeout, cancelled and stale contact consent', async () => {
+  const variants: ((r: CoreRecognition) => CoreRecognition)[] = [
+    r => ({ ...r, isFinal: false, finalResultReceived: false }),
+    r => ({ ...r, status: 'timeout' }),
+    r => ({ ...r, status: 'cancelled', cancelled: true }),
+    r => ({ ...r, captureId: 'old-capture' }),
+  ];
+  for (const change of variants) {
+    const f = callController(['not okay', 'yes', 'yes'], undefined, false,
+      r => r.transcript === 'not okay' ? r : change(r));
+    f.trigger(); await f.settle();
+    assert.deepEqual(f.dialed, []);
+    assert.equal(f.saved.at(-1)?.response, 'not_ok');
+    assert.equal(f.states.at(-1)?.last?.result.contactCall, 'unconfirmed_offer');
+    assert.equal(f.said.filter(s => s.includes('Would you like')).length, 2);
+  }
 });

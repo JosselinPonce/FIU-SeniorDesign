@@ -396,9 +396,9 @@ export class SafetyController {
         if (current()) this.set({ check: { episode: ep, phase: 'speaking', question } });
         return base.speak(text, lang);
       },
-      listen: (lang, ms, hints) => {
+      listen: (lang, ms, hints, captureId) => {
         if (current()) this.set({ check: { episode: ep, phase: 'listening', question } });
-        return base.listen(lang, ms, hints);
+        return base.listen(lang, ms, hints, captureId);
       },
       cancel: () => base.cancel(),
     };
@@ -445,7 +445,7 @@ export class SafetyController {
       if (result.contactCall === 'contact_unavailable') handoff = contact.error ?? 'missing_contact';
       if (result.contactCall === 'explicit_request' || result.contactCall === 'accepted_offer') {
         // onChange may synchronously end the drive. Recheck immediately before the platform action.
-        if (!current() || !profileId || (mode === 'live' && !sessionId)) handoff = 'cancelled';
+        if (!current() || !voice.authorizesContact(result) || !profileId || (mode === 'live' && !sessionId)) handoff = 'cancelled';
         else if (!contact.phone) handoff = contact.error ?? 'missing_contact';
         else {
           try {

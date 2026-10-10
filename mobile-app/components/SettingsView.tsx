@@ -14,6 +14,7 @@ import { VoicePicker } from './VoicePicker';
 import { CalibrationCard } from './CalibrationCard';
 import { ThresholdHistory } from './ThresholdHistory';
 import { ResponsivenessDiagnostics } from './ResponsivenessDiagnostics';
+import { ASSISTANT_MODES, type AssistantMode } from '../lib/assistant/mode';
 
 type Drive = ReturnType<typeof useDriveSession>;
 
@@ -34,6 +35,10 @@ const MODES: { key: StorageMode; title: string; body: string }[] = [
 
 export function SettingsView(props: {
   drive: Drive;
+  assistantMode: AssistantMode | null;
+  assistantModeBusy: boolean;
+  assistantModeError: string;
+  onAssistantModeChange(mode: AssistantMode): Promise<void>;
   autoOn: boolean;
   setAutoOn: (v: boolean) => void;
   onWiped: () => Promise<void>;
@@ -73,6 +78,22 @@ export function SettingsView(props: {
 
   return (
     <ScrollView contentContainerStyle={st.container}>
+      <Card>
+        <SectionTitle>Assistant Mode</SectionTitle>
+        <Text style={st.note}>For development and demonstrations. Live biometric warnings always use the existing deterministic safety workflow.</Text>
+        {ASSISTANT_MODES.map(mode => <Pressable key={mode.key} accessibilityRole="radio"
+          accessibilityState={{ selected: props.assistantMode === mode.key, disabled: props.assistantModeBusy }}
+          disabled={props.assistantModeBusy}
+          onPress={() => void props.onAssistantModeChange(mode.key)}
+          style={[st.mode, props.assistantMode === mode.key && st.modeOn, props.assistantModeBusy && { opacity: 0.6 }]}>
+          <View style={[st.radio, props.assistantMode === mode.key && st.radioOn]} />
+          <View style={{ flex: 1, gap: 3 }}><Text style={st.modeTitle}>{mode.title}</Text><Text style={st.modeBody}>{mode.body}</Text></View>
+        </Pressable>)}
+        {props.assistantMode === null ? <Text style={st.note}>Loading Assistant Mode…</Text> : null}
+        {props.assistantModeError ? <Text accessibilityLiveRegion="polite" style={st.note}>{props.assistantModeError}</Text> : null}
+        {props.assistantMode === 'core' ? <Text style={st.note}>CORE tools are below: “Try the voice check” under Safety checks, and “Demo — trigger a warning”. These tools keep their existing behavior.</Text> : null}
+        <Text style={st.note}>Mode changes apply to the next interaction. Finish the current interaction before switching.</Text>
+      </Card>
       <Card>
         <SectionTitle>Driver profile</SectionTitle>
         <Text style={st.note}>{d.driver?.display_name}</Text>

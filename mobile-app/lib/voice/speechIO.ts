@@ -19,21 +19,19 @@ import { responsiveness, responsivenessProbe } from './responsivenessDiagnostics
  * uses playAndRecord with defaultToSpeaker + Bluetooth, not the recogniser's
  * default "measurement" mode.
  *
- * Listening: expo-speech-recognition → iOS SFSpeechRecognizer / Android
- * SpeechRecognizer with requiresOnDeviceRecognition when the device supports
- * it for that language, so audio never leaves the phone. contextualStrings
- * bias the recogniser toward the expected answers ("yes", "no", "I need
- * help"...). If on-device recognition isn't available the OS's own free
- * service is used (no key, no charge). If recognition isn't possible at all
- * (permission denied), listen() simply waits out the window and returns
- * null -- the driver can still answer with the buttons, and silence counts as
- * no response.
+ * Listening: iOS uses the existing strict native offline recognizer, preserving
+ * genuine Apple final evidence. Expo iOS metadata-derived final flags are not
+ * consent evidence. Other platforms retain their existing recognition adapter.
+ * Partial/timeout text may guide wellness but cannot authorize contact handoff.
  *
  * Nothing is recorded or stored: transcripts only live for the check.
  */
 import { Platform } from 'react-native';
 import * as Speech from 'expo-speech';
 import { ExpoSpeechRecognitionModule } from 'expo-speech-recognition';
+
+import { listenOffline, cancelOfflineListening } from '../../modules/local-foundation-models';
+import { recognitionEvidence, type CoreRecognition } from './coreRecognition';
 
 import type { Lang, VoiceIO } from './voiceCheck';
 
@@ -132,7 +130,10 @@ function promptAudio() {
 let releaseSafetyAudio: (() => void) | null = null;
 let safetyReleasePending: Promise<void> = Promise.resolve();
 
+let nativeRecognitionPending: Promise<unknown> = Promise.resolve();
+
 async function waitForSpeechIdle() {
+  await nativeRecognitionPending;
   for (let attempt = 0; attempt < 40; attempt++) {
     const [speaking, recognition] = await Promise.all([
       Speech.isSpeakingAsync(), ExpoSpeechRecognitionModule.getStateAsync(),
@@ -189,7 +190,7 @@ export function phoneVoiceIO(): VoiceIO {
       if (epoch !== cancelEpoch) throw new Error("Voice check cancelled");
       promptAudio();
       timing('playback session setup returned');
-      await new Promise<void>((resolve) => {
+      await new Promise<void>((resolve, reject) => {
         Speech.speak(text, {
           language: LOCALE[lang],
           voice,
@@ -198,23 +199,40 @@ export function phoneVoiceIO(): VoiceIO {
           useApplicationAudioSession: true,
           onStart: () => timing('playback started'),
           onDone: () => { timing('playback completed'); resolve(); },
-          onStopped: () => { timing('playback stopped'); resolve(); },
-          onError: () => { timing('playback error'); resolve(); },
+          onStopped: () => { timing('playback stopped'); reject(new Error('Prompt playback stopped')); },
+          onError: () => { timing('playback error'); reject(new Error('Prompt playback failed')); },
         });
       });
     },
 
-    async listen(lang, ms, hints) {
+    async listen(lang, ms, hints, captureId) {
       const timing = responsivenessProbe('warning', 'recognition');
       const epoch = cancelEpoch;
       await acquire();
       timing('audio ownership acquired');
       if (epoch !== cancelEpoch) return null;
-      return new Promise<string | null>((resolve) => {
+      if (Platform.OS === 'ios') {
+        cancelListen = () => { void cancelOfflineListening(captureId).catch(() => {}); };
+        try {
+          const pending = listenOffline(LOCALE[lang], captureId, ms);
+          nativeRecognitionPending = pending.catch(() => {});
+          const result = await pending;
+          return recognitionEvidence(captureId, { ...result,
+            status: result.locale === LOCALE[lang] && result.requiresOnDeviceRecognition === true ? result.status : 'error',
+          }, epoch === cancelEpoch);
+        } catch {
+          return recognitionEvidence(captureId, { status: 'error', transcript: '', isFinal: false }, epoch === cancelEpoch);
+        } finally {
+          cancelListen = null;
+          cleanupNeeded = true;
+        }
+      }
+      return new Promise<CoreRecognition>((resolve) => {
         let best = '';
+        let failed = false;
         let finished = false;
         const subs: { remove(): void }[] = [];
-        const finish = (value: string | null) => {
+        const finish = (value: string | null, status: CoreRecognition['status'] = 'timeout', final = false) => {
           if (finished) return;
           finished = true;
           clearTimeout(timer);
@@ -227,10 +245,10 @@ export function phoneVoiceIO(): VoiceIO {
           } catch {
             // already stopped
           }
-          resolve(value);
+          resolve(recognitionEvidence(captureId, { status: failed ? 'error' : status, transcript: value ?? '', finalTranscript: final ? value ?? '' : '', isFinal: final, finalResultReceived: final }, epoch === cancelEpoch));
         };
         const timer = setTimeout(() => { timing('window timeout', { hasText: !!best }); finish(best || null); }, ms);
-        cancelListen = () => { timing('cancel requested'); finish(null); };
+        cancelListen = () => { timing('cancel requested'); finish(null, 'cancelled'); };
 
         try {
           if (__DEV__ && responsiveness.isEnabled()) {
@@ -245,13 +263,15 @@ export function phoneVoiceIO(): VoiceIO {
           }
           subs.push(
             ExpoSpeechRecognitionModule.addListener('result', (e) => {
+              if (finished || epoch !== cancelEpoch) return;
               const text = e.results[0]?.transcript ?? '';
               if (text && !e.isFinal) timing('first partial received');
               if (e.isFinal) timing('final callback received', { isFinal: true, hasText: !!text });
               if (text) best = text;
-              if (e.isFinal && best) finish(best);
+              if (e.isFinal) finish(text || null, text.trim() ? 'success' : 'incomplete', !!text.trim());
             }),
             ExpoSpeechRecognitionModule.addListener('error', () => {
+              failed = true;
               timing('recognition error event');
               // no-speech, not-allowed, network...: keep the window open so the
               // buttons still work; resolve with whatever was heard at the end.

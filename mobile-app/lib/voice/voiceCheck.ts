@@ -23,12 +23,16 @@
  */
 import { understand, understandCallAnswer, mentionsEmergencyServices } from './intent.ts';
 
+import { successfulFinal, type CoreRecognition } from './coreRecognition.ts';
+
+let nextCheck = 0;
+
 export type Lang = 'en' | 'es';
 
 export type VoiceIO = {
   speak(text: string, lang: Lang): Promise<void>;
-  /** Resolves with what was heard, or null if nothing (or recognition is unavailable). */
-  listen(lang: Lang, ms: number, hints: string[]): Promise<string | null>;
+  /** Legacy strings may inform wellness, but only scoped final evidence can authorize contact. */
+  listen(lang: Lang, ms: number, hints: string[], captureId: string): Promise<CoreRecognition | string | null>;
   /** Stops any speech or listening in progress. */
   cancel(): void;
 };
@@ -81,6 +85,17 @@ const TEXT = {
 export class VoiceCheck {
   private buttonAnswer: ((r: CheckAnswer | 'cancel') => void) | null = null;
   private cancelled = false;
+  private readonly checkId = ++nextCheck;
+  private captureNumber = 0;
+  private captureId = '';
+  private consent: { captureId: string; decision: ContactCallDecision; evidence?: CoreRecognition; button?: true } | null = null;
+
+  authorizesContact(result: CheckResult): boolean {
+    const proof = this.consent;
+    return !this.cancelled && !this.emergencyServices && !!proof
+      && proof.captureId === this.captureId && proof.decision === result.contactCall
+      && (proof.button === true || (!!proof.evidence && successfulFinal(proof.evidence, proof.captureId)));
+  }
   private knownWellness: CheckResult | null = null;
   private emergencyServices = false;
   private question: CheckQuestion = 'wellness';
@@ -116,6 +131,7 @@ export class VoiceCheck {
   private async ask(prompt: string, question: CheckQuestion, hints: string[]) {
     if (this.cancelled) throw new Error('Check cancelled');
     this.question = question;
+    const captureId = this.captureId = `core-${this.checkId}-${++this.captureNumber}`;
     const button = new Promise<{ button: CheckAnswer | 'cancel' }>((resolve) => {
       this.buttonAnswer = (answer) => resolve({ button: answer });
     });
@@ -125,8 +141,12 @@ export class VoiceCheck {
       const answer = await Promise.race([
         (async () => {
           await this.io.speak(prompt, this.lang);
-          if (settled || this.cancelled) return { text: null };
-          return { text: await this.io.listen(this.lang, LISTEN_MS, hints) };
+          if (settled || this.cancelled) return { text: null, final: false, captureId, evidence: undefined };
+          const evidence = await this.io.listen(this.lang, LISTEN_MS, hints, captureId);
+          if (settled || this.cancelled || this.captureId !== captureId) return { text: null, final: false, captureId, evidence: undefined };
+          if (typeof evidence === 'string' || evidence === null) return { text: evidence, final: false, captureId, evidence: undefined };
+          const usable = evidence.captureId === captureId && !evidence.cancelled && !['cancelled', 'stale', 'error'].includes(evidence.status);
+          return { text: usable ? evidence.transcript : null, final: usable && successfulFinal(evidence, captureId), captureId, evidence };
         })(),
         button,
       ]);
@@ -152,10 +172,13 @@ export class VoiceCheck {
         const u = understand(heard.text);
         if (u.intent === 'ok' || u.intent === 'not_ok') {
           result = { outcome: u.intent, urgent: u.urgent, channel: 'voice', attempts: index + 1,
-            confidence: u.confidence, contactCall: u.contactCallRequested ? 'explicit_request' : 'not_requested' };
+            confidence: u.confidence, contactCall: u.contactCallRequested && heard.final ? 'explicit_request' : 'not_requested' };
         }
       }
-      if (result) break;
+      if (result) {
+        if (result.contactCall === 'explicit_request' && 'text' in heard) this.consent = { captureId: heard.captureId, decision: 'explicit_request', evidence: heard.evidence };
+        break;
+      }
     }
     this.knownWellness = result;
     if (!result) {
@@ -192,7 +215,10 @@ export class VoiceCheck {
       // End this call branch; a later yes or button tap cannot undo the exclusion.
       if (this.emergencyServices) return { ...result, contactCall: 'emergency_services' };
       const answer = 'button' in heard ? (heard.button === 'call_yes' ? 'yes' : 'no') : understandCallAnswer(heard.text);
-      if (answer === 'yes') return { ...result, contactCall: 'accepted_offer' };
+      if (answer === 'yes' && ('button' in heard || heard.final)) {
+        this.consent = { captureId: this.captureId, decision: 'accepted_offer', ...('button' in heard ? { button: true as const } : { evidence: heard.evidence }) };
+        return { ...result, contactCall: 'accepted_offer' };
+      }
       if (answer === 'no') return { ...result, contactCall: 'declined_offer' };
     }
     return { ...result, contactCall: 'unconfirmed_offer' };
