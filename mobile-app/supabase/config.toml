@@ -1,0 +1,6 @@
+# Stage 4A: function-only configuration. No project linking or deployment performed.
+project_id = "drivesense"
+
+[functions.driver-assistant]
+verify_jwt = true
+entrypoint = "./functions/driver-assistant/index.ts"

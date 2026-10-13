@@ -1,6 +1,8 @@
+import { useTheme } from '../../lib/theme/ThemeProvider';
+import { presentationColors, type ThemeTokens } from '../../lib/theme/tokens';
 import { useEffect, useRef, useState } from 'react';
 import { Modal, SafeAreaView, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
-import { Btn, C } from '../../components/ui';
+import { Btn } from '../../components/ui';
 import { OfflineSpeechTest } from './OfflineSpeechTest';
 import { VoiceConversationTest } from './VoiceConversationTest';
 import {
@@ -10,6 +12,8 @@ import {
 
 /** Temporary development-only entry, independent of driver/session navigation. */
 export function LocalAITest(props: { onAudioBusyChange?: (busy: boolean) => void }) {
+  const { tokens } = useTheme();
+  const styles = makeStyles(tokens);
   const [visible, setVisible] = useState(false);
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<FoundationModelsAvailability | null>(null);
@@ -152,6 +156,7 @@ export function LocalAITest(props: { onAudioBusyChange?: (busy: boolean) => void
             <TextInput
               accessibilityLabel="Typed driver response"
               placeholder="I'm feeling dizzy, please call my mom."
+              placeholderTextColor={tokens.textMuted}
               value={text}
               onChangeText={setText}
               multiline
@@ -180,7 +185,9 @@ export function LocalAITest(props: { onAudioBusyChange?: (busy: boolean) => void
   );
 }
 
-const styles = StyleSheet.create({
+const makeStyles = (tokens: ThemeTokens) => {
+const C = presentationColors(tokens);
+return StyleSheet.create({
   entry: { paddingTop: 54, paddingHorizontal: 18, paddingBottom: 8, backgroundColor: C.bg },
   modal: { flex: 1, backgroundColor: C.bg },
   content: { padding: 20, gap: 16 },
@@ -190,3 +197,4 @@ const styles = StyleSheet.create({
   error: { color: C.bad },
   input: { minHeight: 90, padding: 12, borderWidth: 1, borderColor: C.line, borderRadius: 12, backgroundColor: C.card, color: C.ink, fontSize: 16, textAlignVertical: 'top' },
 });
+};

@@ -1,3 +1,5 @@
+import { useTheme } from '../lib/theme/ThemeProvider';
+import { presentationColors, type ThemeTokens } from '../lib/theme/tokens';
 /**
  * Past drives on this phone: realistic low/high (percentiles), alerts, and --
  * for full-waveform drives -- "Unfold waveform", which opens the folded
@@ -11,7 +13,7 @@ import { deleteDriveEverywhere } from '../lib/db/deletion';
 import type { DriveAlertRow, RobustSessionStats, SessionSummary } from '../lib/db/repositories';
 import { archiveInfo, unfoldSession, type ArchiveInfo } from '../lib/archive/archiveStore';
 import type { Archive } from '../lib/archive/codec';
-import { Btn, C, Card, Pill, Row, SectionTitle, fmtBytes, fmtDuration, fmtNum } from './ui';
+import { Btn, Card, Pill, Row, SectionTitle, fmtBytes, fmtDuration, fmtNum } from './ui';
 import { Waveform } from './charts';
 
 const KIND: Record<string, string> = {
@@ -34,6 +36,8 @@ const when = (iso: string) =>
   new Date(iso).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 
 function Detail(props: { session: SessionSummary; onBack: () => void }) {
+  const { colors: C, tokens } = useTheme();
+  const st = makeStyles(tokens);
   const [stats, setStats] = useState<RobustSessionStats | null>(null);
   const [alerts, setAlerts] = useState<DriveAlertRow[]>([]);
   const [info, setInfo] = useState<ArchiveInfo | null>(null);
@@ -183,6 +187,8 @@ function Detail(props: { session: SessionSummary; onBack: () => void }) {
 }
 
 function Big(props: { label: string; value: string; color: string }) {
+  const { colors: C, tokens } = useTheme();
+  const st = makeStyles(tokens);
   return (
     <View style={{ flex: 1, alignItems: 'center' }}>
       <Text style={[st.bigValue, { color: props.color }]}>{props.value}</Text>
@@ -192,6 +198,8 @@ function Big(props: { label: string; value: string; color: string }) {
 }
 
 export function HistoryView(props: { refreshKey: string }) {
+  const { colors: C, tokens } = useTheme();
+  const st = makeStyles(tokens);
   const [sessions, setSessions] = useState<SessionSummary[] | null>(null);
   const [open, setOpen] = useState<SessionSummary | null>(null);
   const [refreshing, setRefreshing] = useState(false);
@@ -249,15 +257,18 @@ export function HistoryView(props: { refreshKey: string }) {
   );
 }
 
-const st = StyleSheet.create({
-  container: { padding: 16, gap: 12, paddingBottom: 40 },
-  back: { color: C.brand, fontSize: 16, fontWeight: '700' },
-  title: { fontSize: 26, fontWeight: '800', color: C.ink },
-  sub: { fontSize: 13, color: C.sub },
-  note: { fontSize: 12, color: C.sub, lineHeight: 17 },
-  big3: { flexDirection: 'row' },
-  bigValue: { fontSize: 30, fontWeight: '800', fontVariant: ['tabular-nums'] },
-  bigLabel: { fontSize: 12, color: C.sub },
-  item: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  itemTitle: { fontSize: 17, fontWeight: '700', color: C.ink },
-});
+const makeStyles = (tokens: ThemeTokens) => {
+  const C = presentationColors(tokens);
+  return StyleSheet.create({
+    container: { padding: 16, gap: 12, paddingBottom: 40 },
+    back: { color: C.brand, fontSize: 16, fontWeight: '700' },
+    title: { fontSize: 26, fontWeight: '800', color: C.ink },
+    sub: { fontSize: 13, color: C.sub },
+    note: { fontSize: 12, color: C.sub, lineHeight: 17 },
+    big3: { flexDirection: 'row' },
+    bigValue: { fontSize: 30, fontWeight: '800', fontVariant: ['tabular-nums'] },
+    bigLabel: { fontSize: 12, color: C.sub },
+    item: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+    itemTitle: { fontSize: 17, fontWeight: '700', color: C.ink },
+  });
+};

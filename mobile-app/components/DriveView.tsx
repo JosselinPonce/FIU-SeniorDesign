@@ -1,13 +1,18 @@
+import { useState } from 'react';
+import { CompactVitalCard } from './CompactVitalCard';
+import { InformationButton } from './Information';
+import { useTheme } from '../lib/theme/ThemeProvider';
+import { presentationColors, type ThemeTokens } from '../lib/theme/tokens';
 /**
  * The in-car screen: is everything connected, what are the vitals, is data
  * flowing, and one big start/stop button. Technical detail lives in Settings.
  */
-import { Linking, Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Linking, Modal, Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
 
 import type { useDriveSession } from '../lib/hooks/useDriveSession';
 import { CHART_SECONDS } from '../lib/hooks/useDriveSession';
-import { Btn, C, Card, Pill, Row, SectionTitle, fmtBytes, fmtClock, fmtDuration, fmtNum, type Tone } from './ui';
-import { RateDot, VitalChart } from './charts';
+import { Btn, Card, Pill, Row, SectionTitle, fmtBytes, fmtClock, fmtDuration, fmtNum, type Tone } from './ui';
+import { RateDot } from './charts';
 import { PERFUSION_HINT } from '../lib/analysis/signal';
 
 type Drive = ReturnType<typeof useDriveSession>;
@@ -30,16 +35,21 @@ const OUTCOME_TEXT: Record<string, string> = {
 
 /** Phone → Pi → wheel sensor, each hop with its own state. */
 function Chain(props: { drive: Drive }) {
+  const { colors: C, tokens } = useTheme();
+  const st = makeStyles(tokens);
   const d = props.drive;
   const now = Date.now();
-  const fresh = d.lastRx !== null && now - d.lastRx.getTime() < 3000;
-  const piOk = d.isConnected;
-  const espOk = piOk && (d.link?.source === 'esp32' || d.relay?.esp === true);
+  const fresh = d.lastRx !== null && now >= d.lastRx.getTime() && now - d.lastRx.getTime() < 3000;
+  const direct = d.isConnected && d.link?.source === 'esp32';
+  const piOk = d.isConnected && d.link?.source === 'relay';
+  const espOk = direct || (piOk && d.relay?.esp === true);
   const hop = (ok: boolean, label: string, detail: string) => (
     <View style={st.hop}>
-      <View style={[st.hopDot, { backgroundColor: ok ? C.good : C.faint }]} />
+      <View accessible={false} style={{ width: 18, height: 18, borderWidth: 2, borderColor: ok ? tokens.connected : tokens.textMuted, borderRadius: label === 'Wheel' ? 9 : 3, alignItems: 'center', justifyContent: 'center' }}>
+        <Text style={{ fontSize: 10, lineHeight: 12, color: ok ? tokens.connected : tokens.textMuted }}>{label === 'Wheel' ? '┼' : label === 'Phone' ? '·' : '▦'}</Text>
+      </View>
       <Text style={[st.hopLabel, !ok && { color: C.faint }]}>{label}</Text>
-      <Text style={st.hopDetail} numberOfLines={1}>
+      <Text style={st.hopDetail}>
         {detail}
       </Text>
     </View>
@@ -47,41 +57,33 @@ function Chain(props: { drive: Drive }) {
   const searching =
     d.connection === 'scanning' || d.connection === 'connecting' || d.connection === 'discovering' || d.connection === 'waiting';
   return (
-    <Card>
+    <Card style={{ padding: 12, gap: 2 }}>
       <View style={st.chain}>
-        {hop(true, 'Phone', d.live?.ok === false ? 'offline' : 'online')}
-        <View style={[st.link, { backgroundColor: piOk ? C.good : C.line }]} />
-        {hop(piOk, 'Pi', piOk ? 'connected' : searching ? 'searching…' : 'not found')}
-        <View style={[st.link, { backgroundColor: espOk ? C.good : C.line }]} />
         {hop(espOk && fresh, 'Wheel', espOk ? (fresh ? 'streaming' : 'quiet') : 'waiting')}
+        <Text accessible={false} style={{ color: tokens.textMuted, paddingHorizontal: 5 }}>→</Text>
+        {hop(piOk, 'Raspberry Pi', direct ? 'bypassed (direct)' : piOk ? 'connected' : searching ? 'searching…' : 'not found')}
+        <Text accessible={false} style={{ color: tokens.textMuted, paddingHorizontal: 5 }}>→</Text>
+        {hop(d.isConnected && (piOk || direct), 'Phone', d.isConnected && (piOk || direct) ? 'BLE connected' : 'app ready')}
+      <InformationButton compact title="Connectivity" body="The wheel sends readings through the Raspberry Pi to this phone. In direct ESP32 bench mode, the Pi is bypassed. App readiness does not confirm an internet connection; cloud synchronization is reported separately." />
       </View>
+
       {d.error && !piOk ? <Text style={st.subtle}>{d.error}</Text> : null}
       {d.notice ? <Text style={[st.subtle, { color: C.warn }]}>{d.notice}</Text> : null}
     </Card>
   );
 }
 
-function VitalTile(props: { label: string; value: number | null; unit: string; avg: number | null; color: string; soft: string }) {
-  return (
-    <View style={[st.tile, { backgroundColor: props.soft }]}>
-      <Text style={[st.tileLabel, { color: props.color }]}>{props.label}</Text>
-      <Text style={[st.tileValue, { color: props.value === null ? C.faint : props.color }]} accessibilityLiveRegion="polite">
-        {props.value ?? '--'}
-      </Text>
-      <Text style={st.tileUnit}>
-        {props.unit} · avg {fmtNum(props.avg)}
-      </Text>
-    </View>
-  );
-}
-
-export function DriveView(props: { drive: Drive; busy: boolean; guard: (fn: () => Promise<unknown>) => void }) {
+export function DriveView(props: { drive: Drive; busy: boolean; guard: (fn: () => Promise<unknown>) => void; onOpenVitals(): void }) {
+  const { colors: C, tokens } = useTheme();
+  const st = makeStyles(tokens);
   const d = props.drive;
+  const [details, setDetails] = useState(false);
   const now = Date.now();
+  const { width, fontScale } = useWindowDimensions();
 
   const signal: { tone: Tone; text: string } = !d.lastRx
     ? { tone: 'neutral', text: 'Waiting for the wheel' }
-    : now - d.lastRx.getTime() > 3000
+    : !d.isConnected || now < d.lastRx.getTime() || now - d.lastRx.getTime() >= 3000
       ? { tone: 'warn', text: 'Wheel went quiet' }
       : !d.finger
         ? { tone: 'warn', text: 'Place your hand on the sensor' }
@@ -91,6 +93,9 @@ export function DriveView(props: { drive: Drive; busy: boolean; guard: (fn: () =
 
   const sf = d.safety;
   const th = sf.th;
+  const hasDriveDetails = (!d.hasActiveSession && (d.fold.state === 'folding' || d.fold.state === 'done'))
+    || d.fold.state === 'failed' || !!sf.last || d.trend?.status === 'elevated' || !!sf.advisory
+    || (!!d.voice && !d.voice.granted);
   // The shaded "usual" zone on the chart: personal band ± 2 SD, inside the warning lines.
   const usual =
     sf.band && th
@@ -100,8 +105,27 @@ export function DriveView(props: { drive: Drive; busy: boolean; guard: (fn: () =
   return (
     <ScrollView contentContainerStyle={st.container}>
       <Chain drive={d} />
+      <View style={{ gap: 8, paddingHorizontal: 2 }}>
+        {!d.hasActiveSession ? (
+          <>
+            <Btn
+              title={d.isConnected ? 'Start drive' : 'Start drive (waiting for the Pi)'}
+              disabled={!d.isConnected}
+              busy={props.busy}
+              onPress={() => props.guard(d.startSession)}
+            />
+            <Text style={st.subtle}>Not recording</Text>
+          </>
+        ) : (
+          <>
+            <Btn title="End drive" kind="danger" busy={props.busy} onPress={() => props.guard(d.endSession)} />
+            <Text style={st.subtle}>Recording · {d.session ? fmtDuration(now - new Date(d.session.started_at).getTime()) : '—'} · {d.stored} readings saved</Text>
+          </>
+        )}
+      </View>
 
-      <Card>
+      <Text accessibilityRole="header" style={{ color: tokens.text, fontSize: 19, fontWeight: '700' }}>Live Vitals</Text>
+      <View style={{ gap: 6, paddingHorizontal: 2 }}>
         <View style={st.between}>
           <Pill tone={signal.tone}>{signal.text}</Pill>
           {d.finger && d.signal?.hrBeats != null ? (
@@ -118,16 +142,13 @@ export function DriveView(props: { drive: Drive; busy: boolean; guard: (fn: () =
             <Text style={st.subtle}>quality {d.quality}%</Text>
           ) : null}
         </View>
-        <View style={st.tiles}>
-          <VitalTile label="Heart rate" value={d.bpm} unit="BPM" avg={d.avgBpm} color={C.heart} soft={C.heartSoft} />
-          <VitalTile label="Oxygen (estimate)" value={d.spo2} unit="% SpO₂" avg={d.avgSpo2} color={C.oxygen} soft={C.oxygenSoft} />
-        </View>
         {sf.demo ? (
           <View style={[st.watch, { backgroundColor: C.brandSoft }]}>
             <Text style={[st.watchText, { color: C.brand }]}>
               DEMO · fabricated {sf.demo.value}
               {sf.demo.scenario === 'spo2' ? '%' : ' BPM'} · {sf.demo.step}
             </Text>
+            <Text style={st.subtle}>Cards show sensor data. The simulated warning reading is separate.</Text>
           </View>
         ) : null}
         {sf.tracking ? (
@@ -135,58 +156,48 @@ export function DriveView(props: { drive: Drive; busy: boolean; guard: (fn: () =
             <Text style={st.watchText}>{WATCH_TEXT[sf.tracking.kind] ?? 'Checking…'}</Text>
           </View>
         ) : null}
-        {th && sf.band ? (
-          <Text style={st.subtle}>
-            Watching for heart rate below {th.lowWarn} or above {th.highWarn} BPM, oxygen below {th.spo2Warn + 1}%.{' '}
-            {sf.band.weight >= 0.5
-              ? 'Tuned to your own drives.'
-              : sf.band.weight > 0
-                ? 'Learning your normal from your drives.'
-                : 'Based on your profile (age, sex, BMI, conditions).'}
-          </Text>
-        ) : null}
-        <SectionTitle>Heart rate · last {CHART_SECONDS / 60} min</SectionTitle>
-        <VitalChart points={d.bpmSeries} seconds={CHART_SECONDS} color={C.heart} min={40} max={160} band={usual} />
-        <SectionTitle>Oxygen · last {CHART_SECONDS / 60} min</SectionTitle>
-        <VitalChart points={d.spo2Series} seconds={CHART_SECONDS} color={C.oxygen} min={85} max={100} height={52} />
-      </Card>
 
-      <Card>
-        <SectionTitle>Drive</SectionTitle>
-        {!d.hasActiveSession ? (
-          <>
-            <Text style={st.body}>
-              {d.storageMode === 'full'
-                ? 'Saving vitals + full waveform (folded into a compact archive when you finish).'
-                : 'Saving vitals only (heart rate and oxygen each second).'}{' '}
-              Change this in Settings.
-            </Text>
-            <Btn
-              title={d.isConnected ? 'Start drive' : 'Start drive (waiting for the Pi)'}
-              disabled={!d.isConnected}
-              busy={props.busy}
-              onPress={() => props.guard(d.startSession)}
-            />
-          </>
-        ) : (
-          <>
+      </View>
+
+      <View style={[st.tiles, (width < 320 || fontScale > 1.4) && { flexDirection: 'column' }]}>
+        <CompactVitalCard metric="heart" label="Heart Rate" value={d.bpm} unit="BPM" average={d.avgBpm} points={d.bpmSeries}
+          connected={d.isConnected} lastRx={d.lastRx} now={now} seconds={CHART_SECONDS} min={40} max={160} band={usual} warningBounds={th ? { low: th.lowWarn, high: th.highWarn } : undefined} />
+        <CompactVitalCard metric="oxygen" label="SpO₂ (estimate)" value={d.spo2} unit="%" average={d.avgSpo2} points={d.spo2Series}
+          connected={d.isConnected} lastRx={d.lastRx} now={now} seconds={CHART_SECONDS} min={85} max={100} warningBounds={th ? { low: th.spo2Warn } : undefined} />
+      </View>
+      <Btn title="View Detailed Vitals" kind="ghost" onPress={props.onOpenVitals} />
+      <Pressable accessibilityRole="button" accessibilityState={{ expanded: details }} onPress={() => setDetails(value => !value)} style={{ minHeight: 44, justifyContent: 'center' }}>
+        <Text style={{ color: tokens.textSecondary, fontWeight: '600' }}>{details ? '−' : '+'} Monitoring details</Text>
+      </Pressable>
+      {details ? <Card>
             <Row label="Recording since" value={d.session ? fmtClock(new Date(d.session.started_at)) : '—'} />
             <Row label="Duration" value={d.session ? fmtDuration(now - new Date(d.session.started_at).getTime()) : '—'} />
             <Row label="Readings saved" value={String(d.stored)} />
             <Row
-              label="Live on the dashboard"
+              label="Cloud sync"
               value={
                 d.live?.ok === false
                   ? 'queued (offline)'
                   : d.live?.lastPushAt
                     ? `${Math.max(0, Math.round((now - d.live.lastPushAt.getTime()) / 1000))} s ago`
-                    : 'starting…'
+                    : 'awaiting first upload'
               }
-              tone={d.live?.ok === false ? 'warn' : 'good'}
+              tone={d.live?.ok === false ? 'warn' : 'neutral'}
             />
-            <Btn title="End drive" kind="danger" busy={props.busy} onPress={() => props.guard(d.endSession)} />
-          </>
-        )}
+        {!d.hasActiveSession ? (
+          <Text style={st.body}>
+              {d.storageMode === 'full'
+                ? 'Not recording. Starting a drive saves vitals + full waveform (folded into a compact archive when you finish).'
+                : 'Not recording. Starting a drive saves heart rate and oxygen each second.'}{' '}
+              Change this in Settings.
+          </Text>
+        ) : null}
+        <InformationButton title="Personalized vitals" body="Your profile provides the starting range. As you accumulate drives, the range learns your usual readings. The shaded heart-rate band shows your usual range within the warning thresholds. Missing chart values are gaps, not zero readings." />
+        <SectionTitle right={d.sampleRate ? <Text style={st.subtle}>{d.samplesPerPacket} samples/packet @ {d.sampleRate} Hz</Text> : null}>Data flow</SectionTitle>
+        <RateDot series={d.rateSeries} />
+      </Card> : null}
+      {hasDriveDetails ? <Card>
+        <SectionTitle>Drive details</SectionTitle>
         {!d.hasActiveSession && d.fold.state === 'folding' ? <Text style={st.body}>Folding the waveform archive…</Text> : null}
         {!d.hasActiveSession && d.fold.state === 'done' ? (
           <Text style={st.body}>
@@ -239,14 +250,7 @@ export function DriveView(props: { drive: Drive; busy: boolean; guard: (fn: () =
         {d.voice && !d.voice.granted ? (
           <Text style={st.body}>Voice check is off (microphone or speech not allowed). Checks will use the on-screen buttons.</Text>
         ) : null}
-      </Card>
-
-      <Card>
-        <SectionTitle right={d.sampleRate ? <Text style={st.subtle}>{d.samplesPerPacket} samples/packet @ {d.sampleRate} Hz</Text> : null}>
-          Data flow
-        </SectionTitle>
-        <RateDot series={d.rateSeries} />
-      </Card>
+      </Card> : null}
 
     </ScrollView>
   );
@@ -254,6 +258,8 @@ export function DriveView(props: { drive: Drive; busy: boolean; guard: (fn: () =
 
 /** The voice-check prompt. Rendered by the app shell so it appears on every tab. */
 export function VoiceCheckModal(props: { drive: Drive }) {
+  const { colors: C, tokens } = useTheme();
+  const st = makeStyles(tokens);
   const d = props.drive;
   const sf = d.safety;
   const offer = sf.check?.question === 'contact_offer';
@@ -286,33 +292,31 @@ export function VoiceCheckModal(props: { drive: Drive }) {
   );
 }
 
-const st = StyleSheet.create({
-  container: { padding: 16, gap: 14, paddingBottom: 40 },
-  chain: { flexDirection: 'row', alignItems: 'center' },
-  hop: { alignItems: 'center', width: 78 },
-  hopDot: { width: 14, height: 14, borderRadius: 7, marginBottom: 4 },
-  hopLabel: { fontSize: 14, fontWeight: '700', color: C.ink },
-  hopDetail: { fontSize: 11, color: C.sub },
-  link: { flex: 1, height: 3, borderRadius: 2, marginBottom: 30 },
-  between: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  tiles: { flexDirection: 'row', gap: 10 },
-  tile: { flex: 1, borderRadius: 16, padding: 14, alignItems: 'center' },
-  tileLabel: { fontSize: 13, fontWeight: '700' },
-  tileValue: { fontSize: 56, fontWeight: '800', lineHeight: 64, fontVariant: ['tabular-nums'] },
-  tileUnit: { fontSize: 12, color: C.sub },
-  subtle: { fontSize: 12, color: C.sub },
-  body: { fontSize: 14, color: C.sub, lineHeight: 20 },
-  scrim: { flex: 1, backgroundColor: 'rgba(15,23,42,0.55)', justifyContent: 'center', padding: 24 },
-  alertBox: { backgroundColor: '#fff', borderRadius: 24, padding: 22, gap: 12 },
-  alertTitle: { fontSize: 24, fontWeight: '800', color: C.ink },
-  alertBody: { fontSize: 16, color: C.ink, lineHeight: 22 },
-  alertHint: { fontSize: 12, color: C.sub },
-  callRow: { flexDirection: 'row', gap: 10 },
-  watch: { backgroundColor: C.warnSoft, borderRadius: 12, padding: 10 },
-  watchText: { color: C.warn, fontWeight: '700', fontSize: 14 },
-  phase: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  phaseDot: { width: 12, height: 12, borderRadius: 6 },
-  phaseText: { fontSize: 15, fontWeight: '600', color: C.ink },
-  unwell: { paddingVertical: 14, alignItems: 'center', borderRadius: 14, backgroundColor: C.badSoft },
-  unwellText: { color: C.bad, fontWeight: '700', fontSize: 16 },
-});
+const makeStyles = (tokens: ThemeTokens) => {
+  const C = presentationColors(tokens);
+  return StyleSheet.create({
+    container: { padding: 14, gap: 12, paddingBottom: 40 },
+    chain: { flexDirection: 'row', alignItems: 'center' },
+    hop: { alignItems: 'center', flex: 1 },
+    hopDot: { width: 8, height: 8, borderRadius: 4, marginBottom: 4 },
+    hopLabel: { textAlign: 'center', fontSize: 12, fontWeight: '700', color: C.ink },
+    hopDetail: { fontSize: 11, color: C.sub, textAlign: 'center' },
+    between: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, justifyContent: 'space-between', alignItems: 'center' },
+    tiles: { flexDirection: 'row', gap: 10 },
+    subtle: { fontSize: 12, color: C.sub },
+    body: { fontSize: 14, color: C.sub, lineHeight: 20 },
+    scrim: { flex: 1, backgroundColor: tokens.overlay, justifyContent: 'center', padding: 24 },
+    alertBox: { backgroundColor: tokens.surface, borderRadius: 24, padding: 22, gap: 12 },
+    alertTitle: { fontSize: 24, fontWeight: '800', color: C.ink },
+    alertBody: { fontSize: 16, color: C.ink, lineHeight: 22 },
+    alertHint: { fontSize: 12, color: C.sub },
+    callRow: { flexDirection: 'row', gap: 10 },
+    watch: { backgroundColor: C.warnSoft, borderRadius: 12, padding: 10 },
+    watchText: { color: C.warn, fontWeight: '700', fontSize: 14 },
+    phase: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+    phaseDot: { width: 12, height: 12, borderRadius: 6 },
+    phaseText: { fontSize: 15, fontWeight: '600', color: C.ink },
+    unwell: { paddingVertical: 14, alignItems: 'center', borderRadius: 14, backgroundColor: C.badSoft },
+    unwellText: { color: C.bad, fontWeight: '700', fontSize: 16 },
+  });
+};

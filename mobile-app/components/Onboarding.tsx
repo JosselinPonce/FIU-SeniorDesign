@@ -1,3 +1,5 @@
+import { useTheme } from '../lib/theme/ThemeProvider';
+import { presentationColors, type ThemeTokens } from '../lib/theme/tokens';
 /**
  * First-run introduction: what Smart Wheel does, how the safety check works,
  * why the profile matters, what happens to the data, and voice setup.
@@ -8,7 +10,7 @@ import { useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { prepareVoice } from '../lib/voice/speechIO';
-import { Btn, C } from './ui';
+import { Btn } from './ui';
 import { VoicePicker } from './VoicePicker';
 
 type Page = { eyebrow: string; title: string; body?: string; points?: [string, string][]; voice?: boolean };
@@ -65,6 +67,8 @@ const PAGES: Page[] = [
 ];
 
 export function Onboarding(props: { onDone: () => void }) {
+  const { colors: C, tokens } = useTheme();
+  const st = makeStyles(tokens);
   const [i, setI] = useState(0);
   const [voice, setVoice] = useState<'unknown' | 'granted' | 'denied'>('unknown');
   const page = PAGES[i]!;
@@ -120,19 +124,22 @@ export function Onboarding(props: { onDone: () => void }) {
   );
 }
 
-const st = StyleSheet.create({
-  root: { flex: 1, backgroundColor: C.bg, paddingTop: 60 },
-  top: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 22 },
-  dots: { flexDirection: 'row', gap: 6 },
-  dot: { width: 8, height: 8, borderRadius: 4, backgroundColor: C.line },
-  dotOn: { width: 22, backgroundColor: C.brand },
-  skip: { color: C.sub, fontWeight: '700', fontSize: 15 },
-  body: { padding: 22, gap: 14 },
-  eyebrow: { color: C.brand, fontWeight: '800', fontSize: 13, letterSpacing: 1, textTransform: 'uppercase' },
-  title: { fontSize: 28, fontWeight: '800', color: C.ink, lineHeight: 34 },
-  text: { fontSize: 16, color: C.sub, lineHeight: 23 },
-  small: { fontSize: 13 },
-  point: { backgroundColor: C.card, borderRadius: 16, padding: 14, gap: 4 },
-  pointHead: { fontSize: 16, fontWeight: '700', color: C.ink },
-  nav: { flexDirection: 'row', gap: 10, padding: 22, paddingBottom: 38 },
-});
+const makeStyles = (tokens: ThemeTokens) => {
+  const C = presentationColors(tokens);
+  return StyleSheet.create({
+    root: { flex: 1, backgroundColor: C.bg, paddingTop: 60 },
+    top: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 22 },
+    dots: { flexDirection: 'row', gap: 6 },
+    dot: { width: 8, height: 8, borderRadius: 4, backgroundColor: C.line },
+    dotOn: { width: 22, backgroundColor: C.brand },
+    skip: { color: C.sub, fontWeight: '700', fontSize: 15 },
+    body: { padding: 22, gap: 14 },
+    eyebrow: { color: C.brand, fontWeight: '800', fontSize: 13, letterSpacing: 1, textTransform: 'uppercase' },
+    title: { fontSize: 28, fontWeight: '800', color: C.ink, lineHeight: 34 },
+    text: { fontSize: 16, color: C.sub, lineHeight: 23 },
+    small: { fontSize: 13 },
+    point: { backgroundColor: C.card, borderRadius: 16, padding: 14, gap: 4 },
+    pointHead: { fontSize: 16, fontWeight: '700', color: C.ink },
+    nav: { flexDirection: 'row', gap: 10, padding: 22, paddingBottom: 38 },
+  });
+};

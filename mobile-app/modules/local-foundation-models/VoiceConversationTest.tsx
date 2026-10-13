@@ -1,8 +1,9 @@
+import { useTheme } from '../../lib/theme/ThemeProvider';
 import { useEffect, useRef, useState } from 'react';
 import { AppState, Pressable, Text, View } from 'react-native';
 import * as Speech from 'expo-speech';
 import { ExpoSpeechRecognitionModule } from 'expo-speech-recognition';
-import { Btn, C } from '../../components/ui';
+import { Btn } from '../../components/ui';
 import {
   cancelDriverInterpretation, cancelLocalSpeech, cancelOfflineListening,
   checkFoundationModelsAvailability, checkOfflineSpeechCapability, interpretDriverResponse,
@@ -14,7 +15,7 @@ import { finalTranscript, safeSpokenReply } from './conversationPolicy';
 const QUESTION = 'Are you feeling okay? Please tell me how you feel.';
 const PREVIEW = 'This is the voice for the local driving assistant test.';
 type Phase = 'idle' | 'checking prerequisites' | 'previewing voice' | 'speaking question'
-  | 'listening' | 'finalizing' | 'interpreting' | 'speaking response'
+  | 'preparing microphone' | 'listening' | 'finalizing' | 'interpreting' | 'speaking response'
   | 'complete' | 'error' | 'stopping' | 'cancelled';
 type Operation = {
   id: string;
@@ -27,6 +28,7 @@ type Operation = {
 export function VoiceConversationTest(props: {
   disabled: boolean; tryBegin: () => boolean; onBusyChange: (busy: boolean) => void;
 }) {
+  const { colors: C } = useTheme();
   const [voices, setVoices] = useState<LocalVoice[]>([]);
   const [selectedId, setSelectedId] = useState('');
   const [busy, setBusy] = useState(false);
@@ -153,13 +155,13 @@ export function VoiceConversationTest(props: {
       assertCurrent();
       progressSubscription.current = subscribeOfflineSpeechProgress(progress => {
         if (current() && progress.requestId === `${operation.id}-capture`) {
-          setPhase(progress.phase === 'finalizing' ? 'finalizing' : 'listening');
+          setPhase(progress.phase === 'preparing' ? 'preparing microphone' : progress.phase);
           setTranscript(progress.transcript);
         }
       });
       operation.resource = 'capture';
       operation.resourceId = `${operation.id}-capture`;
-      setPhase('listening');
+      setPhase('preparing microphone');
       const captured = await measured('recognitionTotalMs', () => listenOffline('en-US', operation.resourceId));
       assertCurrent();
       operation.resource = 'none';
@@ -210,28 +212,28 @@ export function VoiceConversationTest(props: {
   return (
     <View style={{ gap: 12 }}>
       <Text style={{ fontSize: 20, fontWeight: '700', color: C.ink }}>Local Voice Conversation Test</Text>
-      <Text>Advisory only. No calls or emergency actions. End-to-end offline operation remains unverified until Airplane Mode testing.</Text>
-      <Text>Question: {QUESTION}</Text>
-      <Text>Allow permission prompts first. Answer after question playback, when listening and the microphone indicator is visible.</Text>
-      <Text selectable>Selected voice: {selectedVoice ? `${selectedVoice.name} · ${selectedVoice.quality} · ${selectedVoice.language}\n${selectedVoice.id}` : 'No en-US voice selected.'}</Text>
+      <Text style={{ color: C.ink }}>Advisory only. No calls or emergency actions. End-to-end offline operation remains unverified until Airplane Mode testing.</Text>
+      <Text style={{ color: C.ink }}>Question: {QUESTION}</Text>
+      <Text style={{ color: C.ink }}>Allow permission prompts first. Answer after question playback, when listening and the microphone indicator is visible.</Text>
+      <Text style={{ color: C.ink }} selectable>Selected voice: {selectedVoice ? `${selectedVoice.name} · ${selectedVoice.quality} · ${selectedVoice.language}\n${selectedVoice.id}` : 'No en-US voice selected.'}</Text>
       <Btn title="Refresh installed Apple voices" disabled={busy || props.disabled} onPress={() => void run('refresh')} />
       {voices.map(voice => (
         <Pressable key={voice.id} disabled={busy || props.disabled} onPress={() => setSelectedId(voice.id)}
           accessibilityRole="radio" accessibilityState={{ selected: selectedId === voice.id }}
           style={{ padding: 10, borderWidth: 1, borderColor: selectedId === voice.id ? C.brand : C.line }}>
-          <Text>{selectedId === voice.id ? '● ' : '○ '}{voice.name} · {voice.quality}</Text>
+          <Text style={{ color: C.ink }}>{selectedId === voice.id ? '● ' : '○ '}{voice.name} · {voice.quality}</Text>
         </Pressable>
       ))}
-      <Text>Only voices enumerated by Apple for this app are listed. Standard voices remain available as a fallback when listed.</Text>
+      <Text style={{ color: C.ink }}>Only voices enumerated by Apple for this app are listed. Standard voices remain available as a fallback when listed.</Text>
       <Btn title="Preview selected voice" disabled={busy || props.disabled || !selectedVoice} onPress={() => void run('preview')} />
       <Btn title="Start Voice Test" disabled={busy || props.disabled || !selectedVoice} onPress={() => void run('conversation')} />
       {busy ? <Btn title="Stop / Cancel Voice Test" kind="ghost" onPress={stop} /> : null}
-      <Text accessibilityLiveRegion="polite">State: {phase}</Text>
-      <Text selectable>Transcript ({recognition?.status === 'success' && recognition.isFinal ? 'final' : 'partial / incomplete'}): {transcript || '—'}</Text>
-      <Text selectable>Spoken reply: {reply || '—'}</Text>
-      <Text selectable>Structured AI interpretation: {interpretation ? JSON.stringify(interpretation, null, 2) : '—'}</Text>
-      <Text selectable>Recognition result: {recognition ? JSON.stringify(recognition, null, 2) : '—'}</Text>
-      <Text selectable>Stage timing (milliseconds): {JSON.stringify(Object.fromEntries(Object.entries(times).map(([key, value]) => [key, Math.round(value)])), null, 2)}</Text>
+      <Text style={{ color: C.ink }} accessibilityLiveRegion="polite">State: {phase}</Text>
+      <Text style={{ color: C.ink }} selectable>Transcript ({recognition?.status === 'success' && recognition.isFinal ? 'final' : 'partial / incomplete'}): {transcript || '—'}</Text>
+      <Text style={{ color: C.ink }} selectable>Spoken reply: {reply || '—'}</Text>
+      <Text style={{ color: C.ink }} selectable>Structured AI interpretation: {interpretation ? JSON.stringify(interpretation, null, 2) : '—'}</Text>
+      <Text style={{ color: C.ink }} selectable>Recognition result: {recognition ? JSON.stringify(recognition, null, 2) : '—'}</Text>
+      <Text style={{ color: C.ink }} selectable>Stage timing (milliseconds): {JSON.stringify(Object.fromEntries(Object.entries(times).map(([key, value]) => [key, Math.round(value)])), null, 2)}</Text>
       {error !== null ? <Text selectable style={{ color: C.bad }}>{error}</Text> : null}
     </View>
   );

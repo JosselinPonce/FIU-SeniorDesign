@@ -1,8 +1,9 @@
+import { useTheme } from '../../lib/theme/ThemeProvider';
 import { useEffect, useRef, useState } from 'react';
 import { AppState, Text, View } from 'react-native';
 import * as Speech from 'expo-speech';
 import { ExpoSpeechRecognitionModule } from 'expo-speech-recognition';
-import { Btn, C } from '../../components/ui';
+import { Btn } from '../../components/ui';
 import {
   cancelOfflineListening, checkOfflineSpeechCapability, listenOffline, subscribeOfflineSpeechProgress,
   type OfflineSpeechCapability, type OfflineSpeechProgress, type OfflineTranscription,
@@ -12,6 +13,7 @@ const LOCALE = 'en-US';
 
 /** Standalone transcription diagnostic. Never passes audio/text to the AI. */
 export function OfflineSpeechTest(props: { disabled: boolean; tryBegin: () => boolean; onBusyChange: (busy: boolean) => void }) {
+  const { colors: C } = useTheme();
   const [busy, setBusy] = useState(false);
   const [phase, setPhase] = useState('idle');
   const [capability, setCapability] = useState<OfflineSpeechCapability | null>(null);
@@ -122,19 +124,19 @@ export function OfflineSpeechTest(props: { disabled: boolean; tryBegin: () => bo
   return (
     <View style={{ gap: 12 }}>
       <Text style={{ fontSize: 20, fontWeight: '700', color: C.ink }}>Offline Speech Test · en-US</Text>
-      <Text>No AI interpretation or speech playback. On-device recognition is required. Finalization behavior still needs device testing.</Text>
+      <Text style={{ color: C.ink }}>No AI interpretation or speech playback. On-device recognition is required. Finalization behavior still needs device testing.</Text>
       <Btn title="Check en-US offline support" busy={busy} disabled={props.disabled} onPress={() => void run(false)} />
       <Btn title="Test Offline Transcription" disabled={busy || props.disabled} onPress={() => void run(true)} />
       {busy ? <Btn title="Stop / Cancel transcription" kind="ghost" onPress={stop} /> : null}
-      <Text accessibilityLiveRegion="polite">State: {phase}</Text>
-      <Text selectable>{capability ? JSON.stringify(capability, null, 2) : 'Support not checked.'}</Text>
-      <Text selectable>Transcript ({transcription?.isFinal ? 'final' : 'partial / incomplete'}): {transcription?.transcript || progress?.transcript || '—'}</Text>
-      {progress ? <Text selectable>
+      <Text style={{ color: C.ink }} accessibilityLiveRegion="polite">State: {phase}</Text>
+      <Text style={{ color: C.ink }} selectable>{capability ? JSON.stringify(capability, null, 2) : 'Support not checked.'}</Text>
+      <Text style={{ color: C.ink }} selectable>Transcript ({transcription?.isFinal ? 'final' : 'partial / incomplete'}): {transcription?.transcript || progress?.transcript || '—'}</Text>
+      {progress ? <Text style={{ color: C.ink }} selectable>
         Elapsed: {Math.round(progress.elapsedMs)} ms · Audio: {progress.audioLevelDb.toFixed(1)} dBFS · Activity threshold: {progress.activityThresholdDb.toFixed(1)} dBFS{ '\n' }
         Since last audio activity: {Math.round(progress.silenceMs)} ms · Measured activity: {Math.round(progress.measuredActivityMs)} ms · Endpoint: {progress.endpointReason}
       </Text> : null}
-      {transcription ? <Text selectable>Listening: {Math.round(transcription.listeningTimeMs)} ms · Finalizing: {Math.round(transcription.finalizationTimeMs)} ms · Total: {Math.round(transcription.totalTimeMs)} ms</Text> : null}
-      <Text selectable>{transcription ? JSON.stringify(transcription, null, 2) : 'No transcription result.'}</Text>
+      {transcription ? <Text style={{ color: C.ink }} selectable>Listening: {Math.round(transcription.listeningTimeMs)} ms · Finalizing: {Math.round(transcription.finalizationTimeMs)} ms · Total: {Math.round(transcription.totalTimeMs)} ms</Text> : null}
+      <Text style={{ color: C.ink }} selectable>{transcription ? JSON.stringify(transcription, null, 2) : 'No transcription result.'}</Text>
       {error !== null ? <Text selectable style={{ color: C.bad }}>{error}</Text> : null}
     </View>
   );

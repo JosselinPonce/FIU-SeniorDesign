@@ -1,3 +1,5 @@
+import { useTheme } from '../lib/theme/ThemeProvider';
+import { presentationColors, type ThemeTokens } from '../lib/theme/tokens';
 /**
  * Small shared UI kit: palette, cards, buttons, pills. Plain React Native
  * (no UI library) so the build stays dependency-light.
@@ -27,10 +29,14 @@ export const C = {
 };
 
 export function Card(props: { children: ReactNode; style?: StyleProp<ViewStyle> }) {
+  const { tokens } = useTheme();
+  const s = makeStyles(tokens);
   return <View style={[s.card, props.style]}>{props.children}</View>;
 }
 
 export function SectionTitle(props: { children: ReactNode; right?: ReactNode }) {
+  const { tokens } = useTheme();
+  const s = makeStyles(tokens);
   return (
     <View style={s.sectionRow}>
       <Text style={s.section}>{props.children}</Text>
@@ -40,15 +46,21 @@ export function SectionTitle(props: { children: ReactNode; right?: ReactNode }) 
 }
 
 export type Tone = 'good' | 'warn' | 'bad' | 'neutral' | 'brand';
-const toneColors: Record<Tone, [string, string]> = {
+const makeToneColors = (t: ThemeTokens): Record<Tone, [string, string]> => {
+const C = presentationColors(t);
+return {
   good: [C.good, C.goodSoft],
   warn: [C.warn, C.warnSoft],
   bad: [C.bad, C.badSoft],
-  neutral: [C.sub, C.line],
+  neutral: [C.sub, t.surfaceMuted],
   brand: [C.brand, C.brandSoft],
+};
 };
 
 export function Pill(props: { tone: Tone; children: ReactNode }) {
+  const { tokens } = useTheme();
+  const s = makeStyles(tokens);
+  const toneColors = makeToneColors(tokens);
   const [fg, bg] = toneColors[props.tone];
   return (
     <View style={[s.pill, { backgroundColor: bg }]}>
@@ -66,17 +78,20 @@ export function Btn(props: {
   busy?: boolean;
   style?: StyleProp<ViewStyle>;
 }) {
+  const { tokens } = useTheme();
+  const s = makeStyles(tokens);
   const kind = props.kind ?? 'primary';
-  const bg = kind === 'primary' ? C.brand : kind === 'danger' ? C.bad : 'transparent';
-  const fg = kind === 'ghost' ? C.brand : '#fff';
+  const bg = props.disabled ? tokens.disabledSurface : kind === 'primary' ? tokens.primary : kind === 'danger' ? tokens.dangerButton : 'transparent';
+  const fg = props.disabled ? tokens.disabledText : kind === 'ghost' ? tokens.primary : kind === 'danger' ? tokens.onDanger : tokens.onPrimary;
   return (
     <Pressable
       accessibilityRole="button"
+      accessibilityState={{ disabled: !!(props.disabled || props.busy), busy: !!props.busy }}
       disabled={props.disabled || props.busy}
       onPress={props.onPress}
       style={({ pressed }) => [
         s.btn,
-        { backgroundColor: bg, opacity: props.disabled ? 0.4 : pressed ? 0.8 : 1 },
+        { backgroundColor: bg, opacity: pressed && !props.disabled && !props.busy ? 0.8 : 1 },
         kind === 'ghost' && s.ghost,
         props.style,
       ]}
@@ -88,7 +103,10 @@ export function Btn(props: {
 
 /** Two-column label/value row for detail lists. */
 export function Row(props: { label: string; value: ReactNode; tone?: Tone }) {
-  const color = props.tone ? toneColors[props.tone][0] : C.ink;
+  const { tokens } = useTheme();
+  const s = makeStyles(tokens);
+  const toneColors = makeToneColors(tokens);
+  const color = props.tone ? toneColors[props.tone][0] : tokens.text;
   return (
     <View style={s.row}>
       <Text style={s.rowLabel}>{props.label}</Text>
@@ -113,27 +131,30 @@ export const fmtBytes = (n: number) =>
   n < 1024 ? `${n} B` : n < 1024 * 1024 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1024 / 1024).toFixed(2)} MB`;
 export const fmtNum = (v: number | null | undefined, digits = 0) => (v === null || v === undefined ? '—' : v.toFixed(digits));
 
-const s = StyleSheet.create({
-  card: {
-    backgroundColor: C.card,
-    borderRadius: 18,
-    padding: 16,
-    gap: 8,
-    shadowColor: '#0f172a',
-    shadowOpacity: 0.06,
-    shadowRadius: 12,
-    shadowOffset: { width: 0, height: 4 },
-    elevation: 2,
-  },
-  sectionRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 8 },
-  section: { fontSize: 13, fontWeight: '700', color: C.sub, letterSpacing: 0.6, textTransform: 'uppercase' },
-  pill: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 10, paddingVertical: 5, borderRadius: 999, alignSelf: 'flex-start' },
-  dot: { width: 8, height: 8, borderRadius: 4 },
-  pillText: { fontSize: 13, fontWeight: '700' },
-  btn: { borderRadius: 14, paddingVertical: 15, paddingHorizontal: 18, alignItems: 'center', justifyContent: 'center' },
-  ghost: { borderWidth: 1.5, borderColor: C.brand },
-  btnText: { fontSize: 16, fontWeight: '700' },
-  row: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 3, gap: 12 },
-  rowLabel: { fontSize: 14, color: C.sub, flexShrink: 1 },
-  rowValue: { fontSize: 14, fontWeight: '600', fontVariant: ['tabular-nums'], textAlign: 'right', flexShrink: 1 },
-});
+const makeStyles = (tokens: ThemeTokens) => {
+  const C = presentationColors(tokens);
+  return StyleSheet.create({
+    card: {
+      backgroundColor: C.card,
+      borderRadius: 18,
+      padding: 16,
+      gap: 8,
+      shadowColor: tokens.shadow,
+      shadowOpacity: 0.06,
+      shadowRadius: 12,
+      shadowOffset: { width: 0, height: 4 },
+      elevation: 2,
+    },
+    sectionRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 8 },
+    section: { fontSize: 13, fontWeight: '700', color: C.sub, letterSpacing: 0.6, textTransform: 'uppercase' },
+    pill: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 10, paddingVertical: 5, borderRadius: 999, alignSelf: 'flex-start' },
+    dot: { width: 8, height: 8, borderRadius: 4 },
+    pillText: { fontSize: 13, fontWeight: '700' },
+    btn: { borderRadius: 14, paddingVertical: 15, paddingHorizontal: 18, alignItems: 'center', justifyContent: 'center' },
+    ghost: { borderWidth: 1, borderColor: tokens.border },
+    btnText: { fontSize: 16, fontWeight: '700' },
+    row: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 3, gap: 12 },
+    rowLabel: { fontSize: 14, color: C.sub, flexShrink: 1 },
+    rowValue: { fontSize: 14, fontWeight: '600', fontVariant: ['tabular-nums'], textAlign: 'right', flexShrink: 1 },
+  });
+};

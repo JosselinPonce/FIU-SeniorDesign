@@ -1,3 +1,5 @@
+import { useTheme } from '../lib/theme/ThemeProvider';
+import { presentationColors, type ThemeTokens } from '../lib/theme/tokens';
 /**
  * Settings → how this driver's warning lines have adapted, newest first.
  */
@@ -6,7 +8,7 @@ import { StyleSheet, Text, View } from 'react-native';
 
 import * as repo from '../lib/db/repositories';
 import type { ThresholdSnapshot } from '../lib/db/repositories';
-import { C } from './ui';
+
 
 const REASON: Record<string, string> = {
   drive: 'after a drive',
@@ -16,6 +18,8 @@ const REASON: Record<string, string> = {
 };
 
 export function ThresholdHistory(props: { profileId: string; refreshKey: string }) {
+  const { colors: C, tokens } = useTheme();
+  const st = makeStyles(tokens);
   const [rows, setRows] = useState<ThresholdSnapshot[] | null>(null);
   useEffect(() => {
     void repo.thresholdHistory(props.profileId, 12).then(setRows);
@@ -42,11 +46,14 @@ export function ThresholdHistory(props: { profileId: string; refreshKey: string 
   );
 }
 
-const st = StyleSheet.create({
-  note: { fontSize: 13, color: C.sub },
-  summary: { fontSize: 13, color: C.ink, fontWeight: '600', marginBottom: 4 },
-  row: { flexDirection: 'row', gap: 8, alignItems: 'baseline' },
-  when: { width: 52, fontSize: 12, color: C.faint, fontVariant: ['tabular-nums'] },
-  what: { flex: 1, fontSize: 12, color: C.ink, fontVariant: ['tabular-nums'] },
-  why: { fontSize: 11, color: C.sub },
-});
+const makeStyles = (tokens: ThemeTokens) => {
+  const C = presentationColors(tokens);
+  return StyleSheet.create({
+    note: { fontSize: 13, color: C.sub },
+    summary: { fontSize: 13, color: C.ink, fontWeight: '600', marginBottom: 4 },
+    row: { flexDirection: 'row', gap: 8, alignItems: 'baseline' },
+    when: { width: 52, fontSize: 12, color: C.faint, fontVariant: ['tabular-nums'] },
+    what: { flex: 1, fontSize: 12, color: C.ink, fontVariant: ['tabular-nums'] },
+    why: { fontSize: 11, color: C.sub },
+  });
+};

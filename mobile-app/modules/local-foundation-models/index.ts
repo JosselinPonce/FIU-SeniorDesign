@@ -73,6 +73,22 @@ export type OfflineSpeechCapability = {
   microphonePermission: string;
 };
 
+/** Numeric/state-only endpoint diagnostics; never recognition or consent evidence. */
+export type OfflineEndpointDiagnostics = {
+  noiseFloorDb: number;
+  noiseCalibration: string;
+  calibrationWindowMs: number;
+  activityThresholdMinDb: number;
+  activityThresholdMaxDb: number;
+  aboveThresholdFraction: number;
+  bufferedAudioMs: number;
+  bufferAgeMs: number | null;
+  audioLevelDb: number;
+  activityThresholdDb: number;
+  measuredActivityMs: number;
+  silenceMs: number;
+};
+
 export type OfflineTranscription = {
   status: 'success' | 'incomplete' | 'timeout' | 'cancelled' | 'error';
   locale: string;
@@ -96,6 +112,8 @@ export type OfflineTranscription = {
   finalizationTimeMs: number;
   firstPartialTimeMs: number | null;
   endpointReason: string;
+  endpointDiagnostics?: OfflineEndpointDiagnostics;
+  endpointSelectionMeasurements?: Partial<OfflineEndpointDiagnostics>;
   silenceTargetMs: number;
   finalizationGraceMs: number;
 };
@@ -110,6 +128,8 @@ export type OfflineSpeechProgress = {
   silenceMs: number;
   measuredActivityMs: number;
   endpointReason: string;
+  endpointDiagnostics?: OfflineEndpointDiagnostics;
+  endpointSelectionMeasurements?: Partial<OfflineEndpointDiagnostics>;
 };
 
 export function subscribeOfflineSpeechProgress(listener: (progress: OfflineSpeechProgress) => void): { remove(): void } {
@@ -203,4 +223,16 @@ export async function checkDriverAssistantAvailability(): Promise<FoundationMode
       message: 'The Driver Assistant bridge is missing or outdated. Rebuild the native app; Expo Go cannot run it.' };
   }
   return native.checkAvailability();
+}
+
+
+/** Speech/playback bridge availability is independent of Apple Intelligence. */
+export function checkDriverAssistantSpeechAvailability(): { available: boolean; message: string } {
+  if (Platform.OS !== 'ios') return { available: false, message: 'The Driver Assistant requires iOS offline speech and Apple voice playback.' };
+  const native = requireOptionalNativeModule<NativeAvailabilityModule>('LocalFoundationModels');
+  if (!native?.checkOfflineSpeechCapability || !native.listenOffline || !native.cancelOfflineListening
+    || !native.listLocalVoices || !native.speakLocal || !native.cancelLocalSpeech || !native.addListener) {
+    return { available: false, message: 'The offline speech/playback bridge is missing. Rebuild the native app.' };
+  }
+  return { available: true, message: 'Native offline speech and playback are available.' };
 }

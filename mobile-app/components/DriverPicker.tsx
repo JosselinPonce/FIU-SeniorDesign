@@ -1,3 +1,6 @@
+import { InformationButton } from './Information';
+import { useTheme } from '../lib/theme/ThemeProvider';
+import { presentationColors, type ThemeTokens } from '../lib/theme/tokens';
 /**
  * Choose who is driving, or add a new driver. Selecting a driver is how the
  * app knows whose baseline to compare against (proposal: user profiles).
@@ -12,7 +15,7 @@ import * as repo from '../lib/db/repositories';
 import { deleteDriverEverywhere } from '../lib/db/deletion';
 import type { DriverProfile, Gender } from '../lib/db/repositories';
 import { CONDITIONS, MEDICATIONS, bmi, bmiCategory } from '../lib/analysis/profileModel';
-import { Btn, C, Card, SectionTitle } from './ui';
+import { Btn, Card, SectionTitle } from './ui';
 
 const GENDERS: { key: Gender; label: string }[] = [
   { key: 'male', label: 'Male' },
@@ -37,6 +40,8 @@ export function DriverPicker(props: {
   onSaveProfile?: (input: repo.NewProfileInput) => Promise<void>;
   onCancelEdit?: () => void;
 }) {
+  const { colors: C, tokens } = useTheme();
+  const st = makeStyles(tokens);
   const [adding, setAdding] = useState(!!props.editProfile || props.profiles.length === 0);
   const [editing, setEditing] = useState<DriverProfile | null>(null);
   const blank = { custom_id: '', display_name: '', weight_kg: '', age: '', height_cm: '', emergency_name: '', emergency_phone: '' };
@@ -131,20 +136,20 @@ export function DriverPicker(props: {
 
   return (
     <ScrollView contentContainerStyle={st.container} automaticallyAdjustKeyboardInsets={true} keyboardDismissMode="interactive" keyboardShouldPersistTaps="handled">
-      <Text style={st.hello}>{props.editProfile ? 'Edit Driver Profile' : "Who's driving?"}</Text>
-      <Text style={st.lead}>{props.editProfile ? 'Changes apply to this driver. Existing drives, calibration and learned baselines are preserved.' : <>
-        Pick a driver so readings are saved to the right profile and compared with their usual range. Long-press a driver to
-        edit their profile.
-      </>}</Text>
+      <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+        <Text style={[st.hello, { flex: 1 }]}>{props.editProfile ? 'Edit Driver Profile' : "Who's driving?"}</Text>
+        <InformationButton compact title="Driver profiles" body="Readings are associated with the selected profile and compared with its personalized baseline. Tap a profile to continue. Use Edit or long-press a profile to update its details." />
+      </View>
+      <Text style={st.lead}>{props.editProfile ? 'Changes apply to this driver. Existing drives, calibration and learned baselines are preserved.' : 'Select a profile to continue.'}</Text>
 
       {(props.editProfile ? [] : props.profiles).map((p) => (
+        <View key={p.id} style={st.profileRow}>
         <Pressable
-          key={p.id}
           accessibilityRole="button"
           onPress={() => props.onPick(p)}
           onLongPress={() => edit(p)}
           accessibilityHint="Long-press to edit this driver's profile"
-          style={({ pressed }) => [st.driver, pressed && { opacity: 0.7 }]}
+          style={({ pressed }) => [st.driver, { flex: 1 }, pressed && { opacity: 0.7 }]}
         >
           <View style={st.avatar}>
             <Text style={st.avatarText}>{initials(p.display_name)}</Text>
@@ -165,10 +170,18 @@ export function DriverPicker(props: {
           </View>
           <Text style={st.chev}>›</Text>
         </Pressable>
+        <Pressable accessibilityRole="button" accessibilityLabel={`Edit ${p.display_name}'s profile`}
+          onPress={() => edit(p)} style={st.editAction}>
+          <Text style={{ color: tokens.text, fontWeight: '600' }}>Edit</Text>
+        </Pressable>
+        </View>
       ))}
 
       {!adding ? (
-        <Btn title="+ Add a driver" kind="ghost" onPress={() => { setMeasurements(measurementsFromMetric()); setAdding(true); }} />
+        <Pressable accessibilityRole="button" onPress={() => { setMeasurements(measurementsFromMetric()); setAdding(true); }}
+          style={{ backgroundColor: tokens.graphite, borderRadius: 14, minHeight: 48, justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: tokens.border }}>
+          <Text style={{ color: tokens.pearl, fontSize: 16, fontWeight: '700' }}>Add a driver</Text>
+        </Pressable>
       ) : (
         <Card>
           <SectionTitle>{editing ? `Edit ${editing.display_name}` : 'New driver'}</SectionTitle>
@@ -207,7 +220,7 @@ export function DriverPicker(props: {
             placeholderTextColor={C.faint} keyboardType="decimal-pad" editable={!busy} value={measurements.weightText}
             onChangeText={text => setMeasurements(s => enterWeight(s, text))} />
           {measurements.weightError ? <Text style={st.error}>{measurements.weightError}</Text> : null}
-          <Text style={st.hint}>Unit switches preserve the exact measurement. Display values may be rounded; saved values stay in cm and kg.</Text>
+          <InformationButton title="Measurement units" body="Unit switches preserve the exact measurement. Display values may be rounded; saved values stay in cm and kg." />
           <Modal visible={heightSelector !== null} transparent animationType="fade" onRequestClose={() => setHeightSelector(null)}>
             <View style={st.selectorBackdrop}><Card style={st.selectorCard}>
               <SectionTitle>Select {heightSelector}</SectionTitle>
@@ -242,7 +255,7 @@ export function DriverPicker(props: {
             ))}
           </View>
           <Text style={st.label}>Health conditions (optional)</Text>
-          <Text style={st.hint}>Used to set what heart rate is normal for this driver. Stays with the profile.</Text>
+          <InformationButton title="Health conditions" body="Used to set what heart rate is normal for this driver. Stays with the profile." />
           <View style={st.genders}>
             {CONDITIONS.map((c) => (
               <Pressable
@@ -341,38 +354,43 @@ export function DriverPicker(props: {
   );
 }
 
-const st = StyleSheet.create({
-  selectorBackdrop: { flex: 1, backgroundColor: '#0006', justifyContent: 'center', padding: 20 },
-  selectorCard: { maxHeight: '70%' },
-  container: { padding: 20, paddingTop: 70, gap: 12, backgroundColor: C.bg, flexGrow: 1 },
-  hello: { fontSize: 30, fontWeight: '800', color: C.ink },
-  lead: { fontSize: 15, color: C.sub, marginBottom: 6, lineHeight: 21 },
-  driver: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 14,
-    backgroundColor: C.card,
-    padding: 14,
-    borderRadius: 18,
-    shadowColor: '#0f172a',
-    shadowOpacity: 0.06,
-    shadowRadius: 10,
-    shadowOffset: { width: 0, height: 3 },
-    elevation: 2,
-  },
-  avatar: { width: 48, height: 48, borderRadius: 24, backgroundColor: C.brandSoft, alignItems: 'center', justifyContent: 'center' },
-  avatarText: { color: C.brand, fontWeight: '800', fontSize: 17 },
-  name: { fontSize: 18, fontWeight: '700', color: C.ink },
-  meta: { fontSize: 13, color: C.sub, marginTop: 2 },
-  chev: { fontSize: 28, color: C.faint },
-  input: { borderWidth: 1, borderColor: C.line, borderRadius: 12, padding: 12, fontSize: 16, color: C.ink, backgroundColor: '#fff' },
-  row3: { flexDirection: 'row', gap: 8 },
-  genders: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-  chip: { paddingHorizontal: 14, paddingVertical: 8, borderRadius: 999, borderWidth: 1, borderColor: C.line },
-  chipOn: { backgroundColor: C.brand, borderColor: C.brand },
-  chipText: { color: C.sub, fontWeight: '600' },
-  chipTextOn: { color: '#fff' },
-  error: { color: C.bad },
-  label: { fontSize: 14, fontWeight: '700', color: C.ink, marginTop: 6 },
-  hint: { fontSize: 12, color: C.sub },
-});
+const makeStyles = (tokens: ThemeTokens) => {
+  const C = presentationColors(tokens);
+  return StyleSheet.create({
+    selectorBackdrop: { flex: 1, backgroundColor: tokens.overlay, justifyContent: 'center', padding: 20 },
+    selectorCard: { maxHeight: '70%' },
+    container: { padding: 20, paddingTop: 70, gap: 12, backgroundColor: C.bg, flexGrow: 1 },
+    profileRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+    editAction: { minWidth: 52, minHeight: 44, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 8 },
+    hello: { fontSize: 26, fontWeight: '800', color: C.ink },
+    lead: { fontSize: 15, color: C.sub, marginBottom: 6, lineHeight: 21 },
+    driver: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 14,
+      backgroundColor: C.card,
+      padding: 14,
+      borderRadius: 18,
+      shadowColor: tokens.shadow,
+      shadowOpacity: 0.06,
+      shadowRadius: 10,
+      shadowOffset: { width: 0, height: 3 },
+      elevation: 2,
+    },
+    avatar: { width: 48, height: 48, borderRadius: 24, backgroundColor: C.brandSoft, alignItems: 'center', justifyContent: 'center' },
+    avatarText: { color: C.brand, fontWeight: '800', fontSize: 17 },
+    name: { fontSize: 18, fontWeight: '700', color: C.ink },
+    meta: { fontSize: 13, color: C.sub, marginTop: 2 },
+    chev: { fontSize: 28, color: C.faint },
+    input: { borderWidth: 1, borderColor: C.line, borderRadius: 12, padding: 12, fontSize: 16, color: C.ink, backgroundColor: tokens.surface },
+    row3: { flexDirection: 'row', gap: 8 },
+    genders: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+    chip: { paddingHorizontal: 14, paddingVertical: 8, borderRadius: 999, borderWidth: 1, borderColor: C.line },
+    chipOn: { backgroundColor: C.brand, borderColor: C.brand },
+    chipText: { color: C.sub, fontWeight: '600' },
+    chipTextOn: { color: tokens.onPrimary },
+    error: { color: C.bad },
+    label: { fontSize: 14, fontWeight: '700', color: C.ink, marginTop: 6 },
+    hint: { fontSize: 12, color: C.sub },
+  });
+};

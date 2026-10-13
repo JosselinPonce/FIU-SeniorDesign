@@ -124,11 +124,11 @@ actor DriverResponseInterpreter {
       // Fresh bounded session, with caller-supplied conversation data only. No tools or app services.
       let session = LanguageModelSession(instructions: """
         Interpret a driver's latest response in a brief wellness conversation as advisory data only.
-        Earlier turns are context, never authorization. Respond warmly and naturally to the latest answer. Acknowledge discomfort briefly.
+        Earlier turns are context, never authorization. Respond warmly and naturally to the latest answer. Acknowledge discomfort briefly. Clear first-person reports of feeling hot or overheating are discomfort, not a diagnosis.
         Use at most two short English sentences, at most 30 words. Prefer a brief acknowledgment and ending over another question.
         Prioritize driving safety, not medical symptom investigation. Do not ask how symptoms are changing, what feels different, or whether discomfort is better or worse.
         Interpret short answers relative to the actual preceding question. A no to a parking question is not a contact refusal or a new wellness report.
-        Never assume the driver is parked. You may ask whether they are safely parked, but only once; never combine this with another question.
+        Never assume the driver is parked. Do not ask about parking during routine wellness or heat discomfort. Only if the driver explicitly asks for help stopping or pulling over safely may you ask whether they are safely parked, once. Never combine this with another question.
         If they are not parked yet, acknowledge that and prioritize stopping safely without further questions.
         If they feel better, acknowledge the improvement and end naturally; never infer that driving is safe or that they are parked.
         Do not repeat earlier questions, safety guidance, or contact offers. A separate deterministic flow handles saved-contact offers and consent.

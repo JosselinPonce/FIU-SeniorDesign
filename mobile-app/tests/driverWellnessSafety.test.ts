@@ -13,3 +13,15 @@ test('negated, hypothetical, quoted and other-person statements do not become sy
     assert.deepEqual(reportedDrivingConcern(text).symptoms, [], text);
   assert.equal(reportedDrivingConcern("I'm getting worse").worsening, true);
 });
+
+test('clear first-person heat discomfort is deterministic, including clauses before contact requests', () => {
+  for (const text of ["I'm feeling hot", "I'm overheating.", 'I am overheating', 'I feel very hot', "I'm too hot", "I'm feeling overheated", "I'm feeling hot, can you call my mom?", "I'm overheating and I feel sick"])
+    assert.ok(reportedDrivingConcern(text).symptoms.includes('heat_discomfort'), text);
+});
+test('heat concerns exclude weather, cabin, neutral, negated, quoted, hypothetical and other-person reports', () => {
+  for (const text of ['It is hot outside', 'The cabin is overheating', 'My car is hot', 'Hot weather today', 'I feel hot air from the vents',
+    "I'm feeling hot air", "I'm not feeling hot", "I'm not overheating", "I'm no longer overheating", "I don't feel hot", "I never feel hot",
+    '"I am overheating"', "She said 'I am overheating'", 'If I feel hot call Mom', "Suppose I'm overheating", "I might be overheating",
+    'My mother is overheating', 'She feels hot', 'I think the cabin is hot', "I'm feeling fine and the car is hot"])
+    assert.deepEqual(reportedDrivingConcern(text).symptoms, [], text);
+});

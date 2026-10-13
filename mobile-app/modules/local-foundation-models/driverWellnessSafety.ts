@@ -14,6 +14,10 @@ export function reportedDrivingConcern(raw: string): { symptoms: string[]; worse
     ['alertness', 'sleepy|drowsy'],
   ];
   const symptoms: string[] = [];
+  // Require a complete first-person discomfort clause, not weather/cabin descriptions.
+  const heatClauses = raw.split(/[.!?;,]|\b(?:but|and)\b/i).map(normalise);
+  if (heatClauses.some(clause => /^(?:(?:i'm|im|i am)(?:(?: feeling| getting| still)?(?: really| very| too| a little| a bit)? (?:hot|overheated)|(?: really| still)? overheating)|i feel(?: really| very| too| a little| a bit)? (?:hot|overheated))(?: right now| now)?$/.test(clause)))
+    symptoms.push('heat_discomfort');
   for (const [key, words] of patterns) {
     const cleaned = text.replace(new RegExp(`\\b(?:not|never|no longer|no|don't feel|dont feel|do not feel)(?: feeling| very| really| any)? (?:${words})\\b`, 'g'), '');
     const self = new RegExp(`\\b(?:i'm|im|i am|i feel|i have|i feel like i'm|i feel like i am)(?: feeling| getting| still)?(?: a little| a bit| slightly| really| very)? (?:${words})\\b`);

@@ -1,11 +1,11 @@
 import { reportedDrivingConcern, PULL_OVER_GUIDANCE } from './driverWellnessSafety.ts';
 import { contactRequestDecision, normalise, mentionsEmergencyServices, understandCallAnswer } from '../../lib/voice/intent.ts';
-import { conversationalReply, drivingSafetyAnswer, finalTranscript, contactLabel, contactHandoffMessage } from './conversationPolicy.ts';
+import { conversationalReply, needsParkingStatus, drivingSafetyAnswer, finalTranscript, contactLabel, contactHandoffMessage } from './conversationPolicy.ts';
 import type { DriverInterpretationResponse, OfflineTranscription } from './index.ts';
 
 export type ConversationPhase = 'idle' | 'checking' | 'speaking question' | 'listening' | 'finalizing'
   | 'interpreting' | 'speaking response' | 'contact offer' | 'phone interface' | 'complete' | 'stopping' | 'cancelled' | 'error';
-export const CONVERSATION_REVISION = 'driving-safety-conversation-v4-2026-10-10';
+export const CONVERSATION_REVISION = 'driving-safety-conversation-v5-2026-10-12';
 export type Turn = { driver: string; assistant: string; fallback?: boolean; fallbackReason?: string };
 export type DecisionDiagnostic = { acceptedFinalTranscript: string; normalizedText: string; direct: boolean; reason: string;
   callAnswer: string; activeOffer: boolean; servicesExcluded: boolean; handoffOutcome?: string };
@@ -20,8 +20,8 @@ export type AssistantDeps = {
   prepare(): Promise<void>;
   acquire(stop: () => Promise<void>): Promise<() => void>;
   speak(text: string, id: string): Promise<void>;
-  listen(id: string, progress: (phase: 'listening' | 'finalizing', transcript: string) => void): Promise<OfflineTranscription>;
-  interpret(text: string, context: string, id: string): Promise<DriverInterpretationResponse>;
+  listen(id: string, progress: (phase: 'preparing' | 'listening' | 'finalizing', transcript: string) => void): Promise<OfflineTranscription>;
+  interpret(text: string, context: string, id: string, finalRecognition?: OfflineTranscription, history?: readonly Turn[]): Promise<DriverInterpretationResponse>;
   cancel(kind: 'speech' | 'listening' | 'inference', id: string): Promise<void>;
   handoff(text: string, offered: boolean, current: () => boolean): Promise<string>;
   onChange(state: ConversationState): void;
@@ -113,12 +113,13 @@ export class AssistantConversation {
         await speak(prompt, turn);
         contactOfferMade ||= offered;
         let text = '';
+        let acceptedCapture: OfflineTranscription | undefined;
         for (let attempt = 0; attempt < 2; attempt++) {
           const captureId = `${prefix}-${turn}-capture${attempt ? '-retry' : ''}`;
           state.transcript = '';
-          emit('listening');
+          emit('checking');
           const capture = await stage(`recognition-${turn}-${attempt}`, () => this.deps.listen(captureId, (phase, transcript) => {
-            if (current()) { state.transcript = transcript; emit(phase); }
+            if (current()) { state.transcript = transcript; emit(phase === 'preparing' ? 'checking' : phase); }
           }), () => this.deps.cancel('listening', captureId), true);
           assertCurrent();
           // Publish the failed envelope and timing before applying the final-only gate.
@@ -139,6 +140,7 @@ export class AssistantConversation {
           }
           if (incomplete) throw new Error('Your response was not confirmed after the retry. No number was opened.');
           text = finalTranscript(capture);
+          acceptedCapture = capture;
           state.transcript = text;
           break;
         }
@@ -225,13 +227,13 @@ export class AssistantConversation {
         const inferenceId = `${prefix}-${turn}-inference`;
         emit('interpreting');
         const context = JSON.stringify(state.turns.slice(-3).map(({ driver, assistant }) => ({ driver, assistant }))).slice(0, 2400);
-        const result = await stage(`inference-${turn}`, () => this.deps.interpret(text, context, inferenceId),
+        const result = await stage(`inference-${turn}`, () => this.deps.interpret(text, context, inferenceId, acceptedCapture, state.turns.slice(-3)),
           () => this.deps.cancel('inference', inferenceId));
         assertCurrent();
         state.interpretation = result;
         if (result.status !== 'success') throw new Error(`${result.error.code}: ${result.error.message}`);
         // Validate advisory shape even when a deterministic offer replaces generated text.
-        const reply = conversationalReply(result.interpretation, state.turns.map(item => item.assistant), guidanceDelivered);
+        const reply = conversationalReply(result.interpretation, state.turns.map(item => item.assistant), guidanceDelivered, needsParkingStatus(text));
         const modelSuggestsContact = result.interpretation.requestsSavedEmergencyContact || result.interpretation.explicitContactRequest;
         offered = !contactDeclined && !contactOfferMade && contactAvailability === 'available' && modelSuggestsContact;
         const contactUnavailable = !contactDeclined && modelSuggestsContact && contactAvailability !== 'available';

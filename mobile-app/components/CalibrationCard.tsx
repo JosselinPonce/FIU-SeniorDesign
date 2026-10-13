@@ -1,3 +1,6 @@
+import { InformationButton } from './Information';
+import { useTheme } from '../lib/theme/ThemeProvider';
+import { presentationColors, type ThemeTokens } from '../lib/theme/tokens';
 /**
  * Settings → Calibrate against a reference device (lib/analysis/calibration.ts).
  */
@@ -7,11 +10,13 @@ import { Text, TextInput, View, StyleSheet } from 'react-native';
 import type { useDriveSession } from '../lib/hooks/useDriveSession';
 import { CAL_MAX_HR, CAL_SECONDS, accumulate, computeCalibration } from '../lib/analysis/calibration';
 import * as repo from '../lib/db/repositories';
-import { Btn, C, Card, Row, SectionTitle } from './ui';
+import { Btn, Card, Row, SectionTitle } from './ui';
 
 type Drive = ReturnType<typeof useDriveSession>;
 
 export function CalibrationCard(props: { drive: Drive }) {
+  const { colors: C, tokens } = useTheme();
+  const st = makeStyles(tokens);
   const d = props.drive;
   const [phase, setPhase] = useState<'idle' | 'measuring' | 'enter'>('idle');
   const [wheel, setWheel] = useState<{ bpm: number[]; spo2: number[] } | null>(null);
@@ -24,13 +29,8 @@ export function CalibrationCard(props: { drive: Drive }) {
   return (
     <Card>
       <SectionTitle>Calibrate with a reference device</SectionTitle>
-      <Text style={st.note}>
-        For the most accurate readings for this driver: put a clip-on pulse oximeter (or chest strap) on one hand and rest a
-        finger of the other hand on the wheel sensor. Sit still for {CAL_SECONDS} seconds, then enter what the reference showed
-        (its average). The heart-rate difference becomes a small personal correction (at most ±{CAL_MAX_HR} BPM), averaged
-        over every session you do — a few sessions on different days is best (agreement studies use about 100 paired
-        readings). Oxygen is compared but never corrected: a home oximeter isn't accurate enough to calibrate against.
-      </Text>
+      <Text style={st.note}>Use a clip-on pulse oximeter or chest strap as a reference. Rest a finger on the wheel sensor, sit still for {CAL_SECONDS} seconds, then enter the reference average. Oxygen is compared, never corrected.</Text>
+      <InformationButton title="Calibration details" body={`The heart-rate difference becomes a small personal correction (at most ±${CAL_MAX_HR} BPM), averaged over every session you do. A few sessions on different days is best; agreement studies use about 100 paired readings. A home oximeter is not accurate enough to calibrate oxygen against.`} />
       {hasCal ? (
         <>
           <Row label="Heart-rate correction" value={cal!.cal_hr ? `${cal!.cal_hr > 0 ? '+' : ''}${cal!.cal_hr} BPM` : '—'} tone="brand" />
@@ -105,7 +105,10 @@ export function CalibrationCard(props: { drive: Drive }) {
   );
 }
 
-const st = StyleSheet.create({
-  note: { fontSize: 13, color: C.sub, lineHeight: 18 },
-  input: { borderWidth: 1, borderColor: C.line, borderRadius: 12, padding: 12, fontSize: 16, color: C.ink, backgroundColor: '#fff' },
-});
+const makeStyles = (tokens: ThemeTokens) => {
+  const C = presentationColors(tokens);
+  return StyleSheet.create({
+    note: { fontSize: 13, color: C.sub, lineHeight: 18 },
+    input: { borderWidth: 1, borderColor: C.line, borderRadius: 12, padding: 12, fontSize: 16, color: C.ink, backgroundColor: tokens.surface },
+  });
+};

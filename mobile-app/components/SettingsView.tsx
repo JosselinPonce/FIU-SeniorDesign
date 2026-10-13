@@ -1,3 +1,7 @@
+import { InformationButton } from './Information';
+import { DemoAuthPanel } from './DemoAuthPanel';
+import { useTheme } from '../lib/theme/ThemeProvider';
+import { presentationColors, type ThemeTokens } from '../lib/theme/tokens';
 /**
  * Storage choice, cloud backlog, and the technical link details that used to
  * crowd the drive screen.
@@ -9,7 +13,7 @@ import type { useDriveSession } from '../lib/hooks/useDriveSession';
 import type { StorageMode } from '../lib/db/repositories';
 import { pendingCount, syncToSupabase } from '../lib/db/sync';
 import { wipeEverything } from '../lib/db/deletion';
-import { Btn, C, Card, Row, SectionTitle, fmtClock, fmtDuration } from './ui';
+import { Btn, Card, Row, SectionTitle, fmtClock, fmtDuration } from './ui';
 import { VoicePicker } from './VoicePicker';
 import { CalibrationCard } from './CalibrationCard';
 import { ThresholdHistory } from './ThresholdHistory';
@@ -45,6 +49,8 @@ export function SettingsView(props: {
   onShowIntro: () => void;
   onEditProfile: () => void;
 }) {
+  const { colors: C, tokens, preference, setPreference, error: appearanceError } = useTheme();
+  const st = makeStyles(tokens);
   const d = props.drive;
   const [direct, setDirect] = useState(false);
   const [syncMsg, setSyncMsg] = useState('');
@@ -78,6 +84,19 @@ export function SettingsView(props: {
 
   return (
     <ScrollView contentContainerStyle={st.container}>
+      {__DEV__ ? <DemoAuthPanel /> : null}
+      <Card>
+        <SectionTitle>Appearance</SectionTitle>
+        {(['light', 'dark', 'system'] as const).map(value => <Pressable key={value}
+          accessibilityRole="radio" accessibilityState={{ selected: preference === value }}
+          onPress={() => void setPreference(value)}
+          style={[st.mode, preference === value && st.modeOn]}>
+          <View style={[st.radio, preference === value && st.radioOn]} />
+          <Text style={st.modeTitle}>{value === 'light' ? 'Light' : value === 'dark' ? 'Dark' : 'System'}</Text>
+        </Pressable>)}
+        <Text style={st.note}>System follows the appearance reported by this device. This build currently forces a light native appearance.</Text>
+        {appearanceError ? <Text accessibilityLiveRegion="polite" style={st.note}>{appearanceError}</Text> : null}
+      </Card>
       <Card>
         <SectionTitle>Assistant Mode</SectionTitle>
         <Text style={st.note}>For development and demonstrations. Live biometric warnings always use the existing deterministic safety workflow.</Text>
@@ -85,7 +104,7 @@ export function SettingsView(props: {
           accessibilityState={{ selected: props.assistantMode === mode.key, disabled: props.assistantModeBusy }}
           disabled={props.assistantModeBusy}
           onPress={() => void props.onAssistantModeChange(mode.key)}
-          style={[st.mode, props.assistantMode === mode.key && st.modeOn, props.assistantModeBusy && { opacity: 0.6 }]}>
+          style={[st.mode, props.assistantMode === mode.key && st.modeOn, props.assistantModeBusy && { backgroundColor: tokens.disabledSurface }]}>
           <View style={[st.radio, props.assistantMode === mode.key && st.radioOn]} />
           <View style={{ flex: 1, gap: 3 }}><Text style={st.modeTitle}>{mode.title}</Text><Text style={st.modeBody}>{mode.body}</Text></View>
         </Pressable>)}
@@ -99,7 +118,7 @@ export function SettingsView(props: {
         <Text style={st.note}>{d.driver?.display_name}</Text>
         <Text style={st.note}>{d.driver?.emergency_phone ? `Emergency contact: ${d.driver.emergency_name || 'Saved contact'} · ${d.driver.emergency_phone}` : 'No emergency contact configured. Saved-contact phone handoff is unavailable.'}</Text>
         <Btn title="Edit Driver Profile" onPress={props.onEditProfile} />
-        <Text style={st.note}>Profiles are saved on this phone. Cloud updates retry when online; emergency contacts stay on this phone.</Text>
+        <InformationButton title="Profile storage" body="Profiles are saved on this phone. Cloud updates retry when online; emergency contacts stay on this phone." />
         {d.hasActiveSession ? <Text style={st.note}>End and save the current drive before editing.</Text> : null}
       </Card>
       <Card>
@@ -111,7 +130,7 @@ export function SettingsView(props: {
             accessibilityState={{ selected: d.storageMode === m.key, disabled: d.hasActiveSession }}
             disabled={d.hasActiveSession}
             onPress={() => void d.setStorageMode(m.key)}
-            style={[st.mode, d.storageMode === m.key && st.modeOn, d.hasActiveSession && { opacity: 0.6 }]}
+            style={[st.mode, d.storageMode === m.key && st.modeOn, d.hasActiveSession && { backgroundColor: tokens.disabledSurface }]}
           >
             <View style={[st.radio, d.storageMode === m.key && st.radioOn]} />
             <View style={{ flex: 1, gap: 3 }}>
@@ -149,13 +168,9 @@ export function SettingsView(props: {
                 <Btn title="Reset these adjustments" kind="ghost" onPress={() => void d.resetAck()} />
               </>
             ) : null}
-            <Text style={st.note}>How the profile sets this: {sf.prior.explain.join(' · ')}.</Text>
-            <Text style={st.note}>
-              A warning is watched for 15 s (8 s if critical). Only if readings stay out of range does the phone ask "Are you
-              feeling OK?" out loud. Sources: NEWS2 (Royal College of Physicians 2017), Avram et al. 2019 real-world heart-rate
-              norms, alarm-delay studies (Görges 2009). Oxygen is an estimate: pulse oximeters can read several points high on
-              darker skin (Sjoding et al. 2020), so a normal-looking value is not proof of normal oxygen.
-            </Text>
+            <InformationButton title="Personalized thresholds" body={`How the profile sets this: ${sf.prior.explain.join(' · ')}.`} />
+            <InformationButton title="How safety checks work" body={'A warning is watched for 15 s (8 s if critical). Only if readings stay out of range does the phone ask "Are you feeling OK?" out loud. Sources: NEWS2 (Royal College of Physicians 2017), Avram et al. 2019 real-world heart-rate norms, alarm-delay studies (Görges 2009). Oxygen is an estimate: pulse oximeters can read several points high on darker skin (Sjoding et al. 2020), so a normal-looking value is not proof of normal oxygen.'} />
+            <Text style={st.note}>Oxygen is an estimate. A normal-looking value is not proof of normal oxygen.</Text>
           </>
         ) : (
           <Text style={st.note}>Pick a driver to see their thresholds.</Text>
@@ -264,7 +279,7 @@ export function SettingsView(props: {
 
       <Card>
         <SectionTitle>Connection</SectionTitle>
-        <Row label="Auto-connect to the Pi" value={<Switch value={props.autoOn} onValueChange={(v) => {
+        <Row label="Auto-connect to the Pi" value={<Switch trackColor={{ false: tokens.border, true: tokens.primary }} thumbColor={tokens.surface} ios_backgroundColor={tokens.border} value={props.autoOn} onValueChange={(v) => {
           if (v) d.autoConnect();
           else void d.stopConnecting();
           props.setAutoOn(v);
@@ -304,7 +319,7 @@ export function SettingsView(props: {
           <Text style={[st.note, { flex: 1 }]}>
             Bench testing: connect straight to the ESP32 when no Pi is around. Never in the car — it locks the Pi out.
           </Text>
-          <Switch
+          <Switch trackColor={{ false: tokens.border, true: tokens.primary }} thumbColor={tokens.surface} ios_backgroundColor={tokens.border}
             value={direct}
             onValueChange={(v) => {
               setDirect(v);
@@ -355,17 +370,20 @@ export function SettingsView(props: {
   );
 }
 
-const st = StyleSheet.create({
-  container: { padding: 16, gap: 14, paddingBottom: 40 },
-  mode: { flexDirection: 'row', gap: 12, padding: 12, borderRadius: 14, borderWidth: 1.5, borderColor: C.line },
-  modeOn: { borderColor: C.brand, backgroundColor: '#f0fdfa' },
-  radio: { width: 20, height: 20, borderRadius: 10, borderWidth: 2, borderColor: C.faint, marginTop: 2 },
-  radioOn: { borderColor: C.brand, backgroundColor: C.brand },
-  modeTitle: { fontSize: 16, fontWeight: '700', color: C.ink },
-  modeBody: { fontSize: 13, color: C.sub, lineHeight: 18 },
-  note: { fontSize: 13, color: C.sub, lineHeight: 18 },
-  bench: { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 6 },
-  id: { fontSize: 10, color: C.faint },
-  voiceHead: { fontSize: 14, fontWeight: '700', color: C.ink, marginTop: 6 },
-  disclaimer: { fontSize: 12, color: C.faint, textAlign: 'center' },
-});
+const makeStyles = (tokens: ThemeTokens) => {
+  const C = presentationColors(tokens);
+  return StyleSheet.create({
+    container: { padding: 16, gap: 14, paddingBottom: 40 },
+    mode: { flexDirection: 'row', gap: 12, padding: 12, borderRadius: 14, borderWidth: 1.5, borderColor: C.line },
+    modeOn: { borderColor: C.brand, backgroundColor: tokens.surfaceMuted },
+    radio: { width: 20, height: 20, borderRadius: 10, borderWidth: 2, borderColor: C.faint, marginTop: 2 },
+    radioOn: { borderColor: C.brand, backgroundColor: C.brand },
+    modeTitle: { fontSize: 16, fontWeight: '700', color: C.ink },
+    modeBody: { fontSize: 13, color: C.sub, lineHeight: 18 },
+    note: { fontSize: 13, color: C.sub, lineHeight: 18 },
+    bench: { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 6 },
+    id: { fontSize: 10, color: C.faint },
+    voiceHead: { fontSize: 14, fontWeight: '700', color: C.ink, marginTop: 6 },
+    disclaimer: { fontSize: 12, color: C.faint, textAlign: 'center' },
+  });
+};

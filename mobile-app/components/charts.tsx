@@ -1,10 +1,12 @@
+import { useTheme } from '../lib/theme/ThemeProvider';
+import { presentationColors, type ThemeTokens } from '../lib/theme/tokens';
 /**
  * Charts drawn with plain Views, so no native charting module is needed.
  */
 import { useEffect, useRef } from 'react';
 import { Animated, Easing, StyleSheet, Text, View } from 'react-native';
 
-import { C } from './ui';
+
 import type { Point, RatePoint } from '../lib/hooks/useDriveSession';
 
 /**
@@ -21,7 +23,13 @@ export function VitalChart(props: {
   max: number;
   band?: { low: number; high: number } | null;
   height?: number;
+  backgroundColor?: string;
+  bandColor?: string;
+  startLabel?: string;
+  endLabel?: string;
 }) {
+  const { colors: C, tokens } = useTheme();
+  const st = makeStyles(tokens);
   const H = props.height ?? 72;
   const slots: (number | null)[] = new Array(props.seconds).fill(null);
   const pts = props.points.slice(-props.seconds);
@@ -31,10 +39,10 @@ export function VitalChart(props: {
   const y = (v: number) => Math.min(1, Math.max(0, (v - props.min) / (props.max - props.min))) * H;
   return (
     <View>
-      <View style={[st.body, { height: H }]}>
+      <View style={[st.body, { height: H }, props.backgroundColor ? { backgroundColor: props.backgroundColor } : null]}>
         {props.band ? (
           <View
-            style={[st.band, { bottom: y(props.band.low), height: Math.max(2, y(props.band.high) - y(props.band.low)) }]}
+            style={[st.band, props.bandColor ? { backgroundColor: props.bandColor } : null, { bottom: y(props.band.low), height: Math.max(2, y(props.band.high) - y(props.band.low)) }]}
           />
         ) : null}
         {slots.map((v, i) => (
@@ -52,11 +60,11 @@ export function VitalChart(props: {
         ))}
       </View>
       <View style={st.axis}>
-        <Text style={st.axisText}>{props.seconds / 60} min ago</Text>
+        <Text style={st.axisText}>{props.startLabel ?? `${props.seconds / 60} min ago`}</Text>
         <Text style={st.axisText}>
           {props.min}–{props.max}
         </Text>
-        <Text style={st.axisText}>now</Text>
+        <Text style={st.axisText}>{props.endLabel ?? 'now'}</Text>
       </View>
     </View>
   );
@@ -69,6 +77,8 @@ export function VitalChart(props: {
  * Pi (the wheel's packets) and sent to the cloud.
  */
 export function RateDot(props: { series: RatePoint[] }) {
+  const { colors: C, tokens } = useTheme();
+  const st = makeStyles(tokens);
   const H = 44;
   const pulse = useRef(new Animated.Value(0)).current;
   const last = props.series[props.series.length - 1];
@@ -120,6 +130,8 @@ export function RateDot(props: { series: RatePoint[] }) {
 
 /** A compact waveform strip (min/max per column), for unfolded archives. */
 export function Waveform(props: { values: number[]; color: string; height?: number; columns?: number }) {
+  const { colors: C, tokens } = useTheme();
+  const st = makeStyles(tokens);
   const H = props.height ?? 80;
   const cols = props.columns ?? 120;
   if (!props.values.length) return null;
@@ -157,15 +169,18 @@ export function Waveform(props: { values: number[]; color: string; height?: numb
   );
 }
 
-const st = StyleSheet.create({
-  body: { flexDirection: 'row', alignItems: 'flex-end', gap: 1, backgroundColor: '#f8fafc', borderRadius: 10, overflow: 'hidden' },
-  band: { position: 'absolute', left: 0, right: 0, backgroundColor: 'rgba(15,118,110,0.10)', borderTopWidth: 1, borderBottomWidth: 1, borderColor: 'rgba(15,118,110,0.25)' },
-  axis: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 3 },
-  axisText: { fontSize: 10, color: C.faint },
-  rateBody: { flexDirection: 'row', alignItems: 'flex-end', gap: 1, backgroundColor: '#f8fafc', borderRadius: 10, overflow: 'visible', paddingRight: 6 },
-  rateCol: { flex: 1, height: '100%', justifyContent: 'flex-end' },
-  dot: { position: 'absolute', right: 0, width: 10, height: 10, borderRadius: 5, backgroundColor: C.oxygen, borderWidth: 2, borderColor: '#fff' },
-  legend: { flexDirection: 'row', justifyContent: 'space-between' },
-  legendText: { fontSize: 11, fontWeight: '600' },
-  wave: { flexDirection: 'row', gap: 0.5, backgroundColor: '#f8fafc', borderRadius: 10, overflow: 'hidden' },
-});
+const makeStyles = (tokens: ThemeTokens) => {
+  const C = presentationColors(tokens);
+  return StyleSheet.create({
+    body: { flexDirection: 'row', alignItems: 'flex-end', gap: 1, backgroundColor: tokens.chartBackground, borderRadius: 10, overflow: 'hidden' },
+    band: { position: 'absolute', left: 0, right: 0, backgroundColor: tokens.chartBand, borderTopWidth: 1, borderBottomWidth: 1, borderColor: tokens.border },
+    axis: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 3 },
+    axisText: { fontSize: 10, color: C.faint },
+    rateBody: { flexDirection: 'row', alignItems: 'flex-end', gap: 1, backgroundColor: tokens.chartBackground, borderRadius: 10, overflow: 'visible', paddingRight: 6 },
+    rateCol: { flex: 1, height: '100%', justifyContent: 'flex-end' },
+    dot: { position: 'absolute', right: 0, width: 10, height: 10, borderRadius: 5, backgroundColor: C.oxygen, borderWidth: 2, borderColor: tokens.surface },
+    legend: { flexDirection: 'row', justifyContent: 'space-between' },
+    legendText: { fontSize: 11, fontWeight: '600' },
+    wave: { flexDirection: 'row', gap: 0.5, backgroundColor: tokens.chartBackground, borderRadius: 10, overflow: 'hidden' },
+  });
+};

@@ -1,16 +1,23 @@
+import { VitalsDetailView } from './VitalsDetailView';
+import { drivePageAfter, type DrivePage } from '../lib/ui/dashboard';
+import { BrandMark } from './BrandMark';
+import { DashboardAssistantEntry } from './DashboardAssistantEntry';
+import { InformationHost } from './Information';
+import { useTheme } from '../lib/theme/ThemeProvider';
+import { presentationColors, type ThemeTokens } from '../lib/theme/tokens';
 /**
  * Smart Wheel app shell: driver picker, then three tabs (Drive, History,
  * Settings) under a header that always shows who is driving and lets you
  * switch drivers.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, Pressable, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Alert, Pressable, StyleSheet, Text, View, SafeAreaView, Platform, StatusBar as NativeStatusBar } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 
 import { useDriveSession } from '../lib/hooks/useDriveSession';
 import * as repo from '../lib/db/repositories';
 import type { DriverProfile } from '../lib/db/repositories';
-import { Btn, C } from './ui';
+import { Btn } from './ui';
 import { appAudio } from '../lib/voice/audioOwnership';
 import { DriverAssistant } from './DriverAssistant';
 import { LocalAITest } from '../modules/local-foundation-models/LocalAITest';
@@ -21,13 +28,19 @@ import { SettingsView } from './SettingsView';
 import { Onboarding } from './Onboarding';
 import { assistantModeSettings, routeAssistantLaunch, snapshotAssistantLaunch, type AssistantMode, type AssistantLaunch } from '../lib/assistant/mode';
 
+import { CONNECTED_BACKEND_READINESS } from '../lib/assistant/connectedReadiness';
+
 const modeSettings = assistantModeSettings(repo);
 
 type Tab = 'drive' | 'history' | 'settings';
 
 export default function SmartWheelScreen() {
+  const { colors: C, tokens, name: themeName } = useTheme();
+  const st = makeStyles(tokens);
   const drive = useDriveSession();
   const [profiles, setProfiles] = useState<DriverProfile[] | null>(null);
+  const [drivePage, setDrivePage] = useState<DrivePage>('dashboard');
+  useEffect(() => { setDrivePage('dashboard'); }, [drive.driver?.id]);
   const [tab, setTab] = useState<Tab>('drive');
   const [busy, setBusy] = useState(false);
   const [editingProfile, setEditingProfile] = useState<DriverProfile | null>(null);
@@ -67,6 +80,7 @@ export default function SmartWheelScreen() {
     routeAssistantLaunch(launch, {
       coreTools: () => { setAssistantOpen(false); setAssistantLaunch(launch); setTab('settings'); },
       local: () => { setAssistantLaunch(launch); setAssistantOpen(true); },
+      connected: () => { setAssistantLaunch(launch); setAssistantOpen(true); },
     });
   }
   // First run: the introduction (null = still loading the flag).
@@ -130,7 +144,7 @@ export default function SmartWheelScreen() {
   if (showIntro) {
     return (
       <>
-        <StatusBar style="dark" />
+        <StatusBar style={themeName === 'dark' ? 'light' : 'dark'} />
         <Onboarding onDone={finishIntro} />
       </>
     );
@@ -146,7 +160,7 @@ export default function SmartWheelScreen() {
 
   // Diagnostics stay before driver selection, without competing safety audio.
   if (__DEV__ && diagnosticsOpen && !drive.driver) {
-    return <View style={{ flex: 1 }}>
+    return <View style={{ flex: 1, backgroundColor: tokens.background }}>
       <LocalAITest onAudioBusyChange={setDiagnosticBusy} />
       <View style={{ padding: 18 }}><Btn title="Back to DriveSense" disabled={diagnosticBusy}
         onPress={() => setDiagnosticsOpen(false)} /></View>
@@ -156,55 +170,57 @@ export default function SmartWheelScreen() {
   if (!drive.driver) {
     return (
       <>
-        <StatusBar style="dark" />
+        <StatusBar style={themeName === 'dark' ? 'light' : 'dark'} />
+        <View style={{ flex: 1, backgroundColor: tokens.background }}>
         <DriverPicker profiles={profiles} onPick={drive.selectDriver} onCreated={reload} />
         {__DEV__ ? <View style={{ padding: 18 }}><Btn title="Local AI diagnostics" kind="ghost" disabled={!appAudio.available} onPress={() => { if (appAudio.available) setDiagnosticsOpen(true); }} /></View> : null}
+        <InformationHost blocked={!!drive.safety.check || !!drive.safety.demo} />
+        </View>
       </>
     );
   }
 
-  if (editOpening) return <View style={st.center}><ActivityIndicator /><Text>Loading driver profile…</Text></View>;
+  if (editOpening) return <View style={st.center}><ActivityIndicator /><Text style={{ color: C.ink }}>Loading driver profile…</Text></View>;
 
   if (editingProfile) return <>
-    <StatusBar style="dark" />
+    <StatusBar style={themeName === 'dark' ? 'light' : 'dark'} />
     <DriverPicker profiles={[editingProfile]} editProfile={editingProfile} onPick={() => {}} onCreated={reload}
       onCancelEdit={closeEditor} onSaveProfile={async input => {
         await drive.saveProfileEdit(editingProfile, input);
         await reload();
         closeEditor();
       }} />
+    <InformationHost blocked={!!drive.safety.check || !!drive.safety.demo} />
   </>;
 
   return (
-    <View style={st.root}>
-      <StatusBar style="dark" />
+    <SafeAreaView style={st.root}>
+      <StatusBar style={themeName === 'dark' ? 'light' : 'dark'} />
       <View style={st.header}>
-        <View style={{ flex: 1 }}>
-          <Text style={st.brand}>DriveSense</Text>
-          <Text style={st.driver} numberOfLines={1}>
-            {drive.driver.display_name}
-            {drive.driver.custom_id ? <Text style={st.cid}>  {drive.driver.custom_id}</Text> : null}
-          </Text>
+        <View style={{ flex: 1, minWidth: 0 }}><BrandMark /></View>
+        <View style={{ alignItems: 'flex-end', maxWidth: '45%', flexShrink: 1 }}>
+          <Text style={st.driver} numberOfLines={2}>{drive.driver.display_name}</Text>
+          <Pressable onPress={switchDriver} style={st.switch} accessibilityRole="button" accessibilityLabel="Switch driver">
+            <Text style={st.switchText}>Switch driver</Text>
+          </Pressable>
         </View>
-        <Pressable onPress={switchDriver} style={st.switch} accessibilityRole="button" accessibilityLabel="Switch driver">
-          <Text style={st.switchText}>Switch driver</Text>
-        </Pressable>
       </View>
 
-      {tab === 'drive' ? <View style={{ paddingHorizontal: 18, paddingVertical: 6 }}>
-        <Btn title={assistantMode === 'core' ? 'Driver Assistant — CORE tools' : 'Driver Assistant'}
-          disabled={!assistantMode || modeSaving || assistantMode === 'connected' || !!drive.safety.check || !!drive.safety.demo}
-          onPress={openAssistant} />
-        {assistantMode === 'connected' ? <Text>CONNECTED AI — Not configured. Choose CORE or LOCAL AI in Settings.</Text> : null}
-        {assistantModeError ? <Text accessibilityLiveRegion="polite">{assistantModeError}</Text> : null}
-      </View> : null}
-      <DriverAssistant visible={assistantOpen && assistantLaunch?.destination === 'local'} onClose={() => setAssistantOpen(false)} language={drive.driver.language ?? 'en'}
+      <DriverAssistant visible={assistantOpen && (assistantLaunch?.destination === 'local' || assistantLaunch?.destination === 'connected')}
+        mode={assistantLaunch?.mode === 'connected' ? 'connected' : 'local'} onClose={() => setAssistantOpen(false)} language={drive.driver.language ?? 'en'}
         ownershipKey={`${drive.driver.id}:${drive.session?.id ?? ''}:${drive.session?.status ?? ''}`}
         contactName={drive.driver.emergency_name} contactAvailability={drive.assistantContactAvailability}
         handoff={drive.assistantContact} captureOwnership={drive.assistantOwnership} />
 
       <View style={{ flex: 1 }}>
-        {tab === 'drive' ? <DriveView drive={drive} busy={busy} guard={guard} /> : null}
+        {tab === 'drive' ? drivePage === 'vitals'
+          ? <VitalsDetailView drive={drive} onBack={() => setDrivePage(drivePageAfter('back'))} />
+          : <>
+            <DriveView drive={drive} busy={busy} guard={guard} onOpenVitals={() => setDrivePage(drivePageAfter('details'))} />
+            {!drive.safety.check && !drive.safety.demo && !assistantOpen ? <DashboardAssistantEntry mode={assistantMode} language={drive.driver.language ?? 'en'}
+              disabled={!assistantMode || modeSaving || (assistantMode === 'connected' && !CONNECTED_BACKEND_READINESS.verified) || !!drive.safety.check || !!drive.safety.demo}
+              error={assistantModeError} onPress={openAssistant} /> : null}
+          </> : null}
         {tab === 'history' ? <HistoryView refreshKey={`${drive.session?.id ?? ''}:${drive.session?.status ?? ''}:${drive.fold.state}`} /> : null}
         {tab === 'settings' ? (
           <SettingsView
@@ -229,6 +245,7 @@ export default function SmartWheelScreen() {
         ) : null}
       </View>
 
+      <InformationHost blocked={!!drive.safety.check || !!drive.safety.demo || assistantOpen} />
       <VoiceCheckModal drive={drive} />
 
       <View style={st.tabs}>
@@ -241,48 +258,55 @@ export default function SmartWheelScreen() {
         ).map(([key, label]) => (
           <Pressable
             key={key}
-            onPress={() => setTab(key)}
-            style={st.tab}
+            onPress={() => { setDrivePage(drivePageAfter('tab')); setTab(key); }}
+            style={[st.tab, tab === key && { backgroundColor: tokens.surfaceMuted }]}
             accessibilityRole="tab"
             accessibilityState={{ selected: tab === key }}
           >
-            <View style={[st.tabBar, tab === key && { backgroundColor: C.brand }]} />
+            <View style={[st.tabBar, tab === key && { backgroundColor: tokens.accent }]} />
             <Text style={[st.tabText, tab === key && { color: C.brand }]}>{label}</Text>
             {key === 'drive' && drive.hasActiveSession ? <View style={st.recDot} /> : null}
           </Pressable>
         ))}
       </View>
-    </View>
+    </SafeAreaView>
   );
 }
 
-const st = StyleSheet.create({
-  root: { flex: 1, backgroundColor: C.bg },
-  center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: C.bg },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingTop: 60,
-    paddingHorizontal: 18,
-    paddingBottom: 12,
-    backgroundColor: C.card,
-    borderBottomWidth: 1,
-    borderBottomColor: C.line,
-  },
-  brand: { fontSize: 12, fontWeight: '800', color: C.brand, letterSpacing: 1, textTransform: 'uppercase' },
-  driver: { fontSize: 22, fontWeight: '800', color: C.ink },
-  cid: { fontSize: 14, fontWeight: '600', color: C.sub },
-  switch: { paddingHorizontal: 14, paddingVertical: 9, borderRadius: 999, backgroundColor: C.brandSoft },
-  switchText: { color: C.brand, fontWeight: '700' },
-  tabs: {
-    flexDirection: 'row',
-    backgroundColor: C.card,
-    borderTopWidth: 1,
-    borderTopColor: C.line,
-    paddingBottom: 28,
-  },
-  tab: { flex: 1, alignItems: 'center', paddingTop: 0, gap: 8 },
-  tabBar: { height: 3, width: '60%', borderRadius: 2, backgroundColor: 'transparent' },
-  tabText: { fontSize: 15, fontWeight: '700', color: C.faint },
-  recDot: { position: 'absolute', top: 10, right: '28%', width: 8, height: 8, borderRadius: 4, backgroundColor: C.heart },
-});
+const makeStyles = (tokens: ThemeTokens) => {
+  const C = presentationColors(tokens);
+  return StyleSheet.create({
+    root: { flex: 1, backgroundColor: C.bg },
+    center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: C.bg },
+    header: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      flexWrap: 'wrap',
+      gap: 8,
+      paddingTop: Platform.OS === 'android' ? (NativeStatusBar.currentHeight ?? 0) + 8 : 8,
+      paddingHorizontal: 18,
+      paddingBottom: 8,
+      backgroundColor: C.card,
+      borderBottomWidth: 1,
+      borderBottomColor: C.line,
+    },
+    brand: { fontSize: 12, fontWeight: '800', color: C.ink, letterSpacing: 1, textTransform: 'uppercase', borderLeftWidth: 3, borderLeftColor: tokens.accent, paddingLeft: 8 },
+    driver: { fontSize: 18, fontWeight: '700', color: C.ink, textAlign: 'right' },
+    cid: { fontSize: 12, fontWeight: '600', color: C.sub },
+    switch: { minHeight: 44, minWidth: 44, justifyContent: 'center', paddingHorizontal: 4, paddingVertical: 4 },
+    switchText: { color: C.sub, fontSize: 12, fontWeight: '600' },
+    tabs: {
+      flexDirection: 'row',
+      backgroundColor: C.card,
+      borderTopWidth: 1,
+      borderTopColor: C.line,
+      paddingBottom: 8,
+      paddingHorizontal: 10,
+      gap: 6,
+    },
+    tab: { flex: 1, minHeight: 48, borderRadius: 14, alignItems: 'center', paddingTop: 0, gap: 6 },
+    tabBar: { height: 3, width: 18, borderRadius: 2, backgroundColor: 'transparent' },
+    tabText: { fontSize: 13, fontWeight: '700', color: C.faint },
+    recDot: { position: 'absolute', top: 10, right: '28%', width: 8, height: 8, borderRadius: 4, backgroundColor: tokens.heartAccent },
+  });
+};

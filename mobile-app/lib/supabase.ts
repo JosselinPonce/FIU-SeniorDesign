@@ -7,5 +7,8 @@ const supabasePublishableKey =
 
 export const supabase = createClient(
   supabaseUrl,
-  supabasePublishableKey
+  supabasePublishableKey,
+  // Demo Auth is session-only: never store refresh/access tokens in SQLite or
+  // unencrypted native storage. Restarting the app requires another sign-in.
+  { auth: { persistSession: false, detectSessionInUrl: false } }
 );

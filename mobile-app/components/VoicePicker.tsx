@@ -1,3 +1,5 @@
+import { useTheme } from '../lib/theme/ThemeProvider';
+import { presentationColors, type ThemeTokens } from '../lib/theme/tokens';
 /**
  * Settings → voice picker: every voice installed on the phone for the driver's
  * language, best first (Premium, Enhanced, Standard). Tap to hear it and use
@@ -9,7 +11,7 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 import * as repo from '../lib/db/repositories';
 import { listVoices, previewVoice, setPreferredVoice, type VoiceChoice } from '../lib/voice/speechIO';
 import type { Lang } from '../lib/voice/voiceCheck';
-import { C } from './ui';
+
 
 const SAMPLE: Record<Lang, (name: string) => string> = {
   en: (n) => `${n ? `${n}, ` : ''}this is how I'll sound if I ever need to check on you. Are you feeling okay?`,
@@ -17,6 +19,8 @@ const SAMPLE: Record<Lang, (name: string) => string> = {
 };
 
 export function VoicePicker(props: { lang: Lang; driverName: string }) {
+  const { colors: C, tokens } = useTheme();
+  const st = makeStyles(tokens);
   const [voices, setVoices] = useState<VoiceChoice[] | null>(null);
   const [chosen, setChosen] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -68,13 +72,16 @@ export function VoicePicker(props: { lang: Lang; driverName: string }) {
   );
 }
 
-const st = StyleSheet.create({
-  row: { flexDirection: 'row', alignItems: 'center', gap: 10, padding: 10, borderRadius: 12, borderWidth: 1.5, borderColor: C.line },
-  rowOn: { borderColor: C.brand, backgroundColor: '#f0fdfa' },
-  radio: { width: 18, height: 18, borderRadius: 9, borderWidth: 2, borderColor: C.faint },
-  radioOn: { borderColor: C.brand, backgroundColor: C.brand },
-  title: { fontSize: 15, fontWeight: '700', color: C.ink },
-  sub: { fontSize: 12, color: C.sub },
-  playing: { fontSize: 12, color: C.brand, fontWeight: '700' },
-  note: { fontSize: 12, color: C.sub },
-});
+const makeStyles = (tokens: ThemeTokens) => {
+  const C = presentationColors(tokens);
+  return StyleSheet.create({
+    row: { flexDirection: 'row', alignItems: 'center', gap: 10, padding: 10, borderRadius: 12, borderWidth: 1.5, borderColor: C.line },
+    rowOn: { borderColor: C.brand, backgroundColor: tokens.surfaceMuted },
+    radio: { width: 18, height: 18, borderRadius: 9, borderWidth: 2, borderColor: C.faint },
+    radioOn: { borderColor: C.brand, backgroundColor: C.brand },
+    title: { fontSize: 15, fontWeight: '700', color: C.ink },
+    sub: { fontSize: 12, color: C.sub },
+    playing: { fontSize: 12, color: C.brand, fontWeight: '700' },
+    note: { fontSize: 12, color: C.sub },
+  });
+};

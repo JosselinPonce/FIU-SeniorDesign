@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { AssistantConversation, type AssistantDeps, type ConversationState } from '../modules/local-foundation-models/assistantConversation.ts';
 import { AudioOwnership } from '../lib/voice/audioOwnership.ts';
-import { assertAssistantPlatform, assertAssistantCapabilities, conversationalReply, drivingSafetyAnswer, selectAssistantVoice } from '../modules/local-foundation-models/conversationPolicy.ts';
+import { assertAssistantPlatform, assertAssistantCapabilities, needsParkingStatus, conversationalReply, drivingSafetyAnswer, selectAssistantVoice } from '../modules/local-foundation-models/conversationPolicy.ts';
 import type { DriverInterpretation, OfflineTranscription } from '../modules/local-foundation-models/index.ts';
 import { explicitContactCallRequest } from '../lib/voice/intent.ts';
 const interpretation: DriverInterpretation = { wellness: 'ok', requestsSavedEmergencyContact: false,
@@ -275,7 +275,7 @@ test('empathetic replies require safe guidance and continue to reject medical, a
   const unwell = { ...interpretation, wellness: 'not_ok' as const };
   for (const suggestedReply of ["I'm sorry you're feeling dizzy. Please pull over when it's safe. Are you safely parked?",
     'That sounds uncomfortable. Please pull over safely.'])
-    assert.equal(conversationalReply({ ...unwell, suggestedReply }).usedFallback, false, suggestedReply);
+    assert.equal(conversationalReply({ ...unwell, suggestedReply }, [], false, true).usedFallback, false, suggestedReply);
   for (const suggestedReply of ['I heard your request.', 'Please pull over.', "You're safe to drive. Please pull over safely.",
     'Your dizziness is a disease. Please pull over safely.', 'I called your contact. Please pull over safely.',
     'Please pull over safely. Take medication.', "You shouldn't stop. Please pull over safely."])
@@ -419,7 +419,7 @@ const parkingInterpretation = { ...interpretation, wellness: 'not_ok' as const,
 test('not parked answer ends with stopping safety, without further inference or medical questions', async () => {
   for (const answer of ['No, not yet.', "I'm still driving."]) {
     let inferences = 0;
-    const f = fake(['I feel uneasy', answer, "It's getting better"], {
+    const f = fake(['Can you help me stop safely?', answer, "It's getting better"], {
       interpret: async () => { inferences++; return { status: 'success', processingTimeMs: 1, interpretation: parkingInterpretation }; },
     });
     await new AssistantConversation(f.deps).start();
@@ -433,7 +433,7 @@ test('not parked answer ends with stopping safety, without further inference or 
 });
 
 test('improvement ends naturally without probing, parking assumptions or driving reassurance', async () => {
-  const f = fake(['I feel uneasy', "It's getting better."], {
+  const f = fake(['Can you help me stop safely?', "It's getting better."], {
     interpret: async () => ({ status: 'success', processingTimeMs: 1, interpretation: parkingInterpretation }),
   });
   await new AssistantConversation(f.deps).start();
@@ -444,7 +444,7 @@ test('improvement ends naturally without probing, parking assumptions or driving
 
 test('parking yes offers contact once and only a subsequent final contact yes authorizes', async () => {
   for (const contactAnswer of ['yes please', 'no thanks']) {
-    const f = fake(['I feel uneasy', 'Yes', contactAnswer], {
+    const f = fake(['Can you help me stop safely?', 'Yes', contactAnswer], {
       interpret: async () => ({ status: 'success', processingTimeMs: 1, interpretation: parkingInterpretation }),
     });
     await new AssistantConversation(f.deps).start();
@@ -455,7 +455,7 @@ test('parking yes offers contact once and only a subsequent final contact yes au
 });
 
 test('direct request during a parking question retains handoff without redundant confirmation', async () => {
-  const f = fake(['I feel uneasy', 'Call my mom'], {
+  const f = fake(['Can you help me stop safely?', 'Call my mom'], {
     interpret: async () => ({ status: 'success', processingTimeMs: 1, interpretation: parkingInterpretation }),
   });
   await new AssistantConversation(f.deps).start();
@@ -488,7 +488,7 @@ test('parking retry retains the actual question and partial parking yes never be
   const f = fake([], {
     listen: async () => {
       count++;
-      return count === 1 ? captured('I feel uneasy') : count === 2 ? emptyFinalAfterPartial('Yes') : captured('No, not yet');
+      return count === 1 ? captured('Can you help me stop safely?') : count === 2 ? emptyFinalAfterPartial('Yes') : captured('No, not yet');
     },
     interpret: async () => ({ status: 'success', processingTimeMs: 1, interpretation: parkingInterpretation }),
   });
@@ -501,10 +501,65 @@ test('parking retry retains the actual question and partial parking yes never be
 });
 
 test('emergency-services exclusions still win during a parking exchange', async () => {
-  const f = fake(['I feel uneasy', 'Call 911'], {
+  const f = fake(['Can you help me stop safely?', 'Call 911'], {
     interpret: async () => ({ status: 'success', processingTimeMs: 1, interpretation: parkingInterpretation }),
   });
   await new AssistantConversation(f.deps).start();
   assert.deepEqual(f.handed, []);
   assert.match(f.spoken.at(-1)!, /cannot arrange emergency help/);
+});
+
+test('heat discomfort offers once with a valid contact and only final offered yes hands off', async () => {
+  for (const phrase of ["I'm feeling hot", "I'm overheating"]) for (const answer of ['yes please', 'no thanks', 'maybe']) {
+    const f = fake([phrase, answer], { contactName: () => 'Jamie' });
+    await new AssistantConversation(f.deps).start();
+    assert.equal(f.contexts.length, 0);
+    assert.equal(f.spoken.filter(text => /Would you like to call/.test(text)).length, 1);
+    assert.equal(f.spoken.filter(text => /pull over/.test(text)).length, 1);
+    assert.deepEqual(f.handed, answer === 'yes please' ? ['yes please'] : []);
+    assert.ok(f.spoken.every(text => !/safely parked/i.test(text)));
+  }
+});
+test('heat discomfort with unavailable contacts or explicit refusal never offers or authorizes', async () => {
+  for (const availability of ['missing_contact', 'invalid_phone'] as const) {
+    const f = fake(["I'm overheating"], { contactAvailability: () => availability });
+    await new AssistantConversation(f.deps).start();
+    assert.equal(f.contexts.length, 0); assert.deepEqual(f.handed, []);
+    assert.ok(f.spoken.some(text => /Settings/.test(text)));
+    assert.ok(f.spoken.every(text => !/Would you like to call/.test(text)));
+  }
+  for (const phrase of ["I'm feeling hot, don't call Mom", "I'm overheating, call 911"]) {
+    const f = fake([phrase]); await new AssistantConversation(f.deps).start();
+    assert.deepEqual(f.handed, []); assert.ok(f.spoken.every(text => !/Would you like to call/.test(text)));
+  }
+});
+test('partial heat consent remains unconfirmed and does not authorize handoff', async () => {
+  const captures = [captured("I'm feeling hot"), emptyFinalAfterPartial('yes'), emptyFinalAfterPartial('yes')];
+  const f = fake([], { listen: async () => captures.shift()! });
+  await new AssistantConversation(f.deps).start();
+  assert.deepEqual(f.handed, []); assert.equal(f.states.at(-1)?.phase, 'error');
+});
+test('ordinary unwell fallback is concise and unsolicited parking questions are rejected', () => {
+  const reply = conversationalReply({ ...parkingInterpretation, suggestedReply: 'An unsupported response.' });
+  assert.equal(reply.text, "Please pull over when it's safe.");
+  assert.equal(conversationalReply(parkingInterpretation).text, "Please pull over when it's safe.");
+  assert.equal(needsParkingStatus("I'm feeling hot"), false);
+  assert.equal(needsParkingStatus('Can you help me stop safely?'), true);
+  assert.equal(needsParkingStatus('She said help me stop safely'), false);
+  assert.equal(conversationalReply({ ...parkingInterpretation, suggestedReply: "That sounds uncomfortable. Please pull over safely." }).usedFallback, false);
+});
+
+test('Listening is emitted only after native readiness, not preparation or listen invocation', async () => {
+  const f = fake([], { listen: async (_id, progress) => {
+    assert.notEqual(f.states.at(-1)?.phase, 'listening');
+    progress('preparing', '');
+    assert.equal(f.states.at(-1)?.phase, 'checking');
+    progress('listening', '');
+    assert.equal(f.states.at(-1)?.phase, 'listening');
+    progress('finalizing', 'stop');
+    return captured('stop');
+  } });
+  await new AssistantConversation(f.deps).start();
+  assert.equal(f.states.at(-1)?.phase, 'complete');
+  assert.equal(f.handed.length, 0);
 });

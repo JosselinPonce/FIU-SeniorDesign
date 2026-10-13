@@ -25,23 +25,93 @@ struct OfflineRecognitionTranscripts {
 }
 // END TRANSCRIPT STATE
 
+// BEGIN ENDPOINT STATE: pure bounded estimator, exercised by host Swift tests.
+struct OfflineEndpointState {
+  static let calibrationSeconds = 0.6
+  private(set) var samples: [Double] = []
+  private(set) var elapsed = 0.0
+  private(set) var noiseFloorDb = -60.0
+  private(set) var thresholdDb = -48.0
+  private(set) var calibration = "collecting"
+  private(set) var lastBuffer: TimeInterval?
+  private(set) var lastActivity: TimeInterval?
+  private(set) var activitySeconds = 0.0
+  private(set) var bufferedSeconds = 0.0
+  private(set) var levelDb = -120.0
+  private(set) var thresholdMinimumDb = -48.0
+  private(set) var thresholdMaximumDb = -48.0
+
+  var ready: Bool { calibration != "collecting" }
+
+  mutating func receive(level: Double, duration: Double, now: TimeInterval) {
+    guard level.isFinite, duration.isFinite, duration > 0 else { return }
+    levelDb = level
+    lastBuffer = now
+    elapsed += duration
+    bufferedSeconds += duration
+    if !ready {
+      // Fixed memory and fixed duration; no audio or transcript storage.
+      if samples.count < 128 { samples.append(level) }
+      if elapsed >= Self.calibrationSeconds {
+        let sorted = samples.sorted()
+        let low = sorted[sorted.count / 10]
+        let high = sorted[min(sorted.count - 1, sorted.count * 9 / 10)]
+        noiseFloorDb = low
+        // Modulated input may be immediate speech. Never adapt upward from it.
+        // Freeze after bootstrap: sustained later speech cannot become the floor.
+        calibration = high - low <= 4 ? "stable" : "variable_input"
+        if calibration == "stable" { thresholdDb = max(-48, min(-30, low + 6)) }
+        thresholdMinimumDb = min(thresholdMinimumDb, thresholdDb)
+        thresholdMaximumDb = max(thresholdMaximumDb, thresholdDb)
+        samples.removeAll(keepingCapacity: false)
+      }
+    }
+    if level >= thresholdDb {
+      lastActivity = now
+      activitySeconds += duration
+    }
+  }
+
+  mutating func recognizedSpeech(startSeconds: Double, now: TimeInterval) {
+    // Apple segment timing can arrive after calibration. Undo a contaminated
+    // bootstrap even then; this evidence only protects endpointing, never consent.
+    if calibration != "speech_during_calibration",
+       startSeconds.isFinite, startSeconds < Self.calibrationSeconds {
+      calibration = "speech_during_calibration"
+      thresholdDb = -48
+      thresholdMinimumDb = min(thresholdMinimumDb, thresholdDb)
+      samples.removeAll(keepingCapacity: false)
+      lastActivity = now // conservative: do not end on a newly discovered utterance
+    }
+  }
+
+  func endpoint(now: TimeInterval, speechRecognized: Bool, deadline: TimeInterval) -> String? {
+    if ready, speechRecognized, activitySeconds >= 0.12,
+       let buffer = lastBuffer, now - buffer < 0.35,
+       let activity = lastActivity, now - activity >= 1.3 { return "audio_silence" }
+    if speechRecognized, now >= deadline - 2.5 { return "capture_budget" }
+    return nil
+  }
+
+  func diagnostics(now: TimeInterval) -> [String: Any] {
+    ["noiseFloorDb": noiseFloorDb, "noiseCalibration": calibration,
+     "calibrationWindowMs": Self.calibrationSeconds * 1000,
+     "activityThresholdMinDb": thresholdMinimumDb, "activityThresholdMaxDb": thresholdMaximumDb,
+     "aboveThresholdFraction": bufferedSeconds > 0 ? activitySeconds / bufferedSeconds : 0,
+     "bufferedAudioMs": bufferedSeconds * 1000,
+     "bufferAgeMs": lastBuffer.map { max(0, now - $0) * 1000 } as Any? ?? NSNull(),
+     "audioLevelDb": levelDb, "activityThresholdDb": thresholdDb,
+     "measuredActivityMs": activitySeconds * 1000,
+     "silenceMs": lastActivity.map { max(0, now - $0) * 1000 } ?? 0]
+  }
+}
+// END ENDPOINT STATE
+
 /// Audio-thread meter and append gate; never infers silence from transcript cadence.
 private final class SpeechActivityMeter: @unchecked Sendable {
-  struct Snapshot {
-    let lastBuffer: TimeInterval?
-    let lastActivity: TimeInterval?
-    let activitySeconds: Double
-    let levelDb: Double
-    let thresholdDb: Double
-  }
   private let lock = NSLock()
   private var feeding = true
-  private var lastBuffer: TimeInterval?
-  private var lastActivity: TimeInterval?
-  private var activitySeconds = 0.0
-  private var levelDb = -120.0
-  private var noiseFloorDb = -60.0
-  private var thresholdDb = -48.0
+  private var state = OfflineEndpointState()
 
   func append(_ buffer: AVAudioPCMBuffer, to request: SFSpeechAudioBufferRecognitionRequest) {
     lock.lock()
@@ -56,17 +126,9 @@ private final class SpeechActivityMeter: @unchecked Sendable {
         count += 1
       }
     }
-    levelDb = 10 * log10(max(power / Double(max(count, 1)), 1e-12))
-    let now = ProcessInfo.processInfo.systemUptime
-    lastBuffer = now
-    // Conservative energy gate. Quiet frames adapt the floor; loud frames never do.
-    thresholdDb = max(-48, min(-30, noiseFloorDb + 12))
-    if levelDb >= thresholdDb {
-      lastActivity = now
-      activitySeconds += Double(buffer.frameLength) / buffer.format.sampleRate
-    } else if levelDb < thresholdDb - 6 {
-      noiseFloorDb = 0.95 * noiseFloorDb + 0.05 * levelDb
-    }
+    let level = 10 * log10(max(power / Double(max(count, 1)), 1e-12))
+    state.receive(level: level, duration: Double(buffer.frameLength) / buffer.format.sampleRate,
+                  now: ProcessInfo.processInfo.systemUptime)
     request.append(buffer)
   }
 
@@ -76,11 +138,17 @@ private final class SpeechActivityMeter: @unchecked Sendable {
     lock.unlock()
   }
 
-  func snapshot() -> Snapshot {
+  func recognizedSpeech(startSeconds: Double) {
     lock.lock()
     defer { lock.unlock() }
-    return Snapshot(lastBuffer: lastBuffer, lastActivity: lastActivity,
-                    activitySeconds: activitySeconds, levelDb: levelDb, thresholdDb: thresholdDb)
+    guard feeding else { return }
+    state.recognizedSpeech(startSeconds: startSeconds, now: ProcessInfo.processInfo.systemUptime)
+  }
+
+  func snapshot() -> OfflineEndpointState {
+    lock.lock()
+    defer { lock.unlock() }
+    return state
   }
 }
 
@@ -110,6 +178,7 @@ final class OfflineSpeechDiagnostic {
     var captureStopped: TimeInterval?
     var finalizationStarted: TimeInterval?
     var endpointReason = "none"
+    var endpointMeasurements: [String: Any] = [:]
     var audioEnded = false
     var taskFinishRequested = false
     var observers: [NSObjectProtocol] = []
@@ -266,6 +335,10 @@ final class OfflineSpeechDiagnostic {
         Task { @MainActor in
           guard let self, self.capture === current else { return }
           if let result {
+            if result.bestTranscription.formattedString.rangeOfCharacter(from: .alphanumerics) != nil {
+              // Missing timing is ambiguous: retain the conservative original gate.
+              current.meter.recognizedSpeech(startSeconds: result.bestTranscription.segments.first?.timestamp ?? 0)
+            }
             current.transcripts.receive(result.bestTranscription.formattedString, isFinal: result.isFinal)
             if !result.isFinal, current.transcript.rangeOfCharacter(from: .alphanumerics) != nil,
                current.firstPartialAt == nil {
@@ -302,7 +375,8 @@ final class OfflineSpeechDiagnostic {
         },
         NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: current.engine, queue: .main) { [weak self] _ in
           Task { @MainActor in
-            guard current.phase == "listening" else { return }
+            guard current.phase == "listening" ||
+                  (current.phase == "preparing" && current.captureStarted != nil) else { return }
             self?.finish(current.id, code: "audio_route_changed", message: "Audio engine configuration changed; capture stopped.")
           }
         }
@@ -310,7 +384,8 @@ final class OfflineSpeechDiagnostic {
       current.engine.prepare()
       try current.engine.start()
       current.captureStarted = ProcessInfo.processInfo.systemUptime
-      current.phase = "listening"
+      // Stay preparing until bounded PCM calibration completes. Audio is already
+      // delivered to Apple, including any speech before the listening cue.
       publishProgress(current)
       current.activityTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
         Task { @MainActor in self?.checkEndpoint(current) }
@@ -321,18 +396,18 @@ final class OfflineSpeechDiagnostic {
   }
 
   private func checkEndpoint(_ current: Capture) {
-    guard capture === current, current.phase == "listening" else { return }
+    guard capture === current, current.captureStarted != nil,
+          current.phase == "preparing" || current.phase == "listening" else { return }
     let now = ProcessInfo.processInfo.systemUptime
     let audio = current.meter.snapshot()
-    // Transcript establishes that speech was recognized. Fresh PCM frames establish
-    // quiet, with a minimum measured activity duration; a stalled tap is not silence.
-    if current.firstPartialAt != nil, audio.activitySeconds >= 0.12,
-       let lastBuffer = audio.lastBuffer, now - lastBuffer < 0.35,
-       let lastActivity = audio.lastActivity, now - lastActivity >= 1.3 {
-      beginFinalizing(current, reason: "audio_silence")
-    } else if current.firstPartialAt != nil, now >= current.deadline - 2.5 {
-      // Reserve finalization time if continuous noise prevents silence detection.
-      beginFinalizing(current, reason: "capture_budget")
+    if audio.ready, let buffer = audio.lastBuffer, now - buffer < 0.35 {
+      current.phase = "listening"
+    }
+    if let reason = audio.endpoint(now: now, speechRecognized: current.firstPartialAt != nil,
+                                   deadline: current.deadline) {
+      current.phase = "listening"
+      current.endpointMeasurements = audio.diagnostics(now: now)
+      beginFinalizing(current, reason: reason)
     } else {
       publishProgress(current)
     }
@@ -392,7 +467,8 @@ final class OfflineSpeechDiagnostic {
       "audioLevelDb": audio.levelDb, "activityThresholdDb": audio.thresholdDb,
       "silenceMs": audio.lastActivity.map { (now - $0) * 1000 } ?? 0,
       "measuredActivityMs": audio.activitySeconds * 1000,
-      "endpointReason": current.endpointReason
+      "endpointReason": current.endpointReason,
+      "endpointDiagnostics": audio.diagnostics(now: now)
     ])
   }
 
@@ -461,6 +537,8 @@ final class OfflineSpeechDiagnostic {
       "finalizationTimeMs": current.finalizationStarted.map { (now - $0) * 1000 } ?? 0,
       "firstPartialTimeMs": current.firstPartialAt.map { ($0 - current.started) * 1000 } as Any? ?? NSNull(),
       "endpointReason": current.endpointReason,
+      "endpointDiagnostics": activity.diagnostics(now: now),
+      "endpointSelectionMeasurements": current.endpointMeasurements,
       "audioLevelDb": activity.levelDb, "activityThresholdDb": activity.thresholdDb,
       "measuredActivityMs": activity.activitySeconds * 1000,
       "silenceMs": activity.lastActivity.map { (now - $0) * 1000 } ?? 0,

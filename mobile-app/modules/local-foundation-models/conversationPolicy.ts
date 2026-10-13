@@ -44,7 +44,7 @@ it it's its that that's this these those a an the and or but so if when while th
 with without in on at from as about how what do does did is isn't are aren't was were be been
 being have has had can can't cannot could couldn't would wouldn't should shouldn't will won't
 not no yes okay ok fine well unwell better worse unsure uncertain sure comfortable uncomfortable
-feel feels feeling felt dizzy dizziness tired sleepy alert awake relaxed calm nervous worried
+hot overheating overheated feel feels feeling felt dizzy dizziness tired sleepy alert awake relaxed calm nervous worried
 thanks thank thankyou telling sharing letting know hear heard sounds sound seems seem
 please try take taking stop stopping stopped pull pulling over safely safe parked park rest resting
 break pause help need needs want wants like prefer ready anything something more again little bit
@@ -70,7 +70,7 @@ export function drivingSafetyAnswer(text: string, precedingPrompt: string): 'not
   return null;
 }
 
-export function conversationalReply(value: DriverInterpretation, previous: string[] = [], safetyGuidanceDelivered = false): { text: string; usedFallback: boolean; fallbackReason?: string } {
+export function conversationalReply(value: DriverInterpretation, previous: string[] = [], safetyGuidanceDelivered = false, parkingStatusNeeded = false): { text: string; usedFallback: boolean; fallbackReason?: string } {
   // Reuse the existing shape/advisory gate without taking its canned output.
   safeSpokenReply(value, '');
   let text = value.suggestedReply?.trim() ?? '';
@@ -84,7 +84,7 @@ export function conversationalReply(value: DriverInterpretation, previous: strin
   const diagnosticQuestion = /(?:better or worse|what feels|what.*(?:changed|different)|discomfort|symptom)/i.test(text) && text.includes('?')
     || /\btell me (?:what (?:you notice|feels|has changed)|more about (?:your|the) (?:symptoms|discomfort))\b/i.test(text);
   const assumesParked = /\bparked\b/i.test(text.replace(/are you safely parked\?/ig, ''));
-  const safe = !unsafeGenerated && !UNSAFE.test(text.replace(/’/g, "'")) && !/\b(?:drive|driving)\b/i.test(text)
+  const safe = (!safetyQuestion || parkingStatusNeeded) && !unsafeGenerated && !UNSAFE.test(text.replace(/’/g, "'")) && !/\b(?:drive|driving)\b/i.test(text)
     && !assumesParked && !diagnosticQuestion && words.every(word => WORDS.has(word))
     && (!(value.wellness === 'not_ok' || safetyGuidanceDelivered) || !text.includes('?') || safetyQuestion);
   // Unwell replies must contain actionable advice with an explicit safe qualifier.
@@ -98,8 +98,7 @@ export function conversationalReply(value: DriverInterpretation, previous: strin
   const options = value.wellness === 'not_ok' && safetyGuidanceDelivered
     ? ['Please focus on stopping safely.']
     : value.wellness === 'not_ok'
-    ? ["Please pull over when it's safe. Are you safely parked?",
-      "Please pull over when it's safe."]
+    ? ["Please pull over when it's safe."]
     : value.wellness === 'uncertain'
       ? ['Could you clarify your answer?', 'Thanks for letting me know.']
       : ['Thanks for checking in.', 'Thanks for letting me know.'];
@@ -127,6 +126,10 @@ export function assertAssistantPlatform(platform: string, language: string): voi
 export function assertAssistantCapabilities(model: { available: boolean; message: string },
   speech: { supportsOnDeviceRecognition: boolean; recognizerAvailable: boolean; message: string }): void {
   if (!model.available) throw new Error(model.message);
+  assertAssistantSpeechCapabilities(speech);
+}
+
+export function assertAssistantSpeechCapabilities(speech: { supportsOnDeviceRecognition: boolean; recognizerAvailable: boolean; message: string }): void {
   if (!speech.supportsOnDeviceRecognition || !speech.recognizerAvailable) throw new Error(speech.message);
 }
 
@@ -155,4 +158,9 @@ export function conversationMessage(phase: string, message?: string): string | u
   if (/transcript|response was not confirmed|no_speech/i.test(message)) return "I couldn't confirm what you said. Please try again when it's safe.";
   if (/ownership|driver|session|cancel/i.test(message)) return 'The conversation stopped. You can start again.';
   return "I couldn't finish that response. Please try again when it's safe.";
+}
+
+/** Parking status is relevant only to an explicit request for help stopping, not routine wellness. */
+export function needsParkingStatus(text: string): boolean {
+  return /^(?:can you |could you |please )?help me (?:stop|pull over|park)(?: safely)?[.!?]*$/i.test(text.trim());
 }
