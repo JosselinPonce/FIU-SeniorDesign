@@ -111,7 +111,7 @@ class TestBenchDashboard(unittest.TestCase):
         output = '\n'.join(self.model.lines('usb', 'log', now=2))
         self.assertIn('Selected PPG: PPG1', output)
         self.assertIn('READY', output)
-        self.assertIn('all four sampling continuously', output)
+        self.assertIn('up to 4 sensors sampling continuously', output)
 
     def test_hot_handoff_is_reported_without_a_validating_state(self):
         for chosen in (0, 1):
@@ -123,6 +123,81 @@ class TestBenchDashboard(unittest.TestCase):
         output = '\n'.join(self.model.lines('usb', 'log', now=2))
         self.assertIn('Selected PPG: PPG2', output)
         self.assertNotIn('validating pulse', output)
+
+    def test_six_sensors_on_physical_ports_two_through_seven(self):
+        self.model.ingest({'event': 'scan_start', 'hz': 400000,
+                           'expected_ppgs': 6}, now=1)
+        for channel in range(2, 8):
+            self.model.ingest({'event': 'route', 'mux': 112,
+                               'channel': channel, 'present': True}, now=1)
+            self.model.ingest({'event': 'sample', 'mux': 112, 'channel': channel,
+                               'selected_channel': 7, 'state': 'READY',
+                               'contact': True, 'quality': 'USABLE_ESTIMATE',
+                               'hr': 70.0, 'spo2': 99}, now=1)
+        self.model.ingest({'event': 'frame', 'channel': 7, 'seq': 10,
+                           'usable': True, 'ble_connected': False}, now=1)
+        output = '\n'.join(self.model.lines('usb', 'log', now=2))
+        self.assertIn('6-PPG BENCH DASHBOARD', output)
+        self.assertIn('Selected PPG: PPG6', output)
+        self.assertIn('Output: PPG6 | packet #10', output)
+        self.assertNotIn('UNMAPPED', output)
+        self.assertEqual([r['channel'] for r in self.model.mapping()['sensors']],
+                         list(range(2, 8)))
+
+    def test_late_attachment_learns_six_sources_without_startup_event(self):
+        for channel in range(2, 8):
+            self.model.ingest({'event': 'sample', 'mux': 112, 'channel': channel,
+                               'selected_channel': -1, 'state': 'WAITING'}, now=1)
+        self.assertEqual(self.model.expected_ppgs, 6)
+        self.assertIn('6-PPG BENCH DASHBOARD',
+                      '\n'.join(self.model.lines('usb', 'log', now=2)))
+
+    def test_only_selected_finger_displays_vitals(self):
+        for ch, state, hr in [(2, 'TRACKING', 71.0), (3, 'READY', 83.0)]:
+            self.model.ingest({'event': 'sample', 'mux': 112, 'channel': ch,
+                               'selected_channel': 2, 'state': state,
+                               'contact': True, 'quality': 'USABLE_ESTIMATE',
+                               'hr': hr, 'spo2': 98}, now=1)
+        output = '\n'.join(self.model.lines('usb', 'log', now=2))
+        self.assertIn('71.0', output)
+        self.assertNotIn('83.0', output)
+        self.assertIn('READY', output)
+
+    def test_invalid_raw_packets_are_not_shown_as_selected_readings(self):
+        self.model.ingest({'event': 'sample', 'mux': 112, 'channel': 2,
+                           'selected_channel': -1, 'state': 'WAITING',
+                           'contact': False, 'quality': 'NO_CONTACT'}, now=1)
+        self.model.ingest({'event': 'frame', 'channel': 2, 'seq': 1,
+                           'usable': False, 'ble_connected': False}, now=1)
+        output = '\n'.join(self.model.lines('usb', 'log', now=2))
+        self.assertIn('Selected PPG: none', output)
+        self.assertIn('INVALID raw fallback', output)
+
+    def test_old_tracking_row_cannot_survive_selection_change(self):
+        for ch in (2, 3):
+            self.model.ingest({'event': 'sample', 'mux': 112, 'channel': ch,
+                               'selected_channel': ch, 'state': 'TRACKING',
+                               'contact': True, 'quality': 'USABLE_ESTIMATE',
+                               'hr': 70.0, 'spo2': 98}, now=1)
+        lines = self.model.lines('usb', 'log', now=2)
+        tracking_rows = [line for line in lines if '(provisional)' in line and 'TRACKING' in line]
+        self.assertEqual(len(tracking_rows), 1)
+        self.assertIn('PPG2', tracking_rows[0])
+
+    def test_raw_capture_handles_all_six_sources_without_selecting_one(self):
+        for sensor in range(1, 7):
+            event = module.decode_event_line(f'RAW ppg={sensor} 5aa50000'.encode())
+            self.assertEqual(event['event'], 'raw_frame')
+            self.assertEqual(event['ppg'], sensor)
+            self.model.ingest(event, now=1)
+            self.assertIsNone(self.model.active)
+        self.assertEqual(module.decode_event_line(b'{"event":"frame","seq":3}')['seq'], 3)
+
+    def test_raw_capture_rejects_malformed_or_unbounded_input(self):
+        for line in [b'RAW ppg=7 abcd', b'RAW ppg=1 abc', b'RAW ppg=1 zzzz',
+                     b'RAW ppg=1 ' + b'aa' * 1171]:
+            with self.assertRaises(ValueError):
+                module.decode_event_line(line)
 
 
 if __name__ == '__main__':

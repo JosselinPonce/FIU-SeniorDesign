@@ -1,5 +1,5 @@
-// ESP32 + one TCA9548A + four continuously sampling MAX30102s.
-// All four sensors stay awake. Per-channel histories stay warm; only one sensor
+// ESP32 + one TCA9548A + six continuously sampling MAX30102s.
+// All six sensors stay awake. Per-channel histories stay warm; only one sensor
 // contributes to each unchanged protocol-v3 BLE packet. USB bench telemetry is
 // optional; the firmware starts autonomously without a dashboard.
 #include <Wire.h>
@@ -34,12 +34,14 @@
 // chunking below keeps the link correct whatever the Pi negotiates.
 static constexpr uint16_t kRequestedMtu = 247;
 
-// Four sources collect continuously; the MUX serializes their I2C reads.
-static constexpr uint8_t kMuxAddr = 0x70, kSensorAddr = 0x57, kSensorCount = 4;
+// Six sources collect continuously; the MUX serializes their I2C reads.
+static constexpr uint8_t kMuxAddr = 0x70, kSensorAddr = 0x57, kSensorCount = ppg::kMultiChannels;
+// Keep the established bus rate; the 100-kHz trial increased read failures.
+static constexpr uint32_t kI2cHz = 400000;
 static constexpr int kRawPerFrame = 100;
 MAX30105 sensor;
 ppg::MultiPpg acquisition;
-uint32_t lastRetryMs[4]{};
+uint32_t lastRetryMs[kSensorCount]{};
 uint8_t pollCursor = 0;
 uint32_t frameSeq = 0;
 uint8_t frameBytes[ppg::v3FrameSize(kRawPerFrame)];
@@ -132,7 +134,7 @@ class ServerCallbacks : public BLEServerCallbacks {
 static bool selectMux(uint8_t channel) {
   if (channel >= kSensorCount) return false;
   Wire.beginTransmission(kMuxAddr);
-  Wire.write(static_cast<uint8_t>(1u << channel));
+  Wire.write(ppg::muxMask(channel));
   return Wire.endTransmission() == 0;
 }
 
@@ -143,6 +145,16 @@ static bool readReg(uint8_t reg, uint8_t &value) {
   value = Wire.read(); return true;
 }
 
+static bool fifoStatus(uint8_t &wr, uint8_t &rd, uint8_t &ov) {
+  // WR/overflow/RD are consecutive registers: one transaction instead of three.
+  Wire.beginTransmission(kSensorAddr); Wire.write(uint8_t(0x04));
+  if (Wire.endTransmission(false) != 0 ||
+      Wire.requestFrom(static_cast<uint16_t>(kSensorAddr), static_cast<size_t>(3)) != 3)
+    return false;
+  wr = Wire.read(); ov = Wire.read(); rd = Wire.read();
+  return true;
+}
+
 static bool verifyAwake(bool awake) {
   if (awake) sensor.wakeUp(); else sensor.shutDown();
   uint8_t mode;
@@ -150,12 +162,12 @@ static bool verifyAwake(bool awake) {
 }
 
 static bool startChannel(uint8_t channel) {
-  if (!selectMux(channel) || !sensor.begin(Wire, I2C_SPEED_FAST)) return false;
+  if (!selectMux(channel) || !sensor.begin(Wire, kI2cHz)) return false;
   sensor.setup(60, 1, 2, 100, 411, 4096);
   if (!verifyAwake(false)) return false;
   sensor.clearFIFO();
   uint8_t wr, rd, ov;
-  if (!readReg(0x04, wr) || !readReg(0x06, rd) || !readReg(0x05, ov) || ((wr | rd | ov) & 31)) return false;
+  if (!fifoStatus(wr, rd, ov) || ((wr | rd | ov) & 31)) return false;
   acquisition.channels[channel].clearSignal();
   acquisition.channels[channel].online = true;
   acquisition.channels[channel].lastSampleMs = millis();
@@ -174,7 +186,7 @@ static bool rawPair(uint32_t &red, uint32_t &ir) {
 static void channelFault(uint8_t channel, const char *reason) {
   acquisition.fault(channel);
   lastRetryMs[channel] = millis();
-  Serial.printf("{\"event\":\"sensor_fault\",\"channel\":%u,\"reason\":\"%s\"}\n", channel, reason);
+  Serial.printf("{\"event\":\"sensor_fault\",\"channel\":%u,\"reason\":\"%s\"}\n", ppg::kMuxChannels[channel], reason);
 }
 
 static void pollSensors() {
@@ -189,7 +201,7 @@ static void pollSensors() {
     }
     if (!selectMux(channel)) { channelFault(channel, "MUX_SELECT"); continue; }
     uint8_t wr, rd, ov;
-    if (!readReg(0x04, wr) || !readReg(0x06, rd) || !readReg(0x05, ov)) {
+    if (!fifoStatus(wr, rd, ov)) {
       channelFault(channel, "REGISTER_READ"); continue;
     }
     if (ov & 31) { channelFault(channel, "FIFO_OVERFLOW"); continue; }
@@ -305,52 +317,70 @@ static void startBle() {
 
 // ---------------------------------------------------------------- setup ---
 void setup() {
+#if PPG_BENCH_TELEMETRY
+  // Queue diagnostic text; USB printing must not wait for every UART byte.
+  Serial.setTxBufferSize(4096);
+#endif
   Serial.begin(115200);
   delay(300);
   Serial.println();
   Serial.println("Steering Wheel PPG transmitter, protocol v3");
 
+  uint8_t readySensors = 0;
   for (int attempt = 1;; ++attempt) {
     int sda, scl;
     i2cBusClear(sda, scl);
     Wire.begin(SDA_PIN, SCL_PIN);
-    Wire.setClock(400000); Wire.setTimeOut(30);
-    bool allReady = true;
+    Wire.setClock(kI2cHz); Wire.setTimeOut(30);
+    readySensors = 0;
     for (uint8_t ch = 0; ch < kSensorCount; ++ch) {
-      if (!startChannel(ch)) { acquisition.fault(ch); allReady = false; }
+      if (startChannel(ch)) ++readySensors;
+      else {
+        acquisition.fault(ch);
+        Serial.printf("PPG%u / MUX CH%u unavailable; will retry in background\n",
+                      ch + 1, ppg::kMuxChannels[ch]);
+      }
     }
-    if (allReady) break;
+    // One missing sensor must not hold every healthy source and BLE in setup.
+    // pollSensors retries offline sources; none may qualify until it supplies
+    // fresh waveform history and passes the same validation checks.
+    if (readySensors > 0) break;
+#if PPG_BENCH_TELEMETRY
+    Serial.println("{\"event\":\"status\",\"state\":\"BLOCKED\",\"message\":\"No PPG initialized on MUX CH2-7; retrying hardware initialization\"}");
+#endif
     char found[64];
     i2cScan(found, sizeof found);
     Wire.end();
     int extSda, extScl;
     externalPullups(extSda, extScl);
-    Serial.printf("MUX/four MAX30102 not ready (attempt %d): selected-bus I2C ACKs: %s| module pull-ups SDA=%d SCL=%d | "
+    Serial.printf("MUX/six MAX30102 not ready (attempt %d): selected-bus I2C ACKs: %s| module pull-ups SDA=%d SCL=%d | "
                   "bus-idle SDA=%d SCL=%d\n", attempt, found, extSda, extScl, sda, scl);
     if (attempt == 1 || attempt % 10 == 0) {
       Serial.println(extSda || extScl
-          ? "  -> check MUX 0x70 and MAX30102 0x57 on each channel 0..3"
+          ? "  -> check MUX 0x70 and MAX30102 0x57 on each channel 2..7"
           : "  -> no module pull-ups seen: check VIN/3.3V, GND, SDA->21, SCL->22");
     }
     delay(1000);
   }
-  Serial.println("Four MAX30102 ready on MUX 0x70, channels 0..3 (asleep)");
+  Serial.printf("%u/%u MAX30102 ready on MUX 0x70, channels 2..7 (asleep)\n",
+                readySensors, kSensorCount);
 
   startBle();
   Serial.printf("BLE advertising as %s, requested MTU %u\n", DEVICE_NAME, kRequestedMtu);
 
   // Wake all only after BLE initialization, so its startup delay cannot fill FIFOs.
   for (uint8_t ch = 0; ch < kSensorCount; ++ch) {
+    if (!acquisition.channels[ch].online) continue;
     if (!selectMux(ch) || !verifyAwake(true)) acquisition.fault(ch);
     else acquisition.channels[ch].lastSampleMs = millis();
   }
   acquisition.nextFrame(millis());
 #if PPG_BENCH_TELEMETRY
-  Serial.println("{\"event\":\"scan_start\",\"hz\":400000,\"expected_muxes\":1,\"expected_ppgs\":4}");
+  Serial.println("{\"event\":\"scan_start\",\"hz\":400000,\"expected_muxes\":1,\"expected_ppgs\":6}");
   Serial.println("{\"event\":\"mux\",\"address\":112,\"present\":true}");
   for (uint8_t ch = 0; ch < kSensorCount; ++ch)
-    Serial.printf("{\"event\":\"route\",\"mux\":112,\"channel\":%u,\"present\":%s}\n", ch, acquisition.channels[ch].online ? "true" : "false");
-  Serial.println("{\"event\":\"status\",\"state\":\"READY\",\"message\":\"All sensors acquire continuously; one source per BLE packet\"}");
+    Serial.printf("{\"event\":\"route\",\"mux\":112,\"channel\":%u,\"present\":%s}\n", ppg::kMuxChannels[ch], acquisition.channels[ch].online ? "true" : "false");
+  Serial.println("{\"event\":\"status\",\"state\":\"READY\",\"message\":\"Healthy sensors acquire continuously; unavailable channels retry; one source per BLE packet\"}");
 #endif
 }
 
@@ -379,8 +409,21 @@ void loop() {
                   connIntervalUnits * 1.25f, connLatency, connTimeoutUnits * 10u, connParamsStatus);
   }
 
+#if PPG_BENCH_TELEMETRY
+  static uint32_t maxPollUs = 0, maxEstimateUs = 0;
+  uint32_t workStartedUs = micros();
+#endif
   pollSensors();
+#if PPG_BENCH_TELEMETRY
+  uint32_t elapsedUs = micros() - workStartedUs;
+  if (elapsedUs > maxPollUs) maxPollUs = elapsedUs;
+  workStartedUs = micros();
+#endif
   acquisition.estimateAll(millis(), uch_spo2_table, 184);
+#if PPG_BENCH_TELEMETRY
+  elapsedUs = micros() - workStartedUs;
+  if (elapsedUs > maxEstimateUs) maxEstimateUs = elapsedUs;
+#endif
   if (acquisition.streamOwner < 0) acquisition.nextFrame(millis());
 
   if (acquisition.frameCount == kRawPerFrame) {
@@ -412,14 +455,17 @@ void loop() {
     Serial.printf("RAW ppg=%u %s\n", owner + 1, rawLine);
 #endif
 #if PPG_BENCH_TELEMETRY
-    Serial.printf("{\"event\":\"frame\",\"channel\":%d,\"seq\":%lu,\"t0_ms\":%lu,\"sample_count\":100,\"usable\":%s,\"ble_connected\":%s}\n",
-      owner, (unsigned long)frame.seq, (unsigned long)frame.t0Ms, usable ? "true" : "false", clientConnected ? "true" : "false");
+    Serial.printf("{\"event\":\"frame\",\"channel\":%d,\"seq\":%lu,\"t0_ms\":%lu,\"sample_count\":100,\"usable\":%s,\"ble_connected\":%s,\"max_poll_us\":%lu,\"max_estimate_us\":%lu}\n",
+      ppg::kMuxChannels[owner], (unsigned long)frame.seq, (unsigned long)frame.t0Ms, usable ? "true" : "false", clientConnected ? "true" : "false", (unsigned long)maxPollUs, (unsigned long)maxEstimateUs);
 #else
     char bpm[16] = "--", sat[16] = "--";
     if (hrValid) snprintf(bpm, sizeof(bpm), "%d", frame.heartRate);
     if (spo2Valid) snprintf(sat, sizeof(sat), "%d", frame.spo2);
-    Serial.printf("PPG%u #%lu bpm=%s spo2=%s link=%s len=%u (all four sampling)\n",
+    Serial.printf("PPG%u #%lu bpm=%s spo2=%s link=%s len=%u (all six sampling)\n",
       owner + 1, (unsigned long)frame.seq, bpm, sat, clientConnected ? "up" : "down", unsigned(frameLen));
+#endif
+#if PPG_BENCH_TELEMETRY
+    maxPollUs = maxEstimateUs = 0;
 #endif
     // Warm backup histories survive this switch. One source for every full packet.
     acquisition.nextFrame(millis());
@@ -427,7 +473,7 @@ void loop() {
 #if PPG_BENCH_TELEMETRY
   static uint32_t lastTelemetryMs = 0;
   static uint8_t telemetryChannel = 0;
-  if (millis() - lastTelemetryMs >= 125) {
+  if (millis() - lastTelemetryMs >= 80) {
     lastTelemetryMs = millis();
     const uint8_t ch = telemetryChannel;
     telemetryChannel = (telemetryChannel + 1) % kSensorCount;
@@ -441,9 +487,9 @@ void loop() {
     if (s.ready && s.vitals.hrValid) snprintf(hr, sizeof(hr), "%.1f", s.vitals.heartRate);
     if (s.ready && s.vitals.spo2Valid) snprintf(spo2, sizeof(spo2), "%d", s.vitals.spo2);
     Serial.printf("{\"event\":\"sample\",\"mux\":112,\"channel\":%u,\"red\":%lu,\"ir\":%lu,\"samples\":%lu,\"contact\":%s,\"quality\":\"%s\",\"periodicity\":%.3f,\"history_s\":%.2f,\"hr\":%s,\"spo2\":%s,\"state\":\"%s\",\"hz\":400000,\"raw_hz\":%.3f,\"selected_channel\":%d,\"faults\":%lu}\n",
-      ch, (unsigned long)s.red, (unsigned long)s.ir, (unsigned long)s.samples, s.contact ? "true" : "false",
+      ppg::kMuxChannels[ch], (unsigned long)s.red, (unsigned long)s.ir, (unsigned long)s.samples, s.contact ? "true" : "false",
       quality, s.vitals.periodicity, s.rawHz > 0 ? s.historyCount / (s.rawHz / 4) : 0,
-      hr, spo2, state, s.rawHz, selected, (unsigned long)s.faults);
+      hr, spo2, state, s.rawHz, selected >= 0 ? ppg::kMuxChannels[selected] : -1, (unsigned long)s.faults);
   }
 #endif
   delay(1);

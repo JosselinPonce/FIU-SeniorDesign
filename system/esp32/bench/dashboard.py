@@ -7,10 +7,24 @@ import errno
 import fcntl
 import json
 import os
+import re
 from pathlib import Path
 import select
 import termios
 import time
+
+
+def decode_event_line(raw):
+    line = raw.decode('utf-8').strip()
+    if line.startswith('RAW '):
+        match = re.fullmatch(r'RAW ppg=([1-6]) ([0-9a-fA-F]+)', line)
+        if not match or len(match[2]) > 2340 or len(match[2]) % 2:
+            raise ValueError('Malformed diagnostic raw frame')
+        return {'event': 'raw_frame', 'ppg': int(match[1]), 'hex': match[2]}
+    event = json.loads(line)
+    if not isinstance(event, dict):
+        raise ValueError('Not an object')
+    return event
 
 
 class Dashboard:
@@ -79,10 +93,14 @@ class Dashboard:
                 self.hz = event['hz']
             self.routes.setdefault(key, {}).update(event, observed=now,
                                                   present=True, verified_scan=self.scan)
+            # A late-attaching dashboard may miss the one-time startup count.
+            self.expected_ppgs = max(self.expected_ppgs, len(self.routes))
+            if self.status == 'Waiting for diagnostic telemetry':
+                self.status = 'Live acquisition: first usable source stays selected until lost'
         elif kind == 'frame':
             self.latest_frame = event
         elif kind == 'sensor_fault':
-            self.status = f"PPG{event['channel'] + 1} fault: {event['reason']}"
+            self.status = f"MUX CH{event['channel']} fault: {event['reason']}"
         elif kind == 'probe_done':
             key = (event['mux'], event['channel'])
             self.routes.setdefault(key, {}).update(result=event)
@@ -110,6 +128,12 @@ class Dashboard:
                                else json.dumps(event, separators=(',', ':')))
             self.events = self.events[-4:]
 
+    def source_label(self, mux, channel):
+        key = (mux, channel)
+        routes = sorted(self.routes)
+        fallback = f'PPG{routes.index(key) + 1}' if key in routes else f'MUX CH{channel}'
+        return self.labels.get(f'0x{mux:02X}:{channel}', fallback)
+
     def lines(self, port, log, now=None):
         now = time.monotonic() if now is None else now
         telemetry_age = None if self.last_event is None else now - self.last_event
@@ -133,14 +157,14 @@ class Dashboard:
             f'TEAM18 | {self.expected_muxes}-MUX / {self.expected_ppgs}-PPG BENCH DASHBOARD',
             f'USB: {port} | {self.link} | bus: {self.hz or "--"} Hz',
             f'Telemetry age: {telemetry_age:.1f}s' if telemetry_age is not None else 'Telemetry age: --',
-            'Mode: all four sampling continuously; one source per outgoing packet' if self.continuous
+            f'Mode: up to {self.expected_ppgs} sensors sampling continuously; one source per outgoing packet' if self.continuous
                 else 'Mode: rapid contact search -> pulse validation -> single-sensor tracking',
             'MUX addresses: ' + (', '.join(f'0x{a:02X}={"ACK" if p else "missing"}'
                                          for a, p in sorted(self.muxes.items())) or 'awaiting scan'),
             self.status,
             selection,
-            (f"Output: PPG{self.latest_frame['channel'] + 1} | packet #{self.latest_frame['seq']} | "
-             + ('valid' if self.latest_frame['usable'] else 'invalid readings') + ' | '
+            (f"Output: {self.source_label(112, self.latest_frame['channel'])} | packet #{self.latest_frame['seq']} | "
+             + ('valid' if self.latest_frame['usable'] else 'INVALID raw fallback — no valid vitals') + ' | '
              + ('BLE connected' if self.latest_frame['ble_connected'] else 'BLE not connected'))
                 if self.latest_frame else 'Output: awaiting packet telemetry',
             '',
@@ -158,6 +182,11 @@ class Dashboard:
                 state = 'STALE'
             elif self.continuous:
                 state = 'TRACKING' if active else row.get('state', 'WAITING')
+                # The former source's own telemetry can lag the global selection.
+                # Never render two TRACKING rows from cached per-sensor states.
+                if state == 'TRACKING' and not active:
+                    state = ('READY' if row.get('quality') == 'USABLE_ESTIMATE'
+                             else 'VALIDATING' if row.get('contact') else 'WAITING')
             elif active and self.active_state in ('VALIDATING', 'TRACKING'):
                 state = self.active_state
             elif failed:
@@ -166,7 +195,7 @@ class Dashboard:
                 state = 'IDLE' if selected or candidate else 'WAITING'
             contact = '--' if age is None else 'YES' if row.get('contact') else 'NO'
             quality = row.get('quality', '--')
-            show_vitals = (self.continuous and state in ('READY', 'TRACKING') or active and selected) and row.get('quality') == 'USABLE_ESTIMATE'
+            show_vitals = active and selected and state == 'TRACKING' and row.get('quality') == 'USABLE_ESTIMATE'
             hr = '--' if not show_vitals or row.get('hr') is None else f"{row['hr']:.1f}"
             spo2 = '--' if not show_vitals or row.get('spo2') is None else str(row['spo2'])
             lines.append(f'{label[:22]:22}  {key[0]:02X}   {key[1]}   {state:10}  {contact:7}  '
@@ -176,9 +205,9 @@ class Dashboard:
             lines.append('No PPG routes verified in the current scan. No sensor values can be displayed.')
         for i in range(len(detected) + 1, self.expected_ppgs + 1):
             lines.append(f'PPG slot {i}: UNMAPPED — address/channel and physical position not verified')
-        lines.extend(['', '* All sensors have live readings; only the selected source feeds output.' if self.continuous
+        lines.extend(['', '* Background sensors keep ready histories; only TRACKING shows and sends vitals.' if self.continuous
                        else '* Idle rows contain LAST observations, not live finger contact.',
-                      'Contact uses provisional IR >= 100000; quality uses Luis\'s estimator.',
+                      'Contact uses provisional IR >= 100000; quality uses the existing estimator.',
                       'USABLE_ESTIMATE is a software check; accuracy needs a reference measurement.',
                       f'Log: {log}', f'Ignored non-JSON lines: {self.parse_errors}',
                       'Recent events:'] + self.events + ['Press q or Ctrl+C to close. ESP32 diagnostics continue running.'])
@@ -210,6 +239,8 @@ def open_serial(port):
         attrs[4] = attrs[5] = termios.B115200
         attrs[6][termios.VMIN] = attrs[6][termios.VTIME] = 0
         termios.tcsetattr(fd, termios.TCSANOW, attrs)
+        # Drop bytes left at the uploader's baud rate before reading fresh JSON.
+        termios.tcflush(fd, termios.TCIFLUSH)
         return fd, previous
     except BaseException:
         os.close(fd)
@@ -260,8 +291,7 @@ def run(args, screen=None):
                             while b'\n' in buffer:
                                 raw, buffer = buffer.split(b'\n', 1)
                                 try:
-                                    event = json.loads(raw.decode('utf-8'))
-                                    if not isinstance(event, dict): raise ValueError('Not an object')
+                                    event = decode_event_line(raw)
                                     # Raw firmware events are stored with receive timestamps.
                                     log.write(json.dumps({'received_utc': datetime.datetime.now(datetime.timezone.utc).isoformat(),
                                                           'event': event}) + '\n')

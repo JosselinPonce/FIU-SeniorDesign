@@ -24,7 +24,7 @@ def main():
     for lineno, line in enumerate(args.log.read_text(errors='replace').splitlines(), 1):
         if not line.startswith('RAW '):
             continue
-        match = re.fullmatch(r'RAW ppg=([1-4]) ([0-9a-fA-F]+)', line)
+        match = re.fullmatch(r'RAW ppg=([1-6]) ([0-9a-fA-F]+)', line)
         if not match:
             raise ValueError(f'Invalid RAW line at {lineno}')
         frame = decode(bytes.fromhex(match[2]))
