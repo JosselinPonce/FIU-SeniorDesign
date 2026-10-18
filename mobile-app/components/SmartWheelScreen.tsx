@@ -28,7 +28,7 @@ import { SettingsView } from './SettingsView';
 import { Onboarding } from './Onboarding';
 import { assistantModeSettings, routeAssistantLaunch, snapshotAssistantLaunch, type AssistantMode, type AssistantLaunch } from '../lib/assistant/mode';
 
-import { CONNECTED_BACKEND_READINESS } from '../lib/assistant/connectedReadiness';
+import { PHONE_CONNECTED_READINESS } from '../lib/assistant/phoneConnectedReadiness';
 
 const modeSettings = assistantModeSettings(repo);
 
@@ -76,7 +76,7 @@ export default function SmartWheelScreen() {
 
   function openAssistant() {
     if (!assistantMode || modeSavePending.current || drive.safety.check || drive.safety.demo) return;
-    const launch = snapshotAssistantLaunch(assistantMode);
+    const launch = snapshotAssistantLaunch(assistantMode, PHONE_CONNECTED_READINESS);
     routeAssistantLaunch(launch, {
       coreTools: () => { setAssistantOpen(false); setAssistantLaunch(launch); setTab('settings'); },
       local: () => { setAssistantLaunch(launch); setAssistantOpen(true); },
@@ -218,7 +218,7 @@ export default function SmartWheelScreen() {
           : <>
             <DriveView drive={drive} busy={busy} guard={guard} onOpenVitals={() => setDrivePage(drivePageAfter('details'))} />
             {!drive.safety.check && !drive.safety.demo && !assistantOpen ? <DashboardAssistantEntry mode={assistantMode} language={drive.driver.language ?? 'en'}
-              disabled={!assistantMode || modeSaving || (assistantMode === 'connected' && !CONNECTED_BACKEND_READINESS.verified) || !!drive.safety.check || !!drive.safety.demo}
+              disabled={!assistantMode || modeSaving || (assistantMode === 'connected' && !PHONE_CONNECTED_READINESS.verified) || !!drive.safety.check || !!drive.safety.demo}
               error={assistantModeError} onPress={openAssistant} /> : null}
           </> : null}
         {tab === 'history' ? <HistoryView refreshKey={`${drive.session?.id ?? ''}:${drive.session?.status ?? ''}:${drive.fold.state}`} /> : null}

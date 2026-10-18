@@ -44,18 +44,18 @@ test('shell keeps assistant controller, hook, safety modal and original launch o
   assert.equal((shell.match(/<DriverAssistant visible=/g) ?? []).length, 1);
   assert.match(shell, /<VoiceCheckModal drive=\{drive\}/);
   assert.match(shell, /<DashboardAssistantEntry[\s\S]*?onPress=\{openAssistant\}/);
-  assert.match(shell, /const launch = snapshotAssistantLaunch\(assistantMode\)/);
+  assert.match(shell, /const launch = snapshotAssistantLaunch\(assistantMode, PHONE_CONNECTED_READINESS\)/);
   assert.match(shell, /<SafeAreaView style=\{st.root\}/);
   assert.match(shell, /\['drive', 'Drive'\]/); assert.match(shell, /\['history', 'History'\]/); assert.match(shell, /\['settings', 'Settings'\]/);
   assert.doesNotMatch(shell, /DriverAssistant[^>]*key=/);
 });
-test('assistant entry reports passive capabilities and cannot enable Connected or start audio during checks', () => {
+test('assistant entry reports passive capabilities, respects the guarded pilot gate and never starts audio during checks', () => {
   const entry = source('components/DashboardAssistantEntry.tsx');
   assert.match(entry, /checkDriverAssistantAvailability\(\)/);
   assert.match(entry, /checkOfflineSpeechCapability\('en-US'\)/);
   assert.match(entry, /selectAssistantVoice\(voices, preferred\)/);
-  assert.match(entry, /props.mode === 'connected' \? CONNECTED_UNAVAILABLE/);
-  assert.match(entry, /const disabled = props.disabled \|\| props.mode === 'connected'/);
+  assert.match(entry, /PHONE_CONNECTED_READINESS.verified \? CONNECTED_PILOT_STATUS : CONNECTED_UNAVAILABLE/);
+  assert.match(entry, /const disabled = props.disabled \|\| \(props.mode === 'connected' && !PHONE_CONNECTED_READINESS.verified\)/);
   assert.doesNotMatch(entry, /listenOffline\(|speakLocal\(|interpretConversation\(|functions.invoke\(/);
   assert.match(entry, /current && request === version/);
 });

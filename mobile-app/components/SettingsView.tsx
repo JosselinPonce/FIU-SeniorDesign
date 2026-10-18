@@ -19,6 +19,14 @@ import { CalibrationCard } from './CalibrationCard';
 import { ThresholdHistory } from './ThresholdHistory';
 import { ResponsivenessDiagnostics } from './ResponsivenessDiagnostics';
 import { ASSISTANT_MODES, type AssistantMode } from '../lib/assistant/mode';
+import { sensiSignInEnabled } from '../lib/assistant/pilotSignIn';
+import { PHONE_CONNECTED_READINESS } from '../lib/assistant/phoneConnectedReadiness';
+import { CONNECTED_PILOT_STATUS } from '../lib/assistant/connectedPilotPolicy';
+
+// Metro removes this branch from release builds, including the diagnostic module.
+const SensiVoicePlaybackDiagnostic = __DEV__
+  ? (require('./SensiVoicePlaybackDiagnostic') as typeof import('./SensiVoicePlaybackDiagnostic')).SensiVoicePlaybackDiagnostic
+  : null;
 
 type Drive = ReturnType<typeof useDriveSession>;
 
@@ -84,7 +92,8 @@ export function SettingsView(props: {
 
   return (
     <ScrollView contentContainerStyle={st.container}>
-      {__DEV__ ? <DemoAuthPanel /> : null}
+      {sensiSignInEnabled(__DEV__, process.env.EXPO_PUBLIC_SENSI_PILOT_SIGN_IN) ? <DemoAuthPanel /> : null}
+      {__DEV__ && SensiVoicePlaybackDiagnostic ? <SensiVoicePlaybackDiagnostic blocked={!!sf.check || !!sf.demo} /> : null}
       <Card>
         <SectionTitle>Appearance</SectionTitle>
         {(['light', 'dark', 'system'] as const).map(value => <Pressable key={value}
@@ -106,7 +115,7 @@ export function SettingsView(props: {
           onPress={() => void props.onAssistantModeChange(mode.key)}
           style={[st.mode, props.assistantMode === mode.key && st.modeOn, props.assistantModeBusy && { backgroundColor: tokens.disabledSurface }]}>
           <View style={[st.radio, props.assistantMode === mode.key && st.radioOn]} />
-          <View style={{ flex: 1, gap: 3 }}><Text style={st.modeTitle}>{mode.title}</Text><Text style={st.modeBody}>{mode.body}</Text></View>
+          <View style={{ flex: 1, gap: 3 }}><Text style={st.modeTitle}>{mode.key === 'connected' && PHONE_CONNECTED_READINESS.verified ? 'CONNECTED AI — Development pilot' : mode.title}</Text><Text style={st.modeBody}>{mode.key === 'connected' && PHONE_CONNECTED_READINESS.verified ? CONNECTED_PILOT_STATUS : mode.body}</Text></View>
         </Pressable>)}
         {props.assistantMode === null ? <Text style={st.note}>Loading Assistant Mode…</Text> : null}
         {props.assistantModeError ? <Text accessibilityLiveRegion="polite" style={st.note}>{props.assistantModeError}</Text> : null}

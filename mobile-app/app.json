@@ -13,8 +13,10 @@
       "backgroundColor": "#ffffff"
     },
     "ios": {
+      "icon": "./assets/branding/drivesense-icon-ios.png",
       "supportsTablet": true,
       "infoPlist": {
+        "CFBundleDisplayName": "DriveSense",
         "NSBluetoothAlwaysUsageDescription": "DriveSense uses Bluetooth to receive live telemetry from the steering wheel."
       },
       "bundleIdentifier": "com.luisalvero.smartwheel"

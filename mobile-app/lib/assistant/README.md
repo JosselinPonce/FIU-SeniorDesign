@@ -19,16 +19,19 @@ Neither provider is a fallback for the other.
 ## Connected is intentionally unavailable
 
 `connectedReadiness.ts` exports a frozen release gate with `verified: false`.
-Production wiring supplies no override. Neither a publishable key, an authenticated
-session, an app setting nor an `EXPO_PUBLIC_*` flag establishes backend readiness.
-The Connected selector remains visibly **Not configured**, its launch is disabled,
-and its adapter refuses preparation/generation before even contacting Auth.
-There are no readiness probes or cloud requests triggered by selecting this mode.
+Release builds retain that disabled default. An exact
+`EXPO_PUBLIC_SENSI_CONNECTED_PILOT=true` permits the normal Connected conversation
+only in an iOS development build. `phoneConnectedReadiness.ts` supplies the same
+frozen build gate to the dashboard, launch router and provider. No flag, cached
+session or public project key establishes backend readiness or enables its switches.
+Pilot copy explicitly says backend access is unverified; voice/Auth preparation
+does not claim that generation will succeed. Selecting the mode performs no backend
+readiness probe. Sending a genuine final transcript is a real endpoint attempt,
+not the no-network voice fixture, and requires separate authorization.
 
-The verified gate accepted by the pure adapter and routing helper exists for
-injected tests and future authorized activation. All production callers use the
-disabled default. Do not toggle the production gate for a demo before completing
-Stage 4A deployment/security verification.
+Default/non-iOS/release builds remain **Not configured** even if the flag is set in
+a release bundle. Keep the production gate unchanged. A disabled endpoint produces
+an unavailable error with no advisory playback and no automatic retry.
 
 ## Authentication and request boundary
 
@@ -38,7 +41,11 @@ identity online; a cached session or publishable key alone is insufficient.
 Anonymous accounts, unconfirmed email/phone accounts, missing authentication and
 identity mismatches fail closed. The Edge Function still re-verifies the user and
 owns allowlist/quota enforcement; client checks cannot replace server checks.
-The development-only Settings demo sign-in uses this same dedicated Sensi client.
+The Settings sign-in uses this same dedicated Sensi client. It is visible in
+development, or in an explicitly opted-in release pilot build with
+`EXPO_PUBLIC_SENSI_PILOT_SIGN_IN=true` (default off). This UI-only flag does not
+establish Connected readiness. Settings login verifies the confirmed email account
+online and remains session-only; see [the one-request pilot plan](CONNECTED_PILOT.md).
 It has its own Auth instance, unique storage key and URL session detection disabled.
 The startup login defaults to secure native session persistence; unchecked sign-in
 and the Settings sign-in remain memory-only. Device-local
@@ -122,10 +129,26 @@ rejected. Model-generated authorization is never used. Errors are sanitized;
 raw SDK/provider error details are neither logged nor displayed.
 
 The message is mapped to the existing advisory interpretation with both contact
-flags false and no model wellness classification. Existing conservative
-`conversationalReply` validation still runs before playback. It may select an
-existing deterministic safe reply when generated wording exceeds its vocabulary
-or length bounds; this is response validation, not a provider/mode switch.
+flags false and no model wellness classification. The trusted launch mode selects
+`connectedConversationalReply` before playback; LOCAL retains the unchanged
+`conversationalReply` vocabulary gate. Connected accepts bounded natural prose and
+safe driving reminders, with conservative filters for action claims, medical advice,
+unsafe driving, symptom dismissal, diagnostic probing and unconfirmed parking.
+Clinical claims and clearance to continue a journey are rejected, including when
+negated or quoted. Driving-related sentences must match safe-reminder constructions;
+benign acknowledgments use no Local vocabulary allowlist or exact-sentence exception.
+The engine supplies stopping context from its deterministic final-speech concern
+state. When stopping is required or stopping guidance has already been delivered,
+Connected model prose is replaced by deterministic stopping guidance, regardless
+of model wellness. Only a whole, affirmative, unquoted safe-stopping sentence can
+satisfy model-triggered guidance; a quoted or negated fragment cannot do so.
+Rejected or repeated prose receives a neutral acknowledgment or required stopping
+guidance, never a request to clarify driver speech. These lexical/structural checks
+remain conservative heuristics, not a semantic safety proof; unfamiliar diagnoses,
+euphemisms, indirect instructions and missed driver concerns need further adversarial
+evaluation. False positives include negated/quoted clinical language and unfamiliar
+safe reminders. Driver speech, deterministic guidance and SafetyController remain
+the authority for safety and contact actions. Neither policy changes modes.
 
 All direct saved-contact requests, genuine offers, refusals and emergency-services
 exclusions still use the driver's final words through the unchanged local
@@ -150,9 +173,13 @@ reach speech or contact handoff. Closing, ownership loss, safety preemption or
 mode changes dispose/stop the old interaction. Server quotas may remain charged
 for requests that already reached the backend, even after a client abort.
 
-No Swift or native project changes were made. A new native rebuild is unnecessary
-when the installed app already contains the current offline finalization and voice
-playback bridge. Older binaries still need that previously required rebuild.
+The voice-timing repair adds native start/finish/idle confirmation and a playback
+revision marker. Rebuild the existing iOS development app to apply it; Metro reload
+alone cannot update Swift. No native dependency or project regeneration is needed.
+The engine already awaits playback before capture. Duplicate safety cleanup now
+checks its lease after waiting, so stale cleanup cannot deactivate optional audio.
+Use the offline microphone diagnostic in [VOICE_FIXTURE_TEST.md](VOICE_FIXTURE_TEST.md)
+to retest the complete opening question before Listening without a backend request.
 
 ## Remaining activation work
 
@@ -165,8 +192,8 @@ playback bridge. Older binaries still need that previously required rebuild.
    Verify the deployed Stage 4A response contract against this client.
 4. Establish the dedicated Sensi-client sign-in/session lifecycle and connected
    text-processing disclosure; selecting a local driver profile is not sign-in.
-5. After evidence and separate approval, update the fixed release gate and review
-   availability copy. Validate both AI modes on a physical iPhone, including Zoe,
+5. After evidence and separate approval, use the iOS development pilot opt-in;
+   leave the fixed production gate disabled. Validate both AI modes on a physical iPhone, including Zoe,
    offline recognition, safety preemption, sign-out, mode changes and late replies.
 
 All current provider tests use injected Auth/network fakes. No function invocation,

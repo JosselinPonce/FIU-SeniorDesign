@@ -150,6 +150,9 @@ export function releaseAudio() {
   const timing = responsivenessProbe('warning', 'release audio');
   safetyReleasePending = (async () => {
     await waitForSpeechIdle();
+    // Another cleanup of this same lease may already have released it. Never
+    // deactivate a session now owned by a subsequent optional conversation.
+    if (releaseSafetyAudio !== release) return;
     timing('speech and recognition idle');
     if (Platform.OS === 'ios') {
       ExpoSpeechRecognitionModule.setAudioSessionActiveIOS(false, { notifyOthersOnDeactivation: true });

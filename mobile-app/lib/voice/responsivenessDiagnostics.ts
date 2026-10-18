@@ -1,5 +1,6 @@
 /** Opt-in, bounded RAM only. No transcript, prompt, reply, contact or error text. */
 export type TimingDetails = {
+  nativeRevision?: string; playbackStarted?: boolean; completionEvent?: string;
   voiceId?: string; locale?: string; onDeviceRequired?: boolean;
   isFinal?: boolean; hasText?: boolean; finalResultReceived?: boolean; hasFinalTranscript?: boolean;
   status?: string; endpointReason?: string; nativeMs?: number; listeningMs?: number;

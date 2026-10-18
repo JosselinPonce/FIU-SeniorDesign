@@ -563,3 +563,30 @@ test('Listening is emitted only after native readiness, not preparation or liste
   assert.equal(f.states.at(-1)?.phase, 'complete');
   assert.equal(f.handed.length, 0);
 });
+
+for (const mode of ['local', 'connected'] as const) {
+  test(`${mode} opening playback must settle successfully before capture or Listening`, async () => {
+    let entered!: () => void, complete!: () => void, completed = false, listens = 0;
+    const started = new Promise<void>(r => { entered = r; });
+    const playback = new Promise<void>(r => { complete = r; });
+    const f = fake([], { mode, speak: async () => { entered(); await playback; completed = true; },
+      listen: async (_id, progress) => {
+        assert.equal(completed, true); listens++; progress('listening', ''); return captured('stop');
+      } });
+    const run = new AssistantConversation(f.deps).start(); await started;
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(listens, 0); assert.equal(f.states.at(-1)?.phase, 'speaking question');
+    assert.equal(f.released(), 0);
+    complete(); await run;
+    assert.equal(listens, 1); assert.equal(f.released(), 1); assert.equal(f.contexts.length, 0);
+  });
+
+  test(`${mode} interrupted or unconfirmed opening never starts capture or generation`, async () => {
+    let listens = 0;
+    const f = fake([], { mode, speak: async () => { throw new Error('playback_completion_unconfirmed'); },
+      listen: async () => { listens++; return captured('stop'); } });
+    await new AssistantConversation(f.deps).start();
+    assert.equal(listens, 0); assert.equal(f.contexts.length, 0); assert.equal(f.handed.length, 0);
+    assert.equal(f.released(), 1); assert.equal(f.states.at(-1)?.phase, 'error');
+  });
+}

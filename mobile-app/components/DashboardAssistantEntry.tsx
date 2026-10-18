@@ -4,6 +4,8 @@ import { AppState, Platform, Pressable, Text, View } from 'react-native';
 import { useTheme } from '../lib/theme/ThemeProvider';
 import type { AssistantMode } from '../lib/assistant/mode';
 import { CONNECTED_UNAVAILABLE } from '../lib/assistant/connectedReadiness';
+import { PHONE_CONNECTED_READINESS } from '../lib/assistant/phoneConnectedReadiness';
+import { CONNECTED_PILOT_STATUS } from '../lib/assistant/connectedPilotPolicy';
 import { checkDriverAssistantAvailability, checkOfflineSpeechCapability, listLocalVoices } from '../modules/local-foundation-models';
 import { assertAssistantPlatform, assertAssistantCapabilities, selectAssistantVoice } from '../modules/local-foundation-models/conversationPolicy';
 import { getSetting } from '../lib/db/repositories';
@@ -43,10 +45,10 @@ export function DashboardAssistantEntry(props: {
     return () => { current = false; version++; subscription.remove(); };
   }, [key, props.mode, props.language]);
   const checked = availability?.key === key ? availability : null;
-  const status = props.mode === 'connected' ? CONNECTED_UNAVAILABLE
+  const status = props.mode === 'connected' ? (PHONE_CONNECTED_READINESS.verified ? CONNECTED_PILOT_STATUS : CONNECTED_UNAVAILABLE)
     : props.mode === 'core' ? 'Rehearsal and warning tools · opens Settings'
     : props.mode === 'local' ? checked?.message ?? 'Checking on-device availability…' : 'Loading Assistant Mode…';
-  const disabled = props.disabled || props.mode === 'connected' || checked?.available === false;
+  const disabled = props.disabled || (props.mode === 'connected' && !PHONE_CONNECTED_READINESS.verified) || checked?.available === false;
   const modeLabel = props.mode === 'core' ? 'CORE' : props.mode === 'connected' ? 'CONNECTED AI' : props.mode === 'local' ? 'LOCAL AI' : 'Mode loading';
   return <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', gap: 12, paddingHorizontal: 16, paddingVertical: 8 }}>
     <View style={{ flex: 1, alignItems: 'flex-end' }}>

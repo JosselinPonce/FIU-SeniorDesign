@@ -13,6 +13,7 @@ import { cancelLocalSpeech, cancelOfflineListening, checkDriverAssistantSpeechAv
   subscribeOfflineSpeechProgress, type LocalVoice } from '../modules/local-foundation-models';
 
 import { phoneAssistantProvider } from '../lib/assistant/phoneAssistantProvider';
+import { connectedUnavailableMessage } from '../lib/assistant/connectedPilotPolicy';
 import type { AssistantProvider } from '../lib/assistant/provider';
 
 type Props = { mode?: 'local' | 'connected'; visible: boolean; onClose(): void; language: string; ownershipKey: string; contactName?: string | null;
@@ -48,7 +49,8 @@ export function DriverAssistant(props: Props) {
     if (!live.current || version !== epoch.current) throw new Error('Assistant dismissed.');
     chosen.current = selected;
     timing('checks completed', { voiceId: selected.id, locale: selected.language });
-    if (live.current) { setVoice(selected); setSupport('Ready when you are.'); }
+    if (live.current) { setVoice(selected); setSupport(currentProps.current.mode === 'connected'
+      ? 'Voice and sign-in checked. Backend access is checked when you send a response.' : 'Ready when you are.'); }
   }
 
   useEffect(() => {
@@ -71,6 +73,7 @@ export function DriverAssistant(props: Props) {
     setReady(false); setBusy(false); setState(initial); setVoice(null); setDiagnosticsOpen(false);
     setSupport(mode === 'connected' ? 'Checking Connected AI availability…' : 'Checking local assistant availability…');
     const conversation = new AssistantConversation({
+      mode: provider.mode,
       diagnostics: __DEV__,
       contactName: () => currentProps.current.contactName,
       contactAvailability: () => currentProps.current.contactAvailability(),
@@ -92,7 +95,8 @@ export function DriverAssistant(props: Props) {
         if (!current() || !ownsConversation()) throw new Error('Conversation ownership changed.');
         if (!chosen.current) throw new Error('No selected voice.');
         const result = await speakLocal(text, chosen.current.id, id);
-        timing('playback returned after native cleanup', { status: result.status, voiceId: result.voiceId, nativeMs: result.elapsedMs });
+        timing('playback returned after native cleanup', { status: result.status, voiceId: result.voiceId, nativeMs: result.elapsedMs,
+          nativeRevision: result.nativeRevision ?? 'unknown-native-build', playbackStarted: result.playbackStarted, completionEvent: result.completionEvent });
         if (result.status !== 'completed' || result.voiceId !== chosen.current.id) throw new Error(`${result.reason}: ${result.message}`);
       },
       listen: async (id, progress) => {
@@ -194,7 +198,7 @@ export function DriverAssistant(props: Props) {
         <Btn title="Start conversation" disabled={!ready || busy} onPress={() => void start()} />
         {busy ? <Btn title="Stop" kind="danger" onPress={stop} /> : null}
         <Text style={{ color: C.ink }} accessibilityLiveRegion="polite">{conversationStatus(state.phase)}</Text>
-        {state.message ? <Text style={{ color: state.phase === 'error' ? C.bad : C.ink }}>{conversationMessage(state.phase, state.message)}</Text> : null}
+        {state.message ? <Text style={{ color: state.phase === 'error' ? C.bad : C.ink }}>{(props.mode === 'connected' ? connectedUnavailableMessage(state.phase, state.message) : undefined) ?? conversationMessage(state.phase, state.message)}</Text> : null}
         {(state.phase === 'listening' || state.phase === 'finalizing') && state.transcript ? <Text style={{ color: C.ink }} selectable>You (still listening): {state.transcript}</Text> : null}
         {state.turns.map((turn, i) => <View key={i} style={{ gap: 5 }}>
           <Text style={{ color: C.ink }} selectable>You: {turn.driver}</Text><Text style={{ color: C.ink }} selectable>Sensi: {turn.assistant}</Text>

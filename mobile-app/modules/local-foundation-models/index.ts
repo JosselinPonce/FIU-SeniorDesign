@@ -35,6 +35,9 @@ type NativeAvailabilityModule = {
 
 export type LocalVoice = { id: string; name: string; language: string; quality: 'Premium' | 'Enhanced' | 'Standard' };
 export type LocalPlaybackResult = {
+  nativeRevision?: string;
+  playbackStarted?: boolean;
+  completionEvent?: string;
   status: 'completed' | 'cancelled' | 'error';
   reason: string;
   message: string;

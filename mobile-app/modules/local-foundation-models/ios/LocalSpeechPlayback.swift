@@ -2,6 +2,16 @@ import AVFoundation
 import Foundation
 import UIKit
 
+// BEGIN PLAYBACK COMPLETION STATE: exercised by host Swift regression tests.
+struct LocalPlaybackCompletion {
+  private(set) var didStart = false
+  mutating func started() { didStart = true }
+  func permitsSuccess(isSpeaking: Bool, isPaused: Bool) -> Bool {
+    didStart && !isSpeaking && !isPaused
+  }
+}
+// END PLAYBACK COMPLETION STATE
+
 /// On-device Apple playback with completion-based promises and no network service.
 @MainActor
 final class LocalSpeechPlayback: NSObject, AVSpeechSynthesizerDelegate {
@@ -24,6 +34,8 @@ final class LocalSpeechPlayback: NSObject, AVSpeechSynthesizerDelegate {
     var observers: [NSObjectProtocol] = []
     var stopCode: String?
     var stopMessage: String?
+    var completion = LocalPlaybackCompletion()
+    var completionEvent = "none"
 
     init(id: String, utterance: AVSpeechUtterance, continuation: CheckedContinuation<[String: Any], Never>) {
       self.id = id
@@ -141,9 +153,25 @@ final class LocalSpeechPlayback: NSObject, AVSpeechSynthesizerDelegate {
     }
   }
 
+  nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didStart utterance: AVSpeechUtterance) {
+    Task { @MainActor in
+      guard let current = self.operation, current.utterance === utterance else { return }
+      current.completion.started()
+    }
+  }
+
   nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
     Task { @MainActor in
       guard let current = self.operation, current.utterance === utterance else { return }
+      current.completionEvent = "didFinish"
+      if current.stopCode == nil && !current.completion.permitsSuccess(
+        isSpeaking: self.synthesizer.isSpeaking, isPaused: self.synthesizer.isPaused
+      ) {
+        // Fail closed rather than releasing playback into microphone capture.
+        // stop() retains ownership until native cancellation/idle cleanup finishes.
+        self.stop(current.id, code: "playback_completion_unconfirmed", message: "Playback completion was not confirmed after start and idle.")
+        return
+      }
       self.finish(current, code: current.stopCode, message: current.stopMessage ?? "Playback completed.")
     }
   }
@@ -151,6 +179,7 @@ final class LocalSpeechPlayback: NSObject, AVSpeechSynthesizerDelegate {
   nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
     Task { @MainActor in
       guard let current = self.operation, current.utterance === utterance else { return }
+      current.completionEvent = "didCancel"
       self.finish(current, code: current.stopCode ?? "cancelled", message: current.stopMessage ?? "Playback cancelled.")
     }
   }
@@ -175,6 +204,9 @@ final class LocalSpeechPlayback: NSObject, AVSpeechSynthesizerDelegate {
       "reason": code ?? (errors.isEmpty ? "complete" : "audio_cleanup_failed"),
       "message": errors.isEmpty ? message : "\(message) Cleanup: \(errors.joined(separator: "; "))",
       "voiceId": current.utterance.voice?.identifier ?? "",
+      "nativeRevision": "playback-start-finish-idle-v2",
+      "playbackStarted": current.completion.didStart,
+      "completionEvent": current.completionEvent,
       "elapsedMs": (ProcessInfo.processInfo.systemUptime - current.started) * 1000
     ])
   }

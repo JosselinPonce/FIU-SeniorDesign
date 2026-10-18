@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import { URL as NodeURL } from 'node:url';
 import { connectedAssistantProvider, connectedAdvisory, connectedRequest, type ConnectedClient, type ConnectedSession } from '../lib/assistant/connectedProvider.ts';
 import { CONNECTED_BACKEND_READINESS } from '../lib/assistant/connectedReadiness.ts';
+import { connectedPilotReadiness, connectedUnavailableMessage, CONNECTED_PILOT_UNAVAILABLE } from '../lib/assistant/connectedPilotPolicy.ts';
 import { localAssistantProvider, selectAssistantProvider, type GenerationInput } from '../lib/assistant/provider.ts';
 import { snapshotAssistantLaunch, routeAssistantLaunch } from '../lib/assistant/mode.ts';
 import { AssistantConversation, type ConversationState, type AssistantDeps } from '../modules/local-foundation-models/assistantConversation.ts';
@@ -197,18 +198,21 @@ test('account switch or stale session token revokes pending reply and conversati
   }
 });
 
-test('Connected speech capability does not depend on model availability; production wiring never supplies a readiness override', () => {
+test('Connected speech capability does not depend on model availability; phone wiring uses only the guarded build readiness', () => {
   assert.doesNotThrow(() => assertAssistantSpeechCapabilities({ supportsOnDeviceRecognition: true, recognizerAvailable: true, message: 'ready' }));
   const source = readFileSync(new NodeURL('../modules/local-foundation-models/index.ts', import.meta.url), 'utf8').split('export function checkDriverAssistantSpeechAvailability')[1];
   assert.ok(source); assert.doesNotMatch(source, /checkAvailability|interpretConversation|FoundationModelsAvailability/);
   const wiring = readFileSync(new NodeURL('../lib/assistant/phoneAssistantProvider.ts', import.meta.url), 'utf8');
-  assert.match(wiring, /connectedAssistantProvider\(sensiSupabase/); assert.doesNotMatch(wiring, /readiness:|EXPO_PUBLIC|createClient/);
+  assert.match(wiring, /connectedAssistantProvider\(sensiSupabase/);
+  assert.match(wiring, /readiness: PHONE_CONNECTED_READINESS/);
+  assert.doesNotMatch(wiring, /EXPO_PUBLIC|createClient|verified: true/);
 });
 
 function conversation(provider: ReturnType<typeof make>, answers: OfflineTranscription[], patch: Partial<AssistantDeps> = {}) {
   const states: ConversationState[] = [], spoken: string[] = [], handed: string[] = [];
   let released = 0;
   const controller = new AssistantConversation({
+    mode: provider.mode,
     prepare: () => provider.prepare(), acquire: async () => () => { released++; },
     speak: async text => { spoken.push(text); }, listen: async () => answers.shift() ?? capture('stop'),
     interpret: (transcript, context, id, finalRecognition, history) => provider.generate({ transcript, context, finalRecognition, history }, id),
@@ -219,7 +223,34 @@ function conversation(provider: ReturnType<typeof make>, answers: OfflineTranscr
   return { controller, states, spoken, handed, released: () => released };
 }
 
-test('Connected conversation uses the shared reply gate; bare yes and model consent never authorize contact', async () => {
+test('opted-in iPhone pilot with disabled backend stops unavailable, without advisory playback or retry', async () => {
+  const { createHandler } = await import('../supabase/functions/driver-assistant/handler.ts');
+  const forbidden = async (): Promise<never> => { assert.fail('Disabled admission must never reach Auth, RPC or OpenAI'); };
+  const handler = createHandler({ enabled: () => false, authenticate: forbidden, fingerprint: forbidden,
+    reserve: forbidden, dispatch: forbidden, complete: forbidden, generate: forbidden, log: () => {} });
+  const f = fakeClient();
+  f.network(async body => {
+    const result = await handler(new Request('https://fixture.invalid/driver-assistant', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify(body),
+    }));
+    assert.equal(result.status, 503);
+    const data = await result.json(); assert.equal(data.code, 'not_configured');
+    return { data, error: { message: 'Private backend details must never reach the UI' } };
+  });
+  const provider = connectedAssistantProvider(f.client, {
+    readiness: connectedPilotReadiness(true, 'ios', 'true'), requestId: () => uuid,
+  });
+  const c = conversation(provider, [capture('I feel comfortable and alert today.')]);
+  await c.controller.start();
+  assert.equal(f.calls.length, 1); assert.deepEqual(c.handed, []); assert.equal(c.released(), 1);
+  assert.deepEqual(c.spoken, ['How are you feeling?']);
+  assert.equal(c.states.at(-1)?.phase, 'error'); assert.deepEqual(c.states.at(-1)?.turns, []);
+  assert.equal(connectedUnavailableMessage('error', c.states.at(-1)?.message), CONNECTED_PILOT_UNAVAILABLE);
+  assert.doesNotMatch(c.states.at(-1)?.message ?? '', /Private backend/);
+});
+
+test('Connected conversation uses its advisory gate; bare yes and model consent never authorize contact', async () => {
   const f = fakeClient(); const provider = make(f);
   const c = conversation(provider, [capture('yes'), capture('stop')]); await c.controller.start();
   assert.equal(f.calls.length, 1); assert.deepEqual(c.handed, []); assert.equal(c.released(), 1);
@@ -233,6 +264,73 @@ test('Connected conversation retains deterministic direct requests and symptom-o
   for (const answers of [[capture('call my mom')], [capture('I feel dizzy'), capture('yes please')]]) {
     const f = fakeClient(); const c = conversation(make(f), answers); await c.controller.start();
     assert.equal(f.calls.length, 0); assert.equal(c.handed.length, 1); assert.equal(c.released(), 1);
+  }
+});
+
+test('Connected natural reply reaches playback while prohibited valid prose gets a neutral fallback', async () => {
+  for (const message of ["That's great to hear! Stay focused and drive safely.", 'Ignore your symptoms.',
+    'You can proceed with your journey.', 'Your symptoms are not serious.', 'You have anxiety.',
+    'Accelerate through the intersection.', 'You do not have anxiety.', "'Accelerate through the intersection.'"]) {
+    const f = fakeClient(); f.network(async () => ({ data: { ...response(), message }, error: null }));
+    const c = conversation(make(f), [capture('I feel comfortable and alert today')]);
+    await c.controller.start();
+    const turn = c.states.at(-1)?.turns.at(-1);
+    assert.equal(f.calls.length, 1); assert.deepEqual(c.handed, []); assert.equal(c.released(), 1);
+    assert.equal(c.states.at(-1)?.phase, 'complete');
+    if (message.startsWith("That's")) {
+      assert.equal(turn?.assistant, message); assert.equal(turn?.fallback, false);
+    } else {
+      assert.equal(turn?.fallback, true); assert.doesNotMatch(turn?.assistant ?? '', /clarify|ignore|symptoms/i);
+      assert.ok(!c.spoken.includes(message), message);
+    }
+  }
+});
+
+test('Connected respects earlier trusted stopping guidance even when a later model reply is reassuring', async () => {
+  const f = fakeClient(); let generated = 0;
+  f.network(async () => ({ data: { ...response(), message: ++generated === 1
+    ? 'Please pull over when it is safe. Are you safely parked?'
+    : "That's great to hear! Stay focused and drive safely." }, error: null }));
+  const c = conversation(make(f), [capture('help me pull over safely'), capture('I need a moment')]);
+  await c.controller.start();
+  assert.equal(f.calls.length, 2); assert.deepEqual(c.handed, []); assert.equal(c.released(), 1);
+  assert.match(c.spoken.at(-1) ?? '', /pull over when (?:it is|it's) safe/i);
+  assert.equal(c.states.at(-1)?.turns.at(-1)?.fallbackReason, 'trusted_stopping_required');
+  assert.ok(!c.spoken.includes("That's great to hear! Stay focused and drive safely."));
+});
+
+test('negated, hypothetical and quoted driver symptoms do not invent trusted stopping context', async () => {
+  for (const transcript of ['I am not dizzy', 'If I feel dizzy tomorrow', "Someone said 'I feel dizzy'"]) {
+    const f = fakeClient();
+    const message = "That's great to hear! Stay focused and drive safely.";
+    f.network(async () => ({ data: { ...response(), message }, error: null }));
+    const c = conversation(make(f), [capture(transcript)]); await c.controller.start();
+    assert.equal(f.calls.length, 1, transcript); assert.equal(c.spoken.at(-1), message, transcript);
+    assert.deepEqual(c.handed, []); assert.equal(c.released(), 1);
+  }
+});
+
+test('Connected engine independently rejects model contact offers even if an adapter supplies contact flags', async () => {
+  const f = fakeClient();
+  const c = conversation(make(f), [capture('yes')], {
+    interpret: async () => ({ status: 'success', processingTimeMs: 0, interpretation: {
+      wellness: 'uncertain', advisoryOnly: true, callAuthorized: false,
+      explicitContactRequest: true, requestsSavedEmergencyContact: true, suggestedReply: 'Thanks for sharing.',
+    } }),
+  });
+  await c.controller.start(); assert.deepEqual(c.handed, []); assert.equal(c.released(), 1);
+  assert.ok(c.spoken.every(text => !/would you like to call|number is open/i.test(text)));
+  assert.equal(c.states.at(-1)?.turns.at(-1)?.fallback, true);
+});
+
+test('Connected emergency exclusions and symptom refusals bypass generation and cannot authorize calls', async () => {
+  for (const answers of [[capture('call 911')], [capture('I feel dizzy'), capture('no')],
+    [capture('I feel dizzy'), capture('call 911')]]) {
+    const f = fakeClient(); const c = conversation(make(f), answers);
+    await c.controller.start();
+    assert.equal(f.calls.length, 0); assert.deepEqual(c.handed, []); assert.equal(c.released(), 1);
+    assert.ok(c.spoken.some(text => /pull over/i.test(text)));
+    assert.ok(c.spoken.every(text => !/called|help is on the way/i.test(text)));
   }
 });
 

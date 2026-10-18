@@ -1,4 +1,5 @@
 import { reportedDrivingConcern, PULL_OVER_GUIDANCE } from './driverWellnessSafety.ts';
+import { connectedConversationalReply } from './connectedConversationPolicy.ts';
 import { contactRequestDecision, normalise, mentionsEmergencyServices, understandCallAnswer } from '../../lib/voice/intent.ts';
 import { conversationalReply, needsParkingStatus, drivingSafetyAnswer, finalTranscript, contactLabel, contactHandoffMessage } from './conversationPolicy.ts';
 import type { DriverInterpretationResponse, OfflineTranscription } from './index.ts';
@@ -14,6 +15,8 @@ export type ConversationState = { phase: ConversationPhase; turns: Turn[]; trans
   decisions?: DecisionDiagnostic[];
   interpretation?: DriverInterpretationResponse; message?: string; timings: Record<string, number> };
 export type AssistantDeps = {
+  /** Trusted launch selection, never a model-supplied response field. Defaults to Local. */
+  mode?: 'local' | 'connected';
   diagnostics?: boolean;
   contactAvailability?: () => 'available' | 'missing_contact' | 'invalid_phone';
   contactName?: () => string | null | undefined;
@@ -233,8 +236,15 @@ export class AssistantConversation {
         state.interpretation = result;
         if (result.status !== 'success') throw new Error(`${result.error.code}: ${result.error.message}`);
         // Validate advisory shape even when a deterministic offer replaces generated text.
-        const reply = conversationalReply(result.interpretation, state.turns.map(item => item.assistant), guidanceDelivered, needsParkingStatus(text));
-        const modelSuggestsContact = result.interpretation.requestsSavedEmergencyContact || result.interpretation.explicitContactRequest;
+        const previous = state.turns.map(item => item.assistant);
+        const reply = this.deps.mode === 'connected'
+          ? connectedConversationalReply(result.interpretation, previous, guidanceDelivered, needsParkingStatus(text),
+            { stoppingRequired: guidedSymptoms.size > 0 || concern.symptoms.length > 0 || concern.worsening })
+          : conversationalReply(result.interpretation, previous, guidanceDelivered, needsParkingStatus(text));
+        // Connected prose/flags never create an offer. Its contact flow has
+        // already been resolved above using final driver speech, not model output.
+        const modelSuggestsContact = this.deps.mode !== 'connected'
+          && (result.interpretation.requestsSavedEmergencyContact || result.interpretation.explicitContactRequest);
         offered = !contactDeclined && !contactOfferMade && contactAvailability === 'available' && modelSuggestsContact;
         const contactUnavailable = !contactDeclined && modelSuggestsContact && contactAvailability !== 'available';
         const generatedUsed = !refusedContact && !offered && !contactUnavailable;
