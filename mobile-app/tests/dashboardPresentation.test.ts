@@ -54,7 +54,7 @@ test('assistant entry reports passive capabilities, respects the guarded pilot g
   assert.match(entry, /checkDriverAssistantAvailability\(\)/);
   assert.match(entry, /checkOfflineSpeechCapability\('en-US'\)/);
   assert.match(entry, /selectAssistantVoice\(voices, preferred\)/);
-  assert.match(entry, /PHONE_CONNECTED_READINESS.verified \? CONNECTED_PILOT_STATUS : CONNECTED_UNAVAILABLE/);
+  assert.match(entry, /PHONE_CONNECTED_READINESS.verified \? 'Development pilot' : 'Unavailable · see Sensi Settings'/);
   assert.match(entry, /const disabled = props.disabled \|\| \(props.mode === 'connected' && !PHONE_CONNECTED_READINESS.verified\)/);
   assert.doesNotMatch(entry, /listenOffline\(|speakLocal\(|interpretConversation\(|functions.invoke\(/);
   assert.match(entry, /current && request === version/);
@@ -111,24 +111,40 @@ test('details and back use presentation state only while session and safety rema
   assert.match(entry, /width: 58, height: 58, borderRadius: 29/);
 });
 
-test('header shows one driver name above a compact switch action and keeps original switching', () => {
+test('header uses a compact named selector with the original switching handler', () => {
   const shell = source('components/SmartWheelScreen.tsx');
   const header = shell.slice(shell.indexOf('<View style={st.header}>'), shell.indexOf('<DriverAssistant visible='));
-  assert.equal((header.match(/drive.driver.display_name/g) ?? []).length, 1);
-  assert.ok(header.indexOf('drive.driver.display_name') < header.indexOf('onPress={switchDriver}'));
-  assert.match(header, /<Text style=\{st.switchText\}>Switch driver/);
+  assert.equal((header.match(/drive.driver.display_name/g) ?? []).length, 2);
+  assert.match(header, /onPress=\{switchDriver\}/);
+  assert.match(header, /accessibilityLabel=\{`Switch driver\. Current driver:/);
+  assert.match(header, /accessible=\{false\} style=\{st.switchText\}>⌄/);
   assert.match(shell, /switch: \{ minHeight: 44, minWidth: 44/);
 });
 test('Sensi introduction is interface-only and wheel control remains separate from branding', () => {
   const assistant = source('components/DriverAssistant.tsx');
   const presentation = assistant.slice(assistant.indexOf('if (!props.visible) return null;'));
   assert.match(presentation, />Sensi<\/Text>/);
-  assert.match(presentation, />Hi, I'm Sensi, your local driving assistant\.<\/Text>/);
-  assert.match(presentation, /selectable>Sensi: \{turn.assistant\}/);
+  assert.match(presentation, /<SensiConversationThread/);
+  const thread = source('components/SensiConversationThread.tsx');
+  assert.match(thread, /Hi, I’m Sensi, your driving assistant/);
+  assert.doesNotMatch(thread, /speakLocal\(|listenOffline\(|provider\.generate\(/);
   assert.doesNotMatch(presentation, /speakLocal\(|interpretConversation\(/);
   const entry = source('components/DashboardAssistantEntry.tsx');
-  assert.match(entry, /Sensi · \{modeLabel\}/);
+  assert.doesNotMatch(entry, /<Text|greetingVisible|sensiGreeting/);
   assert.match(entry, /accessibilityLabel="Driver Assistant"/);
   assert.match(entry, /width: 29, height: 29, borderRadius: 15/);
   assert.doesNotMatch(entry, /<Image|BrandMark|\[10, 20, 28/);
+});
+
+test('launcher overlays the home viewport above tabs with an icon-only target and accessible gated status', () => {
+  const shell = source('components/SmartWheelScreen.tsx');
+  assert.ok(shell.indexOf('<DashboardAssistantEntry') < shell.indexOf('<View style={st.tabs}>'));
+  assert.match(shell, /!drive.safety.check && !drive.safety.demo && !assistantOpen/);
+  const entry = source('components/DashboardAssistantEntry.tsx');
+  assert.doesNotMatch(entry, /Dismiss Sensi greeting|<Text/);
+  assert.match(shell, /<DraggableSensiLauncher defaultAnchor=\{vitalsAnchor\}>/);
+  assert.doesNotMatch(shell, /SENSI_RAIL_WIDTH|paddingRight:/);
+  assert.match(shell, /<AppearanceMenu \/>/);
+  assert.doesNotMatch(entry, /CONNECTED_PILOT_STATUS|CONNECTED_UNAVAILABLE/);
+  assert.match(entry, /Unavailable · see Sensi Settings/);
 });

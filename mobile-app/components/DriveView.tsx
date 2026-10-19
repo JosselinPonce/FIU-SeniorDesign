@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { CompactVitalCard } from './CompactVitalCard';
 import { InformationButton } from './Information';
 import { useTheme } from '../lib/theme/ThemeProvider';
@@ -73,11 +73,15 @@ function Chain(props: { drive: Drive }) {
   );
 }
 
-export function DriveView(props: { drive: Drive; busy: boolean; guard: (fn: () => Promise<unknown>) => void; onOpenVitals(): void }) {
+export function DriveView(props: { drive: Drive; busy: boolean; guard: (fn: () => Promise<unknown>) => void; onOpenVitals(): void; onVitalsAnchor?(anchor: { y: number; height: number }): void }) {
   const { colors: C, tokens } = useTheme();
   const st = makeStyles(tokens);
   const d = props.drive;
-  const [details, setDetails] = useState(false);
+  const [details, setDetails] = useState(true);
+  useEffect(() => { setDetails(true); }, [d.driver?.id]);
+  const heading = useRef({ y: 0, height: 58 });
+  const scrollOffset = useRef(0);
+  const reportHeading = () => props.onVitalsAnchor?.({ y: heading.current.y - scrollOffset.current, height: heading.current.height });
   const now = Date.now();
   const { width, fontScale } = useWindowDimensions();
 
@@ -103,7 +107,8 @@ export function DriveView(props: { drive: Drive; busy: boolean; guard: (fn: () =
       : null;
 
   return (
-    <ScrollView contentContainerStyle={st.container}>
+    <ScrollView contentContainerStyle={st.container} scrollEventThrottle={32}
+      onScroll={({ nativeEvent }) => { scrollOffset.current = nativeEvent.contentOffset.y; reportHeading(); }}>
       <Chain drive={d} />
       <View style={{ gap: 8, paddingHorizontal: 2 }}>
         {!d.hasActiveSession ? (
@@ -124,7 +129,8 @@ export function DriveView(props: { drive: Drive; busy: boolean; guard: (fn: () =
         )}
       </View>
 
-      <Text accessibilityRole="header" style={{ color: tokens.text, fontSize: 19, fontWeight: '700' }}>Live Vitals</Text>
+      <Text accessibilityRole="header" style={{ color: tokens.text, fontSize: 19, fontWeight: '700' }}
+        onLayout={({ nativeEvent: { layout } }) => { heading.current = { y: layout.y, height: layout.height }; reportHeading(); }}>Live Vitals</Text>
       <View style={{ gap: 6, paddingHorizontal: 2 }}>
         <View style={st.between}>
           <Pill tone={signal.tone}>{signal.text}</Pill>

@@ -1,6 +1,7 @@
 import { useTheme } from '../lib/theme/ThemeProvider';
 import { useEffect, useRef, useState } from 'react';
-import { AppState, BackHandler, Platform, SafeAreaView, ScrollView, Text, View } from 'react-native';
+import { AppState, BackHandler, Platform, Pressable, SafeAreaView, ScrollView, Text, View } from 'react-native';
+import { SensiConversationThread } from './SensiConversationThread';
 import { Btn } from './ui';
 import * as repo from '../lib/db/repositories';
 import { appAudio } from '../lib/voice/audioOwnership';
@@ -23,13 +24,14 @@ type Props = { mode?: 'local' | 'connected'; visible: boolean; onClose(): void; 
 const initial: ConversationState = { phase: 'idle', turns: [], transcript: '', timings: {} };
 
 export function DriverAssistant(props: Props) {
-  const { colors: C } = useTheme();
+  const { colors: C, tokens } = useTheme();
   const [state, setState] = useState(initial);
   const [voice, setVoice] = useState<LocalVoice | null>(null);
   const [support, setSupport] = useState('Checking local assistant availability…');
   const [ready, setReady] = useState(false);
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [infoOpen, setInfoOpen] = useState(false);
   const live = useRef(false);
   const epoch = useRef(0);
   const currentProps = useRef(props); currentProps.current = props;
@@ -70,7 +72,7 @@ export function DriverAssistant(props: Props) {
       && (currentProps.current.mode ?? 'local') === mode && provider.isCurrent();
     let ownsConversation = () => true;
     let previousPhase = '';
-    setReady(false); setBusy(false); setState(initial); setVoice(null); setDiagnosticsOpen(false);
+    setReady(false); setBusy(false); setState(initial); setVoice(null); setDiagnosticsOpen(false); setInfoOpen(false);
     setSupport(mode === 'connected' ? 'Checking Connected AI availability…' : 'Checking local assistant availability…');
     const conversation = new AssistantConversation({
       mode: provider.mode,
@@ -162,6 +164,7 @@ export function DriverAssistant(props: Props) {
       provider.dispose();
       live.current = false;
       epoch.current += 1;
+      setState(initial); // Discard ephemeral display history on Close/ownership change.
       subscription.remove();
       void conversation.stop().catch(() => {});
       if (controller.current === conversation) controller.current = null;
@@ -188,24 +191,48 @@ export function DriverAssistant(props: Props) {
   // A React overlay allows the existing native safety modal to remain above it.
   return <View style={{ position: 'absolute', top: 0, bottom: 0, left: 0, right: 0, zIndex: 20 }}>
     <SafeAreaView style={{ flex: 1, backgroundColor: C.bg }}>
-      <ScrollView contentContainerStyle={{ padding: 18, gap: 12 }}>
-        <Text style={{ fontSize: 22, fontWeight: '800', color: C.ink }}>Sensi</Text>
-        <Text style={{ color: C.ink }}>Hi, I'm Sensi, your local driving assistant.</Text>
-        <Text style={{ color: C.ink }}>{support}</Text>
-        {props.mode === 'connected' ? <Text style={{ color: C.ink }}>CONNECTED AI uses final text responses online. Speech recognition and voice playback stay on this iPhone.</Text> : null}
-        <Text style={{ color: C.ink }}>This assistant offers suggestions. You decide whether to call; tap Call on your phone to connect.</Text>
+      <View style={{ paddingHorizontal: 16, paddingTop: 4, paddingBottom: 6, flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+        <View style={{ flex: 1, minWidth: 0 }}>
+          <Text style={{ fontSize: 21, fontWeight: '800', color: C.ink }}>Sensi</Text>
+          <Text style={{ color: C.sub, fontSize: 12 }}>{props.mode === 'connected' ? 'Connected AI' : 'Local AI'}</Text>
+          <Text style={{ color: C.ink, fontSize: 13, fontWeight: '600' }} accessibilityLiveRegion="polite">{conversationStatus(state.phase)}</Text>
+        </View>
+        <Pressable accessibilityRole="button" accessibilityLabel="Close assistant" onPress={close}
+          style={{ minWidth: 44, minHeight: 44, padding: 8, alignItems: 'center', justifyContent: 'center' }}>
+          <Text style={{ color: C.ink, fontSize: 14, fontWeight: '600' }}>Close</Text>
+        </Pressable>
+      </View>
+      {state.message ? <ScrollView style={{ maxHeight: '15%', flexShrink: 1 }} contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 6 }}>
+        <Text accessibilityLiveRegion="polite" style={{ color: state.phase === 'error' ? C.bad : C.ink }}>{(props.mode === 'connected' ? connectedUnavailableMessage(state.phase, state.message) : undefined) ?? conversationMessage(state.phase, state.message)}</Text>
+      </ScrollView> : null}
+      {!ready && !busy ? <ScrollView style={{ maxHeight: '15%', flexShrink: 1 }} contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 6 }}>
+        <Text style={{ color: C.sub, fontSize: 13 }}>{support}</Text>
+      </ScrollView> : null}
+      <View style={{ height: 1, backgroundColor: tokens.accent }} />
+      <SensiConversationThread key={`${props.ownershipKey}:${props.mode}:${props.visible}`} messages={state.messages ?? []}
+        provisional={state.phase === 'listening' || state.phase === 'finalizing' ? state.transcript : ''} />
+      <View style={{ paddingHorizontal: 18, paddingBottom: 8, gap: 6 }}>
+        {busy ? <Btn title="Stop conversation" kind="danger" onPress={stop} /> : <Btn title="Start conversation" disabled={!ready} onPress={() => void start()} />}
+        <View style={{ flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between' }}>
+          <Pressable accessibilityRole="button" accessibilityLabel="Conversation information" accessibilityState={{ expanded: infoOpen }}
+            onPress={() => setInfoOpen(v => !v)} style={{ minHeight: 44, minWidth: 44, paddingVertical: 10, paddingHorizontal: 8, justifyContent: 'center' }}>
+            <Text style={{ color: C.sub, fontSize: 13 }}>{infoOpen ? 'Hide information' : 'Conversation info'}</Text>
+          </Pressable>
+          {__DEV__ ? <Pressable accessibilityRole="button" accessibilityLabel="Developer diagnostics" accessibilityState={{ expanded: diagnosticsOpen }}
+            onPress={() => setDiagnosticsOpen(v => !v)} style={{ minHeight: 44, minWidth: 44, paddingVertical: 10, paddingHorizontal: 8, justifyContent: 'center' }}>
+            <Text style={{ color: C.sub, fontSize: 13 }}>{diagnosticsOpen ? 'Hide diagnostics' : 'Diagnostics'}</Text>
+          </Pressable> : null}
+        </View>
+      </View>
+      {infoOpen ? <ScrollView style={{ maxHeight: '25%', flexShrink: 1 }} contentContainerStyle={{ paddingHorizontal: 18, paddingBottom: 12, gap: 8 }}>
         <Text style={{ color: C.ink }}>Wait for “Listening” before answering. Say “stop” while listening, or tap Stop anytime.</Text>
-        <Btn title="Start conversation" disabled={!ready || busy} onPress={() => void start()} />
-        {busy ? <Btn title="Stop" kind="danger" onPress={stop} /> : null}
-        <Text style={{ color: C.ink }} accessibilityLiveRegion="polite">{conversationStatus(state.phase)}</Text>
-        {state.message ? <Text style={{ color: state.phase === 'error' ? C.bad : C.ink }}>{(props.mode === 'connected' ? connectedUnavailableMessage(state.phase, state.message) : undefined) ?? conversationMessage(state.phase, state.message)}</Text> : null}
-        {(state.phase === 'listening' || state.phase === 'finalizing') && state.transcript ? <Text style={{ color: C.ink }} selectable>You (still listening): {state.transcript}</Text> : null}
-        {state.turns.map((turn, i) => <View key={i} style={{ gap: 5 }}>
-          <Text style={{ color: C.ink }} selectable>You: {turn.driver}</Text><Text style={{ color: C.ink }} selectable>Sensi: {turn.assistant}</Text>
-        </View>)}
-        {__DEV__ ? <>
-          <Btn title={diagnosticsOpen ? 'Hide developer diagnostics' : 'Developer diagnostics'} kind="ghost" onPress={() => setDiagnosticsOpen(v => !v)} />
-          {diagnosticsOpen ? <View style={{ gap: 8 }}>
+        <Text style={{ color: C.ink }}>This assistant offers suggestions. You decide whether to call; tap Call on your phone to connect. Opening the phone interface does not confirm a connected call.</Text>
+        <Text style={{ color: C.sub }}>Text is temporary. Playback status does not confirm you heard it.</Text>
+        {props.mode === 'connected' ? <Text style={{ color: C.sub }}>Connected AI sends final text responses online. Speech recognition and voice playback stay on this iPhone.</Text> : null}
+        <Text style={{ color: C.sub }}>{support}</Text>
+      </ScrollView> : null}
+      {__DEV__ ? <>
+          {diagnosticsOpen ? <ScrollView style={{ maxHeight: '25%', flexShrink: 1 }} contentContainerStyle={{ paddingHorizontal: 18, paddingBottom: 12, gap: 8 }}>
             <ResponsivenessDiagnostics />
             <Text style={{ color: C.ink }} selectable>Running JavaScript revision: {CONVERSATION_REVISION}</Text>
             <Text style={{ color: C.ink }}>Native prompt changes require a rebuilt development app. This revision identifies JavaScript only.</Text>
@@ -225,10 +252,8 @@ export function DriverAssistant(props: Props) {
             <Text style={{ color: C.ink }} selectable>Interpretation: {JSON.stringify(state.interpretation ?? null, null, 2)}</Text>
             <Text style={{ color: C.ink }} selectable>Timing (ms): {JSON.stringify(state.timings)}</Text>
             <Text style={{ color: C.ink }}>{props.mode === 'connected' ? 'Connected generation requires physical iPhone testing after authenticated backend activation. Recognition and playback remain on-device.' : 'End-to-end offline behavior remains unverified until physical iPhone testing with network access disabled.'}</Text>
-          </View> : null}
-        </> : null}
-        <Btn title="Close assistant" kind="ghost" onPress={close} />
-      </ScrollView>
+          </ScrollView> : null}
+      </> : null}
     </SafeAreaView>
   </View>;
 }

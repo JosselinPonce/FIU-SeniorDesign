@@ -65,8 +65,10 @@ test('driver editing is discoverable without changing selection or long-press pa
 });
 test('diagnostic entry and child panels use runtime themes without dropping development or audio guards', () => {
   const shell = source('components/SmartWheelScreen.tsx');
-  assert.match(shell, /__DEV__ \? <View[^>]*><Btn title="Local AI diagnostics"/);
-  assert.match(shell, /disabled=\{!appAudio.available\}/);
+  assert.match(shell, /localDiagnostics=\{__DEV__ \?/);
+  const picker = shell.slice(shell.indexOf('if (!drive.driver)'), shell.indexOf('if (editOpening)'));
+  assert.doesNotMatch(picker, /Local AI diagnostics/);
+  assert.match(shell, /disabled=\{drive.hasActiveSession \|\| diagnosticBusy \|\| !appAudio.available/);
   for (const name of ['LocalAITest', 'OfflineSpeechTest', 'VoiceConversationTest']) {
     const ui = source(`modules/local-foundation-models/${name}.tsx`);
     assert.match(ui, /useTheme\(\)/);

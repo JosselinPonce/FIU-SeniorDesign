@@ -1,0 +1,30 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { URL as NodeURL } from 'node:url';
+const source = (p: string) => readFileSync(new NodeURL('../'+p, import.meta.url), 'utf8');
+test('home launcher renders only the existing accessible circular icon, with gates and tap handler intact', () => {
+  const entry=source('components/DashboardAssistantEntry.tsx');
+  const render=entry.slice(entry.indexOf('  return ('));
+  assert.equal((render.match(/<Pressable /g)??[]).length,1);
+  assert.doesNotMatch(render, /<Text|greeting|tooltip|Dismiss/);
+  assert.doesNotMatch(entry,/sensiGreeting|useSyncExternalStore/);
+  assert.match(render,/accessibilityLabel="Driver Assistant"/);
+  assert.match(render,/accessibilityHint=\{`Open Sensi\. \$\{modeLabel\}\. \$\{status\}/);
+  assert.match(render,/accessibilityState=\{\{ disabled \}\} disabled=\{disabled\} onPress=\{props.onPress\}/);
+  assert.match(render,/width: 58, height: 58, borderRadius: 29/);
+  assert.match(render,/shadowOpacity: .15/);
+  assert.match(entry,/props.mode === 'connected' && !PHONE_CONNECTED_READINESS.verified/);
+});
+test('floating wrapper measures the compact icon and retains free dragging, persistence and touch pass-through', () => {
+  const wrapper=source('components/DraggableSensiLauncher.tsx');
+  assert.match(wrapper,/itemWidth: 58, itemHeight: 58/);
+  assert.match(wrapper,/left: 0, width: 58/);
+  assert.match(wrapper,/pointerEvents="box-none"/);
+  assert.match(wrapper,/onMoveShouldSetPanResponderCapture/);
+  assert.match(wrapper,/clampPosition\(origin.current.x \+ gesture.dx, origin.current.y \+ gesture.dy/);
+  assert.match(wrapper,/repo.setSetting\('sensi:launcher-position', JSON.stringify\(fraction.current\)\)/);
+  const shell=source('components/SmartWheelScreen.tsx');
+  assert.match(shell,/!drive.safety.check && !drive.safety.demo && !assistantOpen/);
+  assert.equal((shell.match(/<DashboardAssistantEntry /g)??[]).length,1);
+});

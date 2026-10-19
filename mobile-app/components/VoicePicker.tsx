@@ -1,3 +1,4 @@
+import { voiceDisplayLabel } from '../lib/ui/voiceLabel';
 import { useTheme } from '../lib/theme/ThemeProvider';
 import { presentationColors, type ThemeTokens } from '../lib/theme/tokens';
 /**
@@ -64,7 +65,7 @@ export function VoicePicker(props: { lang: Lang; driverName: string }) {
   };
   return (
     <View style={{ gap: 6 }}>
-      {row(null, 'Automatic', `Best installed: ${voices[0]!.name} (${voices[0]!.tier})`)}
+      {row(null, 'Automatic', `Best installed: ${voiceDisplayLabel(voices[0]!.name, voices[0]!.tier)}`)}
       {voices.map((v) => row(v.id, v.name, `${v.tier} · ${v.language}`))}
       {error ? <Text style={{ color: C.bad }}>{error}</Text> : null}
       <Text style={st.note}>Tap a voice to hear it. Your choice is used for this driver's language on this phone.</Text>

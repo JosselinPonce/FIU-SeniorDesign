@@ -1,6 +1,8 @@
 import { VitalsDetailView } from './VitalsDetailView';
 import { drivePageAfter, type DrivePage } from '../lib/ui/dashboard';
 import { BrandMark } from './BrandMark';
+import { DraggableSensiLauncher } from './DraggableSensiLauncher';
+import { AppearanceMenu } from './AppearanceMenu';
 import { DashboardAssistantEntry } from './DashboardAssistantEntry';
 import { InformationHost } from './Information';
 import { useTheme } from '../lib/theme/ThemeProvider';
@@ -41,6 +43,10 @@ export default function SmartWheelScreen() {
   const [profiles, setProfiles] = useState<DriverProfile[] | null>(null);
   const [drivePage, setDrivePage] = useState<DrivePage>('dashboard');
   useEffect(() => { setDrivePage('dashboard'); }, [drive.driver?.id]);
+  const [vitalsAnchor, setVitalsAnchor] = useState<{ y: number; height: number } | null>(null);
+  const updateVitalsAnchor = useCallback((next: { y: number; height: number }) => {
+    setVitalsAnchor(previous => previous?.y === next.y && previous?.height === next.height ? previous : next);
+  }, []);
   const [tab, setTab] = useState<Tab>('drive');
   const [busy, setBusy] = useState(false);
   const [editingProfile, setEditingProfile] = useState<DriverProfile | null>(null);
@@ -158,12 +164,13 @@ export default function SmartWheelScreen() {
     );
   }
 
-  // Diagnostics stay before driver selection, without competing safety audio.
-  if (__DEV__ && diagnosticsOpen && !drive.driver) {
+  // Advanced Settings is the only diagnostics entry. Keep the existing isolated
+  // screen and busy-exit guard; diagnostic audio cannot overlap an active drive.
+  if (__DEV__ && diagnosticsOpen) {
     return <View style={{ flex: 1, backgroundColor: tokens.background }}>
       <LocalAITest onAudioBusyChange={setDiagnosticBusy} />
-      <View style={{ padding: 18 }}><Btn title="Back to DriveSense" disabled={diagnosticBusy}
-        onPress={() => setDiagnosticsOpen(false)} /></View>
+      <View style={{ padding: 18 }}><Btn title="Back to Settings" disabled={diagnosticBusy}
+        onPress={() => { setDiagnosticsOpen(false); setTab('settings'); }} /></View>
     </View>;
   }
 
@@ -173,7 +180,6 @@ export default function SmartWheelScreen() {
         <StatusBar style={themeName === 'dark' ? 'light' : 'dark'} />
         <View style={{ flex: 1, backgroundColor: tokens.background }}>
         <DriverPicker profiles={profiles} onPick={drive.selectDriver} onCreated={reload} />
-        {__DEV__ ? <View style={{ padding: 18 }}><Btn title="Local AI diagnostics" kind="ghost" disabled={!appAudio.available} onPress={() => { if (appAudio.available) setDiagnosticsOpen(true); }} /></View> : null}
         <InformationHost blocked={!!drive.safety.check || !!drive.safety.demo} />
         </View>
       </>
@@ -198,12 +204,12 @@ export default function SmartWheelScreen() {
       <StatusBar style={themeName === 'dark' ? 'light' : 'dark'} />
       <View style={st.header}>
         <View style={{ flex: 1, minWidth: 0 }}><BrandMark /></View>
-        <View style={{ alignItems: 'flex-end', maxWidth: '45%', flexShrink: 1 }}>
-          <Text style={st.driver} numberOfLines={2}>{drive.driver.display_name}</Text>
-          <Pressable onPress={switchDriver} style={st.switch} accessibilityRole="button" accessibilityLabel="Switch driver">
-            <Text style={st.switchText}>Switch driver</Text>
-          </Pressable>
-        </View>
+        <Pressable onPress={switchDriver} style={[st.switch, { maxWidth: '43%', flexDirection: 'row', alignItems: 'center', gap: 6 }]}
+          accessibilityRole="button" accessibilityLabel={`Switch driver. Current driver: ${drive.driver.display_name}`}>
+          <Text style={[st.driver, { flexShrink: 1 }]}>{drive.driver.display_name}</Text>
+          <Text accessible={false} style={st.switchText}>⌄</Text>
+        </Pressable>
+        <AppearanceMenu />
       </View>
 
       <DriverAssistant visible={assistantOpen && (assistantLaunch?.destination === 'local' || assistantLaunch?.destination === 'connected')}
@@ -215,16 +221,22 @@ export default function SmartWheelScreen() {
       <View style={{ flex: 1 }}>
         {tab === 'drive' ? drivePage === 'vitals'
           ? <VitalsDetailView drive={drive} onBack={() => setDrivePage(drivePageAfter('back'))} />
-          : <>
-            <DriveView drive={drive} busy={busy} guard={guard} onOpenVitals={() => setDrivePage(drivePageAfter('details'))} />
-            {!drive.safety.check && !drive.safety.demo && !assistantOpen ? <DashboardAssistantEntry mode={assistantMode} language={drive.driver.language ?? 'en'}
+          : <View style={{ flex: 1 }}>
+            <View style={{ flex: 1, minWidth: 0 }}><DriveView drive={drive} busy={busy} guard={guard} onOpenVitals={() => setDrivePage(drivePageAfter('details'))} onVitalsAnchor={updateVitalsAnchor} /></View>
+            {!drive.safety.check && !drive.safety.demo && !assistantOpen ? <DraggableSensiLauncher defaultAnchor={vitalsAnchor}><DashboardAssistantEntry mode={assistantMode} language={drive.driver.language ?? 'en'}
               disabled={!assistantMode || modeSaving || (assistantMode === 'connected' && !PHONE_CONNECTED_READINESS.verified) || !!drive.safety.check || !!drive.safety.demo}
-              error={assistantModeError} onPress={openAssistant} /> : null}
-          </> : null}
+              error={assistantModeError} onPress={openAssistant} /></DraggableSensiLauncher> : null}
+          </View> : null}
         {tab === 'history' ? <HistoryView refreshKey={`${drive.session?.id ?? ''}:${drive.session?.status ?? ''}:${drive.fold.state}`} /> : null}
         {tab === 'settings' ? (
           <SettingsView
             drive={drive}
+            localDiagnostics={__DEV__ ? <>
+              <Btn title={diagnosticsOpen ? 'Hide Local AI diagnostics' : 'Local AI diagnostics'} kind="ghost"
+                disabled={drive.hasActiveSession || diagnosticBusy || !appAudio.available || !!drive.safety.check || !!drive.safety.demo || assistantOpen}
+                onPress={() => { if (!drive.hasActiveSession && appAudio.available) setDiagnosticsOpen(true); }} />
+              {drive.hasActiveSession ? <Text style={{ color: C.sub }}>End and save the drive before opening Local AI diagnostics.</Text> : null}
+            </> : null}
             assistantMode={assistantMode}
             assistantModeBusy={!assistantMode || modeSaving || assistantOpen || !!drive.safety.check || !!drive.safety.demo}
             assistantModeError={assistantModeError}
@@ -281,7 +293,6 @@ const makeStyles = (tokens: ThemeTokens) => {
     header: {
       flexDirection: 'row',
       alignItems: 'center',
-      flexWrap: 'wrap',
       gap: 8,
       paddingTop: Platform.OS === 'android' ? (NativeStatusBar.currentHeight ?? 0) + 8 : 8,
       paddingHorizontal: 18,
@@ -291,7 +302,7 @@ const makeStyles = (tokens: ThemeTokens) => {
       borderBottomColor: C.line,
     },
     brand: { fontSize: 12, fontWeight: '800', color: C.ink, letterSpacing: 1, textTransform: 'uppercase', borderLeftWidth: 3, borderLeftColor: tokens.accent, paddingLeft: 8 },
-    driver: { fontSize: 18, fontWeight: '700', color: C.ink, textAlign: 'right' },
+    driver: { fontSize: 14, fontWeight: '700', color: C.ink, textAlign: 'right' },
     cid: { fontSize: 12, fontWeight: '600', color: C.sub },
     switch: { minHeight: 44, minWidth: 44, justifyContent: 'center', paddingHorizontal: 4, paddingVertical: 4 },
     switchText: { color: C.sub, fontSize: 12, fontWeight: '600' },

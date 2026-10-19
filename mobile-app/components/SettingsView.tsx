@@ -6,8 +6,9 @@ import { presentationColors, type ThemeTokens } from '../lib/theme/tokens';
  * Storage choice, cloud backlog, and the technical link details that used to
  * crowd the drive screen.
  */
-import { useState } from 'react';
-import { Alert, Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
+import { useEffect, useState, type ReactNode } from 'react';
+import { SETTINGS_CATEGORIES, settingsTitle, type SettingsPage } from '../lib/ui/settingsNavigation';
+import { Alert, BackHandler, Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
 
 import type { useDriveSession } from '../lib/hooks/useDriveSession';
 import type { StorageMode } from '../lib/db/repositories';
@@ -47,6 +48,7 @@ const MODES: { key: StorageMode; title: string; body: string }[] = [
 
 export function SettingsView(props: {
   drive: Drive;
+  localDiagnostics?: ReactNode;
   assistantMode: AssistantMode | null;
   assistantModeBusy: boolean;
   assistantModeError: string;
@@ -57,9 +59,17 @@ export function SettingsView(props: {
   onShowIntro: () => void;
   onEditProfile: () => void;
 }) {
-  const { colors: C, tokens, preference, setPreference, error: appearanceError } = useTheme();
+  const { colors: C, tokens } = useTheme();
   const st = makeStyles(tokens);
   const d = props.drive;
+  const [page, setPage] = useState<SettingsPage>(null);
+  useEffect(() => {
+    const back = BackHandler.addEventListener('hardwareBackPress', () => {
+      if (page === null) return false;
+      setPage(null); return true;
+    });
+    return () => back.remove();
+  }, [page]);
   const [direct, setDirect] = useState(false);
   const [syncMsg, setSyncMsg] = useState('');
   const [syncing, setSyncing] = useState(false);
@@ -91,21 +101,34 @@ export function SettingsView(props: {
   }
 
   return (
-    <ScrollView contentContainerStyle={st.container}>
-      {sensiSignInEnabled(__DEV__, process.env.EXPO_PUBLIC_SENSI_PILOT_SIGN_IN) ? <DemoAuthPanel /> : null}
-      {__DEV__ && SensiVoicePlaybackDiagnostic ? <SensiVoicePlaybackDiagnostic blocked={!!sf.check || !!sf.demo} /> : null}
-      <Card>
-        <SectionTitle>Appearance</SectionTitle>
-        {(['light', 'dark', 'system'] as const).map(value => <Pressable key={value}
-          accessibilityRole="radio" accessibilityState={{ selected: preference === value }}
-          onPress={() => void setPreference(value)}
-          style={[st.mode, preference === value && st.modeOn]}>
-          <View style={[st.radio, preference === value && st.radioOn]} />
-          <Text style={st.modeTitle}>{value === 'light' ? 'Light' : value === 'dark' ? 'Dark' : 'System'}</Text>
+    <ScrollView key={page ?? 'landing'} contentContainerStyle={st.container}>
+      {page === null ? <>
+        <SectionTitle>Settings</SectionTitle>
+        {SETTINGS_CATEGORIES.map(category => <Pressable key={category.key} accessibilityRole="button"
+          accessibilityLabel={category.title} onPress={() => setPage(category.key)} style={st.category}>
+          <View style={{ flex: 1, gap: 4 }}><Text style={st.modeTitle}>{category.title}</Text><Text style={st.note}>{category.description}</Text></View>
+          <Text accessible={false} style={st.modeTitle}>›</Text>
         </Pressable>)}
-        <Text style={st.note}>System follows the appearance reported by this device. This build currently forces a light native appearance.</Text>
-        {appearanceError ? <Text accessibilityLiveRegion="polite" style={st.note}>{appearanceError}</Text> : null}
+        <Pressable accessibilityRole="button" accessibilityLabel="Advanced Settings" onPress={() => setPage('advanced')} style={st.category}>
+          <View style={{ flex: 1, gap: 4 }}><Text style={st.modeTitle}>Advanced Settings</Text><Text style={st.note}>Diagnostics and demonstration tools</Text></View><Text accessible={false} style={st.modeTitle}>›</Text>
+        </Pressable>
+      </> : <>
+        <Pressable accessibilityRole="button" accessibilityLabel="Back to Settings" onPress={() => setPage(null)} style={st.secondary}>
+          <Text style={st.modeTitle}>‹ Settings</Text>
+        </Pressable>
+        <SectionTitle>{settingsTitle(page)}</SectionTitle>
+      </>}
+      {page === 'profile' ? <>
+      <Card>
+        <SectionTitle>Driver profile</SectionTitle>
+        <Text style={st.note}>{d.driver?.display_name}</Text>
+        <Text style={st.note}>{d.driver?.emergency_phone ? `Emergency contact: ${d.driver.emergency_name || 'Saved contact'} · ${d.driver.emergency_phone}` : 'No emergency contact configured. Saved-contact phone handoff is unavailable.'}</Text>
+        <Btn title="Edit Driver Profile" onPress={props.onEditProfile} />
+        <InformationButton title="Profile storage" body="Profiles are saved on this phone. Cloud updates retry when online; emergency contacts stay on this phone." />
+        {d.hasActiveSession ? <Text style={st.note}>End and save the current drive before editing.</Text> : null}
       </Card>
+      </> : null}
+      {page === 'assistant' ? <>
       <Card>
         <SectionTitle>Assistant Mode</SectionTitle>
         <Text style={st.note}>For development and demonstrations. Live biometric warnings always use the existing deterministic safety workflow.</Text>
@@ -119,41 +142,26 @@ export function SettingsView(props: {
         </Pressable>)}
         {props.assistantMode === null ? <Text style={st.note}>Loading Assistant Mode…</Text> : null}
         {props.assistantModeError ? <Text accessibilityLiveRegion="polite" style={st.note}>{props.assistantModeError}</Text> : null}
-        {props.assistantMode === 'core' ? <Text style={st.note}>CORE tools are below: “Try the voice check” under Safety checks, and “Demo — trigger a warning”. These tools keep their existing behavior.</Text> : null}
+        {props.assistantMode === 'core' ? <Text style={st.note}>CORE tools: “Try the voice check” is in Health & Safety; “Demo — trigger a warning” is in Advanced Settings. These tools keep their existing behavior.</Text> : null}
         <Text style={st.note}>Mode changes apply to the next interaction. Finish the current interaction before switching.</Text>
       </Card>
       <Card>
-        <SectionTitle>Driver profile</SectionTitle>
-        <Text style={st.note}>{d.driver?.display_name}</Text>
-        <Text style={st.note}>{d.driver?.emergency_phone ? `Emergency contact: ${d.driver.emergency_name || 'Saved contact'} · ${d.driver.emergency_phone}` : 'No emergency contact configured. Saved-contact phone handoff is unavailable.'}</Text>
-        <Btn title="Edit Driver Profile" onPress={props.onEditProfile} />
-        <InformationButton title="Profile storage" body="Profiles are saved on this phone. Cloud updates retry when online; emergency contacts stay on this phone." />
-        {d.hasActiveSession ? <Text style={st.note}>End and save the current drive before editing.</Text> : null}
+        <Text style={st.voiceHead}>Voice</Text>
+        {d.driver ? (
+          <VoicePicker lang={d.driver.language === 'es' ? 'es' : 'en'} driverName={d.driver.display_name.split(' ')[0] ?? ''} />
+        ) : null}
+        <Text style={st.note}>
+          Speech is handled by the phone itself (no paid services). The check speaks at full volume through the speaker or your
+          car's Bluetooth, even on silent; turn the phone's volume up. For the most natural voice, download a free Premium or
+          Enhanced voice: iPhone Settings → Accessibility → Read & Speak → Voices → English (and Español) → pick one marked
+          Premium or Enhanced (about 100–400 MB, on Wi-Fi). On iOS 17–18 the menu is called Spoken Content. The app picks the
+          best one automatically (tap "Try the voice check" to hear the new one).
+        </Text>
       </Card>
-      <Card>
-        <SectionTitle>What to save</SectionTitle>
-        {MODES.map((m) => (
-          <Pressable
-            key={m.key}
-            accessibilityRole="radio"
-            accessibilityState={{ selected: d.storageMode === m.key, disabled: d.hasActiveSession }}
-            disabled={d.hasActiveSession}
-            onPress={() => void d.setStorageMode(m.key)}
-            style={[st.mode, d.storageMode === m.key && st.modeOn, d.hasActiveSession && { backgroundColor: tokens.disabledSurface }]}
-          >
-            <View style={[st.radio, d.storageMode === m.key && st.radioOn]} />
-            <View style={{ flex: 1, gap: 3 }}>
-              <Text style={st.modeTitle}>{m.title}</Text>
-              <Text style={st.modeBody}>{m.body}</Text>
-            </View>
-          </Pressable>
-        ))}
-        {d.hasActiveSession ? <Text style={st.note}>Applies from the next drive.</Text> : null}
-      </Card>
-
+      </> : null}
+      {page === 'safety' ? <>
       <Card>
         <SectionTitle>Safety checks</SectionTitle>
-        {__DEV__ ? <ResponsivenessDiagnostics /> : null}
         {sf.th && sf.prior ? (
           <>
             <Row label="Warning if heart rate above" value={`${sf.th.highWarn} BPM`} />
@@ -197,10 +205,6 @@ export function SettingsView(props: {
             <ThresholdHistory profileId={d.driver.id} refreshKey={`${sf.th?.highWarn}:${sf.th?.lowWarn}:${d.baseline?.sessions ?? 0}`} />
           </>
         ) : null}
-        <Text style={st.voiceHead}>Voice</Text>
-        {d.driver ? (
-          <VoicePicker lang={d.driver.language === 'es' ? 'es' : 'en'} driverName={d.driver.display_name.split(' ')[0] ?? ''} />
-        ) : null}
         <Btn
           title="Try the voice check"
           kind="ghost"
@@ -226,50 +230,31 @@ export function SettingsView(props: {
             : 'Phone handoff was cancelled.'
           }</Text>
         ) : null}
-        <Text style={st.note}>
-          Speech is handled by the phone itself (no paid services). The check speaks at full volume through the speaker or your
-          car's Bluetooth, even on silent; turn the phone's volume up. For the most natural voice, download a free Premium or
-          Enhanced voice: iPhone Settings → Accessibility → Read & Speak → Voices → English (and Español) → pick one marked
-          Premium or Enhanced (about 100–400 MB, on Wi-Fi). On iOS 17–18 the menu is called Spoken Content. The app picks the
-          best one automatically (tap "Try the voice check" to hear the new one).
-        </Text>
       </Card>
 
       <CalibrationCard drive={d} />
 
+      </> : null}
+      {page === 'data' ? <>
       <Card>
-        <SectionTitle>Demo — trigger a warning</SectionTitle>
-        <Text style={st.note}>
-          Plays fabricated readings through the real warning engine with this driver's thresholds, 4× faster than real time: a
-          few normal seconds, then abnormal ones until the warning flag is raised, confirmed, and the voice check asks if you're
-          OK. Nothing is saved, uploaded, or learned from.
-        </Text>
-        {(
-          [
-            ['high_critical', 'Very high heart rate (critical)'],
-            ['high_warning', 'High heart rate (warning, 15-s check)'],
-            ['low', 'Very low heart rate'],
-            ['spo2', 'Low oxygen'],
-          ] as const
-        ).map(([key, label]) => (
-          <Btn
-            key={key}
-            title={label}
-            kind="ghost"
-            disabled={!sf.th || sf.demo !== null || sf.check !== null}
-            onPress={async () => {
-              setDemoResult(null);
-              setDemoResult(describe(await d.simulate(key)));
-            }}
-          />
+        <SectionTitle>What to save</SectionTitle>
+        {MODES.map((m) => (
+          <Pressable
+            key={m.key}
+            accessibilityRole="radio"
+            accessibilityState={{ selected: d.storageMode === m.key, disabled: d.hasActiveSession }}
+            disabled={d.hasActiveSession}
+            onPress={() => void d.setStorageMode(m.key)}
+            style={[st.mode, d.storageMode === m.key && st.modeOn, d.hasActiveSession && { backgroundColor: tokens.disabledSurface }]}
+          >
+            <View style={[st.radio, d.storageMode === m.key && st.radioOn]} />
+            <View style={{ flex: 1, gap: 3 }}>
+              <Text style={st.modeTitle}>{m.title}</Text>
+              <Text style={st.modeBody}>{m.body}</Text>
+            </View>
+          </Pressable>
         ))}
-        {sf.demo ? (
-          <Text style={[st.note, { color: C.warn }]}>
-            Second {sf.demo.second}: {sf.demo.value}
-            {sf.demo.scenario === 'spo2' ? '%' : ' BPM'} · {sf.demo.step}
-          </Text>
-        ) : null}
-        {demoResult ? <Text style={st.note}>{demoResult}</Text> : null}
+        {d.hasActiveSession ? <Text style={st.note}>Applies from the next drive.</Text> : null}
       </Card>
 
       <Card>
@@ -286,6 +271,43 @@ export function SettingsView(props: {
         {syncMsg ? <Text style={st.note}>{syncMsg}</Text> : null}
       </Card>
 
+      <Card>
+        <SectionTitle>Your data</SectionTitle>
+        <Btn title="Show the introduction again" kind="ghost" onPress={props.onShowIntro} />
+        <Text style={st.note}>
+          To delete one driver: go back to "Who's driving?", long-press them, and choose Delete. To delete one drive: open it
+          in History. Deleting removes it here and on the dashboard.
+        </Text>
+        <Btn
+          title="Wipe all data on this phone"
+          kind="danger"
+          disabled={d.hasActiveSession}
+          onPress={() =>
+            Alert.alert(
+              'Wipe everything?',
+              'Deletes every driver, drive, reading, alert and waveform this phone has recorded — here and on the dashboard. Other phones\' data is not touched. This cannot be undone.',
+              [
+                { text: 'Cancel', style: 'cancel' },
+                {
+                  text: 'Wipe everything',
+                  style: 'destructive',
+                  onPress: async () => {
+                    const r = await wipeEverything();
+                    await props.onWiped();
+                    Alert.alert(
+                      'Wiped',
+                      `${r.drivers} driver(s) deleted.` +
+                        (r.queued ? ` ${r.queued} will be removed from the dashboard when the phone is next online.` : ''),
+                    );
+                  },
+                },
+              ],
+            )
+          }
+        />
+      </Card>
+      </> : null}
+      {page === 'connections' ? <>
       <Card>
         <SectionTitle>Connection</SectionTitle>
         <Row label="Auto-connect to the Pi" value={<Switch trackColor={{ false: tokens.border, true: tokens.primary }} thumbColor={tokens.surface} ios_backgroundColor={tokens.border} value={props.autoOn} onValueChange={(v) => {
@@ -339,41 +361,48 @@ export function SettingsView(props: {
         {d.driver ? <Text style={st.id}>driver {d.driver.id}</Text> : null}
         {d.session ? <Text style={st.id}>session {d.session.id}</Text> : null}
       </Card>
+      </> : null}
+      {page === 'advanced' ? <>
+      {__DEV__ ? props.localDiagnostics : null}
+      {sensiSignInEnabled(__DEV__, process.env.EXPO_PUBLIC_SENSI_PILOT_SIGN_IN) ? <DemoAuthPanel /> : null}
+      {__DEV__ && SensiVoicePlaybackDiagnostic ? <SensiVoicePlaybackDiagnostic blocked={!!sf.check || !!sf.demo} /> : null}
+      {__DEV__ ? <ResponsivenessDiagnostics /> : null}
       <Card>
-        <SectionTitle>Your data</SectionTitle>
-        <Btn title="Show the introduction again" kind="ghost" onPress={props.onShowIntro} />
+        <SectionTitle>Demo — trigger a warning</SectionTitle>
         <Text style={st.note}>
-          To delete one driver: go back to "Who's driving?", long-press them, and choose Delete. To delete one drive: open it
-          in History. Deleting removes it here and on the dashboard.
+          Plays fabricated readings through the real warning engine with this driver's thresholds, 4× faster than real time: a
+          few normal seconds, then abnormal ones until the warning flag is raised, confirmed, and the voice check asks if you're
+          OK. Nothing is saved, uploaded, or learned from.
         </Text>
-        <Btn
-          title="Wipe all data on this phone"
-          kind="danger"
-          disabled={d.hasActiveSession}
-          onPress={() =>
-            Alert.alert(
-              'Wipe everything?',
-              'Deletes every driver, drive, reading, alert and waveform this phone has recorded — here and on the dashboard. Other phones\' data is not touched. This cannot be undone.',
-              [
-                { text: 'Cancel', style: 'cancel' },
-                {
-                  text: 'Wipe everything',
-                  style: 'destructive',
-                  onPress: async () => {
-                    const r = await wipeEverything();
-                    await props.onWiped();
-                    Alert.alert(
-                      'Wiped',
-                      `${r.drivers} driver(s) deleted.` +
-                        (r.queued ? ` ${r.queued} will be removed from the dashboard when the phone is next online.` : ''),
-                    );
-                  },
-                },
-              ],
-            )
-          }
-        />
+        {(
+          [
+            ['high_critical', 'Very high heart rate (critical)'],
+            ['high_warning', 'High heart rate (warning, 15-s check)'],
+            ['low', 'Very low heart rate'],
+            ['spo2', 'Low oxygen'],
+          ] as const
+        ).map(([key, label]) => (
+          <Btn
+            key={key}
+            title={label}
+            kind="ghost"
+            disabled={!sf.th || sf.demo !== null || sf.check !== null}
+            onPress={async () => {
+              setDemoResult(null);
+              setDemoResult(describe(await d.simulate(key)));
+            }}
+          />
+        ))}
+        {sf.demo ? (
+          <Text style={[st.note, { color: C.warn }]}>
+            Second {sf.demo.second}: {sf.demo.value}
+            {sf.demo.scenario === 'spo2' ? '%' : ' BPM'} · {sf.demo.step}
+          </Text>
+        ) : null}
+        {demoResult ? <Text style={st.note}>{demoResult}</Text> : null}
       </Card>
+
+      </> : null}
       <Text style={st.disclaimer}>Prototype — not a medical device. Alerts use prototype thresholds. Real checks and Try the voice check can open the saved contact's phone interface with your agreement. Simulated vitals demos never do.</Text>
     </ScrollView>
   );
@@ -382,6 +411,8 @@ export function SettingsView(props: {
 const makeStyles = (tokens: ThemeTokens) => {
   const C = presentationColors(tokens);
   return StyleSheet.create({
+    category: { flexDirection: 'row', alignItems: 'center', gap: 12, padding: 16, minHeight: 64, borderRadius: 16, backgroundColor: tokens.surface, borderWidth: 1, borderColor: tokens.border },
+    secondary: { minHeight: 44, justifyContent: 'center', paddingVertical: 10 },
     container: { padding: 16, gap: 14, paddingBottom: 40 },
     mode: { flexDirection: 'row', gap: 12, padding: 12, borderRadius: 14, borderWidth: 1.5, borderColor: C.line },
     modeOn: { borderColor: C.brand, backgroundColor: tokens.surfaceMuted },

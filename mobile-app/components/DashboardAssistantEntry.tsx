@@ -1,11 +1,8 @@
-import { sensiGreeting } from '../lib/ui/sensiGreeting';
-import { useEffect, useState, useSyncExternalStore } from 'react';
-import { AppState, Platform, Pressable, Text, View } from 'react-native';
+import { useEffect, useState } from 'react';
+import { AppState, Platform, Pressable, View } from 'react-native';
 import { useTheme } from '../lib/theme/ThemeProvider';
 import type { AssistantMode } from '../lib/assistant/mode';
-import { CONNECTED_UNAVAILABLE } from '../lib/assistant/connectedReadiness';
 import { PHONE_CONNECTED_READINESS } from '../lib/assistant/phoneConnectedReadiness';
-import { CONNECTED_PILOT_STATUS } from '../lib/assistant/connectedPilotPolicy';
 import { checkDriverAssistantAvailability, checkOfflineSpeechCapability, listLocalVoices } from '../modules/local-foundation-models';
 import { assertAssistantPlatform, assertAssistantCapabilities, selectAssistantVoice } from '../modules/local-foundation-models/conversationPolicy';
 import { getSetting } from '../lib/db/repositories';
@@ -15,7 +12,6 @@ export function DashboardAssistantEntry(props: {
   mode: AssistantMode | null; language: string; disabled: boolean; error: string; onPress(): void;
 }) {
   const { tokens } = useTheme();
-  const greetingVisible = useSyncExternalStore(sensiGreeting.subscribe, sensiGreeting.getSnapshot, sensiGreeting.getSnapshot);
   const [availability, setAvailability] = useState<{ key: string; available: boolean; message: string } | null>(null);
   const key = `${props.mode}:${props.language}`;
   useEffect(() => {
@@ -45,24 +41,13 @@ export function DashboardAssistantEntry(props: {
     return () => { current = false; version++; subscription.remove(); };
   }, [key, props.mode, props.language]);
   const checked = availability?.key === key ? availability : null;
-  const status = props.mode === 'connected' ? (PHONE_CONNECTED_READINESS.verified ? CONNECTED_PILOT_STATUS : CONNECTED_UNAVAILABLE)
-    : props.mode === 'core' ? 'Rehearsal and warning tools · opens Settings'
-    : props.mode === 'local' ? checked?.message ?? 'Checking on-device availability…' : 'Loading Assistant Mode…';
+  const status = props.mode === 'connected' ? (PHONE_CONNECTED_READINESS.verified ? 'Development pilot' : 'Unavailable · see Sensi Settings')
+    : props.mode === 'core' ? 'Tools in Settings'
+    : props.mode === 'local' ? checked ? checked.available ? 'Ready' : 'Unavailable · see Settings' : 'Checking availability…' : 'Loading Assistant Mode…';
   const disabled = props.disabled || (props.mode === 'connected' && !PHONE_CONNECTED_READINESS.verified) || checked?.available === false;
   const modeLabel = props.mode === 'core' ? 'CORE' : props.mode === 'connected' ? 'CONNECTED AI' : props.mode === 'local' ? 'LOCAL AI' : 'Mode loading';
-  return <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', gap: 12, paddingHorizontal: 16, paddingVertical: 8 }}>
-    <View style={{ flex: 1, alignItems: 'flex-end' }}>
-      {greetingVisible ? <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap' }}>
-        <Text style={{ color: tokens.text, fontSize: 14, fontWeight: '600', flexShrink: 1 }}>Hi, I'm Sensi!</Text>
-        <Pressable accessibilityRole="button" accessibilityLabel="Dismiss Sensi greeting" onPress={sensiGreeting.dismiss}
-          style={{ minWidth: 44, minHeight: 44, alignItems: 'center', justifyContent: 'center' }}>
-          <Text accessible={false} style={{ color: tokens.textSecondary, fontSize: 20 }}>×</Text>
-        </Pressable>
-      </View> : null}
-      <Text style={{ color: tokens.textSecondary, fontSize: 11, fontWeight: '600' }}>Sensi · {modeLabel}</Text>
-      <Text numberOfLines={2} accessibilityLiveRegion="polite" style={{ color: tokens.textMuted, fontSize: 11 }}>{props.error || status}</Text>
-    </View>
-    <Pressable accessibilityRole="button" accessibilityLabel="Driver Assistant" accessibilityHint={`Open Sensi. ${modeLabel}. ${status}`}
+  return (
+    <Pressable accessibilityRole="button" accessibilityLabel="Driver Assistant" accessibilityHint={`Open Sensi. ${modeLabel}. ${status}. Drag in any direction to reposition.`}
       accessibilityState={{ disabled }} disabled={disabled} onPress={props.onPress}
       style={({ pressed }) => ({ width: 58, height: 58, borderRadius: 29, alignItems: 'center', justifyContent: 'center',
         backgroundColor: disabled ? tokens.disabledSurface : tokens.primary, opacity: pressed ? .85 : 1,
@@ -74,5 +59,5 @@ export function DashboardAssistantEntry(props: {
         <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: disabled ? tokens.disabledText : tokens.onPrimary }} />
       </View>
     </Pressable>
-  </View>;
+  );
 }

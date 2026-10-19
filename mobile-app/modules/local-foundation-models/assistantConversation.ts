@@ -7,10 +7,13 @@ import type { DriverInterpretationResponse, OfflineTranscription } from './index
 export type ConversationPhase = 'idle' | 'checking' | 'speaking question' | 'listening' | 'finalizing'
   | 'interpreting' | 'speaking response' | 'contact offer' | 'phone interface' | 'complete' | 'stopping' | 'cancelled' | 'error';
 export const CONVERSATION_REVISION = 'driving-safety-conversation-v5-2026-10-12';
+export type ConversationMessage = { id: string; role: 'assistant' | 'driver' | 'system'; text: string;
+  playback?: 'pending' | 'playing' | 'completed' | 'interrupted' | 'failed' };
 export type Turn = { driver: string; assistant: string; fallback?: boolean; fallbackReason?: string };
 export type DecisionDiagnostic = { acceptedFinalTranscript: string; normalizedText: string; direct: boolean; reason: string;
   callAnswer: string; activeOffer: boolean; servicesExcluded: boolean; handoffOutcome?: string };
 export type ConversationState = { phase: ConversationPhase; turns: Turn[]; transcript: string;
+  messages?: ConversationMessage[];
   recognitionAttempts?: { turn: number; attempt: number; result: OfflineTranscription }[];
   decisions?: DecisionDiagnostic[];
   interpretation?: DriverInterpretationResponse; message?: string; timings: Record<string, number> };
@@ -58,7 +61,7 @@ export class AssistantConversation {
     this.active = active;
     const prefix = `assistant-${Date.now()}-${++this.sequence}`;
     const started = Date.now();
-    const state: ConversationState = { phase: 'checking', turns: [], transcript: '', timings: {}, recognitionAttempts: [], ...(this.deps.diagnostics ? { decisions: [] } : {}) };
+    const state: ConversationState = { phase: 'checking', turns: [], transcript: '', timings: {}, messages: [], recognitionAttempts: [], ...(this.deps.diagnostics ? { decisions: [] } : {}) };
     let guidanceDelivered = false;
     const guidedSymptoms = new Set<string>();
     let worseningGuided = false;
@@ -67,7 +70,7 @@ export class AssistantConversation {
     const assertCurrent = () => { if (!current()) throw new Error('Conversation cancelled.'); };
     const emit = (phase: ConversationPhase, message?: string) => {
       state.phase = phase; state.message = message;
-      this.deps.onChange({ ...state, turns: [...state.turns], recognitionAttempts: [...(state.recognitionAttempts ?? [])], ...(state.decisions ? { decisions: state.decisions.map(d => ({ ...d })) } : {}), timings: { ...state.timings } });
+      this.deps.onChange({ ...state, turns: [...state.turns], messages: state.messages!.map(message => ({ ...message })), recognitionAttempts: [...(state.recognitionAttempts ?? [])], ...(state.decisions ? { decisions: state.decisions.map(d => ({ ...d })) } : {}), timings: { ...state.timings } });
     };
     async function stage<T>(key: string, action: () => Promise<T>, cancel?: () => Promise<void>, ownsAudio = false): Promise<T> {
       assertCurrent();
@@ -95,8 +98,22 @@ export class AssistantConversation {
     const { stageMs, totalMs } = this;
     const speak = async (text: string, turn: number) => {
       const id = `${prefix}-${turn}-speech`;
-      await stage(`speech-${turn}`, () => this.deps.speak(text, id), () => this.deps.cancel('speech', id), true);
-      assertCurrent();
+      // Presentation only: never feed this history into interpretation or consent.
+      const message: ConversationMessage = { id, role: 'assistant', text, playback: 'pending' };
+      state.messages!.push(message);
+      emit(state.phase, state.message);
+      try {
+        await stage(`speech-${turn}`, () => {
+          message.playback = 'playing';
+          emit(state.phase, state.message);
+          return this.deps.speak(text, id);
+        }, () => this.deps.cancel('speech', id), true);
+        assertCurrent();
+        message.playback = 'completed';
+      } catch (error) {
+        message.playback = active.cancelled ? 'interrupted' : 'failed';
+        throw error;
+      } finally { emit(state.phase, state.message); }
       if (/pull over (?:safely|when (?:it is |it's )?safe)/i.test(text.replace(/’/g, "'"))) guidanceDelivered = true;
     };
     try {
@@ -147,6 +164,9 @@ export class AssistantConversation {
           state.transcript = text;
           break;
         }
+        state.messages!.push({ id: `${prefix}-${turn}-driver`, role: 'driver', text });
+        state.transcript = '';
+        emit('finalizing');
         if (/^(?:stop|cancel|stop talking|end conversation|goodbye|bye|that's all|that is all)[.!]?$/i.test(text.trim())) {
           emit('complete', 'Conversation ended.'); return;
         }
@@ -178,6 +198,9 @@ export class AssistantConversation {
           diagnostic.handoffOutcome = handoff;
           const outcome = contactHandoffMessage(handoff, this.deps.contactName?.());
           if (handoff !== 'opened' && handoff !== 'cancelled') { emit('speaking response'); await speak(outcome, turn + 301); }
+          if (handoff === 'opened' || handoff === 'cancelled') {
+            state.messages!.push({ id: `${prefix}-${turn}-handoff`, role: 'system', text: outcome });
+          }
           state.turns.push({ driver: text, assistant: `${guidance ? guidance + ' ' : ''}${outcome}` });
           emit(handoff === 'opened' ? 'complete' : 'error', state.turns.at(-1)!.assistant);
           return;
@@ -271,7 +294,7 @@ export class AssistantConversation {
     } finally {
       release?.();
       state.timings.total = Date.now() - started;
-      this.deps.onChange({ ...state, turns: [...state.turns], recognitionAttempts: [...(state.recognitionAttempts ?? [])], ...(state.decisions ? { decisions: state.decisions.map(d => ({ ...d })) } : {}), timings: { ...state.timings } });
+      this.deps.onChange({ ...state, turns: [...state.turns], messages: state.messages!.map(message => ({ ...message })), recognitionAttempts: [...(state.recognitionAttempts ?? [])], ...(state.decisions ? { decisions: state.decisions.map(d => ({ ...d })) } : {}), timings: { ...state.timings } });
       if (this.active === active) this.active = null;
       finish();
     }
