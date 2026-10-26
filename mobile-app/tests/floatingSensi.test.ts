@@ -29,19 +29,19 @@ test('gesture claims movement beyond tap slop; floating wrapper passes ordinary 
   assert.match(wrapper,/repo.setSetting\('sensi:launcher-position'/);
   const shell=source('components/SmartWheelScreen.tsx');
   assert.equal((shell.match(/<DashboardAssistantEntry /g)??[]).length,1);
-  assert.match(shell,/error=\{assistantModeError\} onPress=\{openAssistant\}/);
-  assert.match(shell,/!drive.safety.check && !drive.safety.demo && !assistantOpen/);
+  assert.match(shell,/error="" onPress=\{openAssistant\}/);
+  assert.match(shell,/!assistantOpen \? <DraggableSensiLauncher/);
 });
 test('diagnostics only enter from Advanced; category card matches the other navigation cards', () => {
   const settings=source('components/SettingsView.tsx');
   const advanced=settings.slice(settings.indexOf("{page === 'advanced'"));
-  assert.match(advanced,/__DEV__ \? props.localDiagnostics/);
+  assert.match(advanced,/__DEV__ \? props.gemmaDiagnostics/);
   assert.match(settings,/accessibilityLabel="Advanced Settings" onPress=\{\(\) => setPage\('advanced'\)\} style=\{st.category\}/);
   const shell=source('components/SmartWheelScreen.tsx');
   const picker=shell.slice(shell.indexOf('if (!drive.driver)'),shell.indexOf('if (editOpening)'));
   assert.doesNotMatch(picker,/Local AI diagnostics/);
-  assert.match(shell,/disabled=\{drive.hasActiveSession \|\| diagnosticBusy/);
-  assert.match(shell,/title="Back to Settings" disabled=\{diagnosticBusy\}/);
+  assert.match(shell,/disabled=\{drive.hasActiveSession \|\| !!drive.safety.check/);
+  assert.match(shell,/title="Gemma diagnostics"/);
 });
 
 test('Live Vitals default is section-relative and used only without a valid saved preference', () => {

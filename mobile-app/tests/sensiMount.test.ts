@@ -7,7 +7,7 @@ import ts from 'typescript';
 import { light, dark, presentationColors } from '../lib/theme/tokens.ts';
 import { conversationStatus, conversationMessage } from '../modules/local-foundation-models/conversationPolicy.ts';
 import { nearThreadBottom, playbackLabel } from '../lib/assistant/threadPresentation.ts';
-import { connectedUnavailableMessage } from '../lib/assistant/connectedPilotPolicy.ts';
+import { connectedUnavailableMessage } from './retired-ai/lib/assistant/connectedPilotPolicy.ts';
 
 const require = createRequire(import.meta.url);
 const jsx = require('react/jsx-runtime');
@@ -41,13 +41,14 @@ function harness(theme: typeof light) {
     '../lib/assistant/connectedPilotPolicy': { connectedUnavailableMessage },
   };
   function load(file: string) {
-    const source = readFileSync(new NodeURL(`../components/${file}.tsx`, import.meta.url), 'utf8');
+    const source = readFileSync(new NodeURL(file === 'DriverAssistant' ? './retired-ai/components/DriverAssistant.tsx' : `../components/${file}.tsx`, import.meta.url), 'utf8');
     const compiled = ts.transpileModule(source, { compilerOptions: {
       module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX,
     } }).outputText;
     const exports: Record<string, any> = {};
     new Function('require', 'exports', '__DEV__', compiled)((name: string) => {
-      assert.ok(name in dependencies, `Unexpected runtime import: ${name}`); return dependencies[name];
+      const key = name.startsWith('../../../components/') ? './' + name.slice('../../../components/'.length) : name.replace(/^\.\.\/\.\.\/\.\.\//, '../');
+      assert.ok(key in dependencies, `Unexpected runtime import: ${name}`); return dependencies[key];
     }, exports, true);
     return exports;
   }

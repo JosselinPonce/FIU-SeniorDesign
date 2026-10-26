@@ -1,3 +1,5 @@
+> Stage 2B retirement notice: Apple/OpenAI inference and provider selection are removed from the application. This document is historical; do not follow its legacy provider setup/deployment instructions. See `docs/LEGACY_AI_CLEANUP.md`. The native module now serves shared speech/playback only.
+
 # One-request Connected pilot (not activated)
 
 Target: `zikvdzzxdmusnmpljxsh`. No new Supabase project is required.

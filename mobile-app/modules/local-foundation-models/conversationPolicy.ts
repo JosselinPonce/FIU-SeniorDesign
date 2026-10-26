@@ -139,6 +139,7 @@ export function contactLabel(name?: string | null): string {
   return trimmed && trimmed.length <= 60 && /^[\p{L}\p{M} .'’-]+$/u.test(trimmed) ? trimmed : 'your contact';
 }
 export function contactHandoffMessage(outcome: string, name?: string | null): string {
+  if (outcome === 'simulated') return 'Simulation complete. In a real emergency, DriveSense would open the phone interface.';
   if (outcome === 'opened') return `${contactLabel(name) === 'your contact' ? 'Your contact' : contactLabel(name)}'s number is open. Tap Call to connect.`;
   if (outcome === 'missing_contact') return "You haven't added a contact number yet. You can add one in Settings.";
   if (outcome === 'invalid_phone') return 'Your contact number needs fixing. Please check it in Settings.';

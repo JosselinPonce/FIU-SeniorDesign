@@ -4,9 +4,18 @@ export class AudioOwnership {
   private safetyPending = false;
   get available(): boolean { return this.owner === null && !this.safetyPending; }
 
+  private async stopWithinDeadline(stop: () => Promise<void>): Promise<void> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([Promise.resolve().then(stop), new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error('Speech cleanup timed out; audio ownership is retained.')), 5000);
+      })]);
+    } finally { clearTimeout(timer); }
+  }
+
   async stopActive(): Promise<void> {
     const previous = this.owner;
-    if (previous) await previous.stop();
+    if (previous) await this.stopWithinDeadline(previous.stop);
     if (!this.available) throw new Error('Speech cleanup is still in progress. Please try again.');
   }
 
@@ -17,7 +26,7 @@ export class AudioOwnership {
       this.safetyPending = true;
       const previous = this.owner;
       try {
-        await previous.stop(); // must finish capture/playback cleanup before handover
+        await this.stopWithinDeadline(previous.stop); // never hand over before cleanup
         if (this.owner === previous) throw new Error('Previous audio has not released ownership.');
       } finally { this.safetyPending = false; }
     }

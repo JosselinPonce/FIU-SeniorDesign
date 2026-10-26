@@ -22,7 +22,7 @@ import { responsiveness, responsivenessProbe } from './responsivenessDiagnostics
  * Listening: iOS uses the existing strict native offline recognizer, preserving
  * genuine Apple final evidence. Expo iOS metadata-derived final flags are not
  * consent evidence. Other platforms retain their existing recognition adapter.
- * Partial/timeout text may guide wellness but cannot authorize contact handoff.
+ * Only successful final recognition can guide wellness or authorize contact handoff.
  *
  * Nothing is recorded or stored: transcripts only live for the check.
  */
@@ -95,7 +95,15 @@ export async function previewVoice(lang: Lang, id: string, text: string) {
   }
 }
 
-async function bestVoice(lang: Lang): Promise<string | undefined> {
+async function bestVoice(lang: Lang, strict = false): Promise<string | undefined> {
+  if (strict) {
+    const installed = await listVoices(lang);
+    const selected = preferred[lang];
+    if (selected && !installed.some(voice => voice.id === selected)) throw new Error('Selected safety voice is unavailable. Choose an installed voice in Settings.');
+    const voice = selected || installed[0]?.id;
+    if (!voice) throw new Error('No installed safety voice is available. Use the on-screen response buttons.');
+    return voice;
+  }
   if (lang in voiceCache) return voiceCache[lang] ?? undefined;
   const all = await listVoices(lang);
   const chosen = preferred[lang];
@@ -132,23 +140,37 @@ let safetyReleasePending: Promise<void> = Promise.resolve();
 
 let nativeRecognitionPending: Promise<unknown> = Promise.resolve();
 
+async function bounded<T>(pending: Promise<T>, ms = 2500): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([pending, new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error('Audio operation timed out.')), ms);
+    })]);
+  } finally { clearTimeout(timer); }
+}
+
 async function waitForSpeechIdle() {
-  await nativeRecognitionPending;
+  await bounded(nativeRecognitionPending);
   for (let attempt = 0; attempt < 40; attempt++) {
-    const [speaking, recognition] = await Promise.all([
+    const [speaking, recognition] = await bounded(Promise.all([
       Speech.isSpeakingAsync(), ExpoSpeechRecognitionModule.getStateAsync(),
-    ]);
+    ]));
     if (!speaking && recognition === 'inactive') return;
     await new Promise<void>(resolve => setTimeout(resolve, 50));
   }
   throw new Error('Speech cleanup has not completed. Audio ownership remains reserved.');
 }
 
+let cleanupFailed = false;
+let safetyOwner: object | null = null;
+
 export function releaseAudio() {
   const release = releaseSafetyAudio;
   if (!release) return; // no session was acquired; never deactivate optional audio
   const timing = responsivenessProbe('warning', 'release audio');
-  safetyReleasePending = (async () => {
+  safetyReleasePending = safetyReleasePending.catch(() => {}).then(async () => {
+    if (releaseSafetyAudio !== release) return;
+    if (cleanupFailed) await bounded(Speech.stop());
     await waitForSpeechIdle();
     // Another cleanup of this same lease may already have released it. Never
     // deactivate a session now owned by a subsequent optional conversation.
@@ -157,28 +179,42 @@ export function releaseAudio() {
     if (Platform.OS === 'ios') {
       ExpoSpeechRecognitionModule.setAudioSessionActiveIOS(false, { notifyOthersOnDeactivation: true });
     }
-    if (releaseSafetyAudio === release) releaseSafetyAudio = null;
+    if (releaseSafetyAudio === release) { releaseSafetyAudio = null; safetyOwner = null; }
     release();
+    cleanupFailed = false;
     timing('session deactivation returned; ownership released');
-  })();
-  // Keep a failed cleanup lock rather than allowing overlapping audio. Later
-  // checks still have on-screen buttons; restarting resets a stuck native session.
+  }).catch(error => { cleanupFailed = true; throw error; });
+  // Retain the lease on failure; a later safety acquisition retries cleanup.
+  // Never release ownership merely because a deadline expired.
   void safetyReleasePending.catch(() => {});
 }
 
-export function phoneVoiceIO(): VoiceIO {
+export function phoneVoiceIO(): VoiceIO { return createPhoneVoiceIO(false); }
+
+/** Sensi safety presentation honors the exact saved system voice; CORE is unchanged. */
+export function phoneSensiVoiceIO(): VoiceIO { return createPhoneVoiceIO(true); }
+
+function createPhoneVoiceIO(strictSelectedVoice: boolean): VoiceIO {
+  const owner = {};
   let cancelListen: (() => void) | null = null;
   let cancelEpoch = 0;
   let cleanupNeeded = false;
   async function acquire() {
     const epoch = cancelEpoch;
-    await safetyReleasePending;
+    await safetyReleasePending.catch(() => {});
+    if (epoch !== cancelEpoch) throw new Error("Voice check cancelled");
+    if (cleanupFailed) {
+      releaseAudio();
+      await safetyReleasePending;
+    }
+    if (releaseSafetyAudio && safetyOwner !== owner) throw new Error("Another safety check owns audio.");
     if (cleanupNeeded) { await waitForSpeechIdle(); cleanupNeeded = false; }
     if (epoch !== cancelEpoch) throw new Error("Voice check cancelled");
     if (!releaseSafetyAudio) {
       const release = await appAudio.acquire("safety", async () => {});
       if (epoch !== cancelEpoch) { release(); throw new Error("Voice check cancelled"); }
       releaseSafetyAudio = release;
+      safetyOwner = owner;
     }
   }
 
@@ -188,12 +224,18 @@ export function phoneVoiceIO(): VoiceIO {
       const epoch = cancelEpoch;
       await acquire();
       timing('audio ownership acquired');
-      const voice = await bestVoice(lang);
+      let voice: string | undefined;
+      try { voice = await bestVoice(lang, strictSelectedVoice); }
+      catch (error) {
+        if (!strictSelectedVoice) throw error;
+        timing('selected voice unavailable; retaining deterministic button and recognition path');
+        return { status: 'unavailable' as const };
+      }
       timing('voice selected', { voiceId: voice ?? undefined, locale: LOCALE[lang] });
       if (epoch !== cancelEpoch) throw new Error("Voice check cancelled");
       promptAudio();
       timing('playback session setup returned');
-      await new Promise<void>((resolve, reject) => {
+      try { await bounded(new Promise<void>((resolve, reject) => {
         Speech.speak(text, {
           language: LOCALE[lang],
           voice,
@@ -205,7 +247,12 @@ export function phoneVoiceIO(): VoiceIO {
           onStopped: () => { timing('playback stopped'); reject(new Error('Prompt playback stopped')); },
           onError: () => { timing('playback error'); reject(new Error('Prompt playback failed')); },
         });
-      });
+      }), 15000); }
+      catch (error) {
+        cleanupNeeded = true;
+        void Speech.stop().catch(() => {});
+        throw error;
+      }
     },
 
     async listen(lang, ms, hints, captureId) {
@@ -281,6 +328,11 @@ export function phoneVoiceIO(): VoiceIO {
             }),
           );
           const onDevice = ExpoSpeechRecognitionModule.supportsOnDeviceRecognition();
+          if (!onDevice) {
+            failed = true;
+            timing('offline recognition unavailable; retaining typed/button response window');
+            return; // Never opt into server recognition for event-triggered Sensi.
+          }
           timing('recognition start requested', { locale: LOCALE[lang], onDeviceRequired: onDevice });
           ExpoSpeechRecognitionModule.start({
             lang: LOCALE[lang],
@@ -308,7 +360,7 @@ export function phoneVoiceIO(): VoiceIO {
     cancel() {
       cancelEpoch += 1;
       cleanupNeeded = true;
-      void Speech.stop();
+      void Speech.stop().catch(() => {});
       cancelListen?.();
     },
   };

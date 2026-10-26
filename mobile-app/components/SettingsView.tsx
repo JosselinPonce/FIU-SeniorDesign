@@ -1,5 +1,7 @@
+import { simulationCompletion } from '../lib/assistant/safetyConversation';
+import { settingsSwitchColors } from '../lib/ui/settingsSwitch';
+import { REHEARSAL_SAFETY_REVISION } from '../lib/voice/phoneHandoff';
 import { InformationButton } from './Information';
-import { DemoAuthPanel } from './DemoAuthPanel';
 import { useTheme } from '../lib/theme/ThemeProvider';
 import { presentationColors, type ThemeTokens } from '../lib/theme/tokens';
 /**
@@ -19,10 +21,6 @@ import { VoicePicker } from './VoicePicker';
 import { CalibrationCard } from './CalibrationCard';
 import { ThresholdHistory } from './ThresholdHistory';
 import { ResponsivenessDiagnostics } from './ResponsivenessDiagnostics';
-import { ASSISTANT_MODES, type AssistantMode } from '../lib/assistant/mode';
-import { sensiSignInEnabled } from '../lib/assistant/pilotSignIn';
-import { PHONE_CONNECTED_READINESS } from '../lib/assistant/phoneConnectedReadiness';
-import { CONNECTED_PILOT_STATUS } from '../lib/assistant/connectedPilotPolicy';
 
 // Metro removes this branch from release builds, including the diagnostic module.
 const SensiVoicePlaybackDiagnostic = __DEV__
@@ -48,11 +46,7 @@ const MODES: { key: StorageMode; title: string; body: string }[] = [
 
 export function SettingsView(props: {
   drive: Drive;
-  localDiagnostics?: ReactNode;
-  assistantMode: AssistantMode | null;
-  assistantModeBusy: boolean;
-  assistantModeError: string;
-  onAssistantModeChange(mode: AssistantMode): Promise<void>;
+  gemmaDiagnostics?: ReactNode;
   autoOn: boolean;
   setAutoOn: (v: boolean) => void;
   onWiped: () => Promise<void>;
@@ -130,20 +124,8 @@ export function SettingsView(props: {
       </> : null}
       {page === 'assistant' ? <>
       <Card>
-        <SectionTitle>Assistant Mode</SectionTitle>
-        <Text style={st.note}>For development and demonstrations. Live biometric warnings always use the existing deterministic safety workflow.</Text>
-        {ASSISTANT_MODES.map(mode => <Pressable key={mode.key} accessibilityRole="radio"
-          accessibilityState={{ selected: props.assistantMode === mode.key, disabled: props.assistantModeBusy }}
-          disabled={props.assistantModeBusy}
-          onPress={() => void props.onAssistantModeChange(mode.key)}
-          style={[st.mode, props.assistantMode === mode.key && st.modeOn, props.assistantModeBusy && { backgroundColor: tokens.disabledSurface }]}>
-          <View style={[st.radio, props.assistantMode === mode.key && st.radioOn]} />
-          <View style={{ flex: 1, gap: 3 }}><Text style={st.modeTitle}>{mode.key === 'connected' && PHONE_CONNECTED_READINESS.verified ? 'CONNECTED AI — Development pilot' : mode.title}</Text><Text style={st.modeBody}>{mode.key === 'connected' && PHONE_CONNECTED_READINESS.verified ? CONNECTED_PILOT_STATUS : mode.body}</Text></View>
-        </Pressable>)}
-        {props.assistantMode === null ? <Text style={st.note}>Loading Assistant Mode…</Text> : null}
-        {props.assistantModeError ? <Text accessibilityLiveRegion="polite" style={st.note}>{props.assistantModeError}</Text> : null}
-        {props.assistantMode === 'core' ? <Text style={st.note}>CORE tools: “Try the voice check” is in Health & Safety; “Demo — trigger a warning” is in Advanced Settings. These tools keep their existing behavior.</Text> : null}
-        <Text style={st.note}>Mode changes apply to the next interaction. Finish the current interaction before switching.</Text>
+        <SectionTitle>Sensi · Gemma on-device</SectionTitle>
+        <Text style={st.note}>Sensi is an offline safety assistant. Gemma selects brief approved acknowledgments; safety decisions, guidance and emergency-contact consent remain deterministic.</Text>
       </Card>
       <Card>
         <Text style={st.voiceHead}>Voice</Text>
@@ -195,7 +177,7 @@ export function SettingsView(props: {
         <Row
           label="Voice check"
           value={
-            !d.voice ? 'asks permission at drive start' : !d.voice.granted ? 'off — buttons only' : d.voice.onDevice ? 'on, fully on-device' : 'on'
+            !d.voice ? 'permission prepared at driver selection' : !d.voice.granted ? 'off — buttons only' : d.voice.onDevice ? 'on, fully on-device' : 'on'
           }
           tone={d.voice && !d.voice.granted ? 'warn' : 'good'}
         />
@@ -215,15 +197,17 @@ export function SettingsView(props: {
             setRehearsal(
               r.outcome === 'no_response'
                 ? 'No answer heard. In a real check this counts as an emergency.'
-                : `Understood: ${r.outcome === 'ok' ? 'you are OK' : 'you are NOT OK'}${r.urgent ? ' (urgent words heard)' : ''} — via ${r.channel}.`,
+                : `Understood: ${r.outcome === 'ok' ? 'you are OK' : 'you are NOT OK'}${r.urgent ? ' (urgent words heard)' : ''} — via ${r.channel}. ${simulationCompletion(r)}`,
             );
           }}
         />
-        <Text style={st.note}>This test can open your saved contact's phone interface if you request or agree to it. iOS still requires you to complete the call.</Text>
+        <Text style={st.note}>This is a simulation. Consent is practiced, but the phone interface will never open.</Text>
+        {__DEV__ ? <Text style={st.id}>Simulation safety revision: {REHEARSAL_SAFETY_REVISION}</Text> : null}
         {rehearsal ? <Text style={st.note}>{rehearsal}</Text> : null}
         {rehearsal && sf.last?.episode.id === 'rehearsal' && sf.last.handoff ? (
           <Text style={st.note}>{
-            sf.last.handoff === 'opened' ? 'Phone interface opened. Call connection is not confirmed.'
+            sf.last.handoff === 'simulated' ? simulationCompletion(sf.last.result)
+            : sf.last.handoff === 'opened' ? 'Phone interface opened. Call connection is not confirmed.'
             : sf.last.handoff === 'missing_contact' ? 'No emergency contact number is saved.'
             : sf.last.handoff === 'invalid_phone' ? 'The saved emergency contact number is invalid.'
             : sf.last.handoff === 'open_failed' ? 'Could not open the phone interface.'
@@ -310,7 +294,7 @@ export function SettingsView(props: {
       {page === 'connections' ? <>
       <Card>
         <SectionTitle>Connection</SectionTitle>
-        <Row label="Auto-connect to the Pi" value={<Switch trackColor={{ false: tokens.border, true: tokens.primary }} thumbColor={tokens.surface} ios_backgroundColor={tokens.border} value={props.autoOn} onValueChange={(v) => {
+        <Row label="Auto-connect to the Pi" value={<Switch {...settingsSwitchColors(tokens)} value={props.autoOn} onValueChange={(v) => {
           if (v) d.autoConnect();
           else void d.stopConnecting();
           props.setAutoOn(v);
@@ -350,7 +334,7 @@ export function SettingsView(props: {
           <Text style={[st.note, { flex: 1 }]}>
             Bench testing: connect straight to the ESP32 when no Pi is around. Never in the car — it locks the Pi out.
           </Text>
-          <Switch trackColor={{ false: tokens.border, true: tokens.primary }} thumbColor={tokens.surface} ios_backgroundColor={tokens.border}
+          <Switch {...settingsSwitchColors(tokens)}
             value={direct}
             onValueChange={(v) => {
               setDirect(v);
@@ -363,8 +347,7 @@ export function SettingsView(props: {
       </Card>
       </> : null}
       {page === 'advanced' ? <>
-      {__DEV__ ? props.localDiagnostics : null}
-      {sensiSignInEnabled(__DEV__, process.env.EXPO_PUBLIC_SENSI_PILOT_SIGN_IN) ? <DemoAuthPanel /> : null}
+      {__DEV__ ? props.gemmaDiagnostics : null}
       {__DEV__ && SensiVoicePlaybackDiagnostic ? <SensiVoicePlaybackDiagnostic blocked={!!sf.check || !!sf.demo} /> : null}
       {__DEV__ ? <ResponsivenessDiagnostics /> : null}
       <Card>
@@ -389,7 +372,8 @@ export function SettingsView(props: {
             disabled={!sf.th || sf.demo !== null || sf.check !== null}
             onPress={async () => {
               setDemoResult(null);
-              setDemoResult(describe(await d.simulate(key)));
+              const result = await d.simulate(key);
+              setDemoResult(describe(result) + (result ? ' ' + simulationCompletion(result) : ''));
             }}
           />
         ))}
@@ -403,7 +387,7 @@ export function SettingsView(props: {
       </Card>
 
       </> : null}
-      <Text style={st.disclaimer}>Prototype — not a medical device. Alerts use prototype thresholds. Real checks and Try the voice check can open the saved contact's phone interface with your agreement. Simulated vitals demos never do.</Text>
+      <Text style={st.disclaimer}>Prototype — not a medical device. Alerts use prototype thresholds. Only real checks can open the saved contact's phone interface with your explicit agreement. Settings rehearsals and simulated vitals demos never do.</Text>
     </ScrollView>
   );
 }

@@ -1,5 +1,6 @@
-import { sensiSupabase } from './sensiSupabase';
-import { uuidv4 } from '../ble/protocol';
+// Historical test fixture only. Never import from application code.
+import { sensiSupabase } from '../../../../lib/assistant/sensiSupabase';
+import { uuidv4 } from '../../../../lib/ble/protocol';
 import { checkDriverAssistantAvailability, interpretConversation, cancelDriverInterpretation } from '../../modules/local-foundation-models';
 import { connectedAssistantProvider } from './connectedProvider';
 import { PHONE_CONNECTED_READINESS } from './phoneConnectedReadiness';

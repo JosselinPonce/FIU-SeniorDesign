@@ -1,8 +1,8 @@
 Pod::Spec.new do |s|
   s.name = 'LocalFoundationModels'
   s.version = '0.1.0'
-  s.summary = 'Isolated local AI and offline speech diagnostics'
-  s.description = 'Development diagnostics for model availability, advisory interpretation, and strictly on-device speech.'
+  s.summary = 'DriveSense native offline speech and system playback'
+  s.description = 'Shared strictly on-device speech recognition and system voice playback.'
   s.license = { :type => 'MIT' }
   s.author = 'DriveSense'
   s.homepage = 'https://docs.expo.dev/modules/'
@@ -13,6 +13,4 @@ Pod::Spec.new do |s|
   s.source_files = '**/*.swift'
   s.dependency 'ExpoModulesCore'
   s.frameworks = 'Speech', 'AVFoundation', 'UIKit'
-  # Swift autolinks the guarded framework import when the SDK provides it.
-  # Do not force framework linkage: older SDKs must compile the fallback.
 end

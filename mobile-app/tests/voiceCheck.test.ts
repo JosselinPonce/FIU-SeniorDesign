@@ -98,8 +98,8 @@ test('negative offer response does not authorize handoff', async () => {
 
 test('failed call-offer capture preserves the NOT OK incident without consent', async () => {
   let listens = 0;
-  const io: VoiceIO = { speak: async () => {}, cancel: () => {}, listen: async () => {
-    if (++listens === 1) return 'not okay';
+  const io: VoiceIO = { speak: async () => {}, cancel: () => {}, listen: async (_l, _m, _h, id) => {
+    if (++listens === 1) return recognitionEvidence(id, { status: 'success', transcript: 'not okay', finalTranscript: 'not okay', isFinal: true, finalResultReceived: true });
     throw new Error('Recognition unavailable');
   } };
   const result = await new VoiceCheck(io, 'en', '', { contactAvailable: true }).run('bpm_high');
@@ -144,4 +144,60 @@ test('emergency-service requests end the contact branch, regardless of queued af
     assert.equal(result.outcome, 'not_ok');
     assert.deepEqual(answers, ['yes']);
   }
+});
+
+const tick = () => new Promise<void>(resolve => setImmediate(resolve));
+test('initial playback failure preserves buttons and duplicate taps cannot overwrite the winner', async () => {
+  const answers: string[] = [];
+  let listens = 0;
+  const check = new VoiceCheck({ speak: async () => { throw new Error('speaker failed'); },
+    listen: async () => { listens++; return null; }, cancel() {} }, 'en', '', {
+    onAnswer: answer => answers.push(answer.text),
+  });
+  const pending = check.run('bpm_high'); await tick();
+  check.answerByButton('ok'); check.answerByButton('not_ok');
+  const result = await pending;
+  assert.equal(result.outcome, 'ok'); assert.equal(result.channel, 'button');
+  assert.deepEqual(answers, ["I'm OK"]); assert.equal(listens, 0);
+  assert.equal(check.authorizesContact(result), false);
+});
+for (const status of ['incomplete', 'timeout', 'success'] as const) {
+  test(`${status} partial okay cannot clear a check; successful final retry can`, async () => {
+    let listens = 0;
+    const check = new VoiceCheck({ speak: async () => {}, cancel() {},
+      listen: async (_l, _m, _h, id) => {
+        listens++;
+        return recognitionEvidence(id, { status: listens === 1 ? status : 'success', transcript: "I'm okay",
+          finalTranscript: listens === 1 ? '' : "I'm okay", isFinal: listens !== 1, finalResultReceived: listens !== 1 });
+      } }, 'en', '');
+    const result = await check.run('bpm_high');
+    assert.equal(result.outcome, 'ok'); assert.equal(result.attempts, 2); assert.equal(listens, 2);
+  });
+}
+test('only unconfirmed okay responses exhaust the retry as no_response', async () => {
+  const check = new VoiceCheck({ speak: async () => {}, cancel() {},
+    listen: async (_l, _m, _h, id) => recognitionEvidence(id, {status:'timeout',transcript:"I'm okay",isFinal:false}) }, 'en', '');
+  assert.equal((await check.run('bpm_high')).outcome, 'no_response');
+});
+test('cancellation during failed-playback button recovery ends the check', async () => {
+  const check = new VoiceCheck({ speak: async () => { throw Error('failed'); }, listen: async () => null, cancel() {} }, 'en', '');
+  const pending = check.run('spo2_low'); await tick(); check.cancel();
+  await assert.rejects(pending, /cancelled/);
+  check.answerByButton('ok');
+});
+
+test('failed playback keeps each button window open, then exhausts retries without calling', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let prompts = 0;
+  const check = new VoiceCheck({ speak: async () => { prompts++; throw Error('failed'); },
+    listen: async () => { throw Error('must not listen after failed prompt'); }, cancel() {} }, 'en', '', { contactAvailable: true });
+  const pending = check.run('bpm_high');
+  let finished = false; void pending.then(() => { finished = true; });
+  await tick(); assert.equal(finished, false); assert.equal(prompts, 1);
+  t.mock.timers.tick(6000); await tick();
+  assert.equal(finished, false); assert.equal(prompts, 2);
+  t.mock.timers.tick(6000);
+  const result = await pending;
+  assert.equal(result.outcome, 'no_response'); assert.equal(result.attempts, 2);
+  assert.equal(result.contactCall, 'not_requested'); assert.equal(check.authorizesContact(result), false);
 });

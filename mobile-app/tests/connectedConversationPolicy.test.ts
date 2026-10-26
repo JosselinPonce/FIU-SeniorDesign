@@ -5,9 +5,9 @@ import { URL as NodeURL } from 'node:url';
 import { connectedConversationalReply as reply } from '../modules/local-foundation-models/connectedConversationPolicy.ts';
 import { conversationalReply } from '../modules/local-foundation-models/conversationPolicy.ts';
 import { PULL_OVER_GUIDANCE } from '../modules/local-foundation-models/driverWellnessSafety.ts';
-import type { DriverInterpretation } from '../modules/local-foundation-models/index.ts';
+import type { DriverInterpretation } from './retired-ai/modules/local-foundation-models/index.ts';
 import { parseProviderResponse } from '../supabase/functions/driver-assistant/provider.ts';
-import { connectedAdvisory } from '../lib/assistant/connectedProvider.ts';
+import { connectedAdvisory } from './retired-ai/lib/assistant/connectedProvider.ts';
 
 const advisory = (suggestedReply: string): DriverInterpretation => ({
   wellness: 'uncertain', suggestedReply, advisoryOnly: true, callAuthorized: false,
@@ -80,7 +80,7 @@ test('Local retains its restrictive policy and production selects Connected by t
   for (const text of [natural[0], 'Take care.', "You're welcome."])
     assert.equal(conversationalReply(advisory(text)).usedFallback, true, text);
   assert.equal(conversationalReply(advisory('Glad to hear it.')).usedFallback, false);
-  const component = readFileSync(new NodeURL('../components/DriverAssistant.tsx', import.meta.url), 'utf8');
+  const component = readFileSync(new NodeURL('./retired-ai/components/DriverAssistant.tsx', import.meta.url), 'utf8');
   assert.match(component, /mode: provider.mode/);
 });
 

@@ -196,6 +196,13 @@ export class FlagEngine {
     this.th = th;
   }
 
+  /** Discard evidence spanning an unavailable sensor/app interval; retain cooldowns. */
+  resetContinuity() {
+    this.bpmWin = []; this.spoWin = []; this.bpmMed = []; this.spoMed = [];
+    this.tracks.clear(); this.awaiting = null;
+    this.noContactSince = null; this.noContactFlagged = false;
+  }
+
   get thresholdsInUse(): Thresholds {
     return this.th;
   }

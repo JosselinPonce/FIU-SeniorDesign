@@ -1,3 +1,4 @@
+// Historical test fixture only. Never import from application code.
 import { Platform } from 'react-native';
 import { connectedPilotReadiness } from './connectedPilotPolicy';
 

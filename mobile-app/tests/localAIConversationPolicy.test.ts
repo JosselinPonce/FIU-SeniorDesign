@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { finalTranscript, safeSpokenReply } from '../modules/local-foundation-models/conversationPolicy.ts';
-import type { DriverInterpretation, OfflineTranscription } from '../modules/local-foundation-models/index.ts';
+import type { DriverInterpretation, OfflineTranscription } from './retired-ai/modules/local-foundation-models/index.ts';
 
 const captured: OfflineTranscription = {
   status: 'success', locale: 'en-US', requiresOnDeviceRecognition: true,

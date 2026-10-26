@@ -47,7 +47,7 @@ test('essential drive and assistant instructions remain rendered outside informa
     assert.ok(drive.includes(text), text);
   assert.match(drive, /<Btn title="Call 911" kind="danger" onPress=/);
   assert.match(drive, /<Text style=\{st.alertHint\}>/);
-  const assistant = source('components/DriverAssistant.tsx');
+  const assistant = source('tests/retired-ai/components/DriverAssistant.tsx');
   assert.match(assistant, /<Text[^>]*>Wait for “Listening” before answering/);
   assert.match(assistant, /<Text[^>]*>This assistant offers suggestions/);
   const calibration = source('components/CalibrationCard.tsx');
@@ -65,12 +65,12 @@ test('driver editing is discoverable without changing selection or long-press pa
 });
 test('diagnostic entry and child panels use runtime themes without dropping development or audio guards', () => {
   const shell = source('components/SmartWheelScreen.tsx');
-  assert.match(shell, /localDiagnostics=\{__DEV__ \?/);
+  assert.match(shell, /gemmaDiagnostics=\{__DEV__ \?/);
   const picker = shell.slice(shell.indexOf('if (!drive.driver)'), shell.indexOf('if (editOpening)'));
   assert.doesNotMatch(picker, /Local AI diagnostics/);
-  assert.match(shell, /disabled=\{drive.hasActiveSession \|\| diagnosticBusy \|\| !appAudio.available/);
-  for (const name of ['LocalAITest', 'OfflineSpeechTest', 'VoiceConversationTest']) {
-    const ui = source(`modules/local-foundation-models/${name}.tsx`);
+  assert.match(shell, /disabled=\{drive.hasActiveSession \|\| !!drive.safety.check/);
+  for (const path of ['components/SensiVoicePlaybackDiagnostic.tsx', 'modules/gemma-poc/GemmaDiagnostic.tsx', 'modules/local-foundation-models/OfflineSpeechTest.tsx']) {
+    const ui = source(path);
     assert.match(ui, /useTheme\(\)/);
     assert.doesNotMatch(ui, /import \{[^}]*\bC\b[^}]*\} from .*components\/ui/);
   }

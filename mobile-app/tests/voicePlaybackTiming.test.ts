@@ -18,6 +18,8 @@ test('duplicate safety cleanup cannot deactivate a later optional speech owner',
   const harness = new Function('waitForSpeechIdle', 'Platform', 'ExpoSpeechRecognitionModule', 'responsivenessProbe', 'initialRelease', `
     let releaseSafetyAudio = initialRelease;
     let safetyReleasePending = Promise.resolve();
+    let cleanupFailed = false;
+    let safetyOwner = {};
     ${fn.replace('export function', 'function')}
     return { releaseAudio, pending: () => safetyReleasePending };
   `)(() => pending[waits++], { OS: 'ios' }, { setAudioSessionActiveIOS() { deactivations++; } }, () => () => {}, release);

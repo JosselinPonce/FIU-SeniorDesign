@@ -1,3 +1,4 @@
+// Historical test fixture only. Never import from application code.
 import { CONNECTED_BACKEND_READINESS, type ConnectedReadiness } from './connectedReadiness.ts';
 
 /** Local launch permission only: an opt-in never verifies or enables the server. */

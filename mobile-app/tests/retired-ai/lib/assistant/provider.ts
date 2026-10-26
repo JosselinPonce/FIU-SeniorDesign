@@ -1,5 +1,6 @@
+// Historical test fixture only. Never import from application code.
 import type { DriverInterpretationResponse, OfflineTranscription } from '../../modules/local-foundation-models/index.ts';
-import type { Turn } from '../../modules/local-foundation-models/assistantConversation.ts';
+import type { Turn } from '../../../../modules/local-foundation-models/assistantConversation.ts';
 
 export type GenerationInput = { transcript: string; context: string; finalRecognition?: OfflineTranscription; history?: readonly Turn[] };
 export type AssistantProvider = {

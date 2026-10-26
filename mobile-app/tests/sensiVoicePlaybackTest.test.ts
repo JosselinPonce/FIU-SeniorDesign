@@ -5,7 +5,7 @@ import { URL as NodeURL } from 'node:url';
 import { createSensiVoicePlaybackTest, SENSI_VOICE_TRANSCRIPT, SENSI_VOICE_RESPONSE } from '../lib/assistant/sensiVoicePlaybackTest.ts';
 import { AudioOwnership } from '../lib/voice/audioOwnership.ts';
 import type { ConversationState } from '../modules/local-foundation-models/assistantConversation.ts';
-import type { LocalPlaybackResult, OfflineTranscription } from '../modules/local-foundation-models/index.ts';
+import type { LocalPlaybackResult, OfflineTranscription } from './retired-ai/modules/local-foundation-models/index.ts';
 
 const voice = { id: 'fixture-zoe', name: 'Zoe', quality: 'Premium' as const, language: 'en-US' };
 function setup(options: { delayed?: boolean; interrupted?: boolean; development?: boolean; prepare?: () => Promise<typeof voice> } = {}) {

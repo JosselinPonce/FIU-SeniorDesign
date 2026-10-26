@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { AssistantConversation, type AssistantDeps, type ConversationState } from '../modules/local-foundation-models/assistantConversation.ts';
 import { AudioOwnership } from '../lib/voice/audioOwnership.ts';
 import { assertAssistantPlatform, assertAssistantCapabilities, needsParkingStatus, conversationalReply, drivingSafetyAnswer, selectAssistantVoice } from '../modules/local-foundation-models/conversationPolicy.ts';
-import type { DriverInterpretation, OfflineTranscription } from '../modules/local-foundation-models/index.ts';
+import type { DriverInterpretation, OfflineTranscription } from './retired-ai/modules/local-foundation-models/index.ts';
 import { explicitContactCallRequest } from '../lib/voice/intent.ts';
 const interpretation: DriverInterpretation = { wellness: 'ok', requestsSavedEmergencyContact: false,
   explicitContactRequest: false, suggestedReply: 'Thanks for sharing. How are you feeling now?', advisoryOnly: true, callAuthorized: false };

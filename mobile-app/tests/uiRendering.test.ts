@@ -38,7 +38,7 @@ test('JSX text check catches same-line fragment spaces without flagging indentat
   assert.deepEqual(literalErrors('<View>\n  <Text>Hello world</Text>\n</View>'), []);
 });
 test('recent dashboard components contain no literal children outside text primitives', () => {
-  for (const filename of ['DriveView.tsx', 'SmartWheelScreen.tsx', 'VitalsDetailView.tsx', 'DashboardAssistantEntry.tsx', 'CompactVitalCard.tsx', 'BrandMark.tsx', 'DriverAssistant.tsx'])
+  for (const filename of ['DriveView.tsx', 'SmartWheelScreen.tsx', 'VitalsDetailView.tsx', 'DashboardAssistantEntry.tsx', 'CompactVitalCard.tsx', 'BrandMark.tsx', 'SensiSafetyConversation.tsx'])
     assert.deepEqual(literalErrors(readFileSync(dir + filename, 'utf8')), [], filename);
 });
 test('detailed vitals import casing matches a present component and Metro resolves it on iOS', () => {

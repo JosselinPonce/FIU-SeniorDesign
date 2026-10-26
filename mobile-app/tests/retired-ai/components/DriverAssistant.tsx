@@ -1,14 +1,15 @@
-import { useTheme } from '../lib/theme/ThemeProvider';
+// Historical test fixture only. Never import from application code.
+import { useTheme } from '../../../lib/theme/ThemeProvider';
 import { useEffect, useRef, useState } from 'react';
 import { AppState, BackHandler, Platform, Pressable, SafeAreaView, ScrollView, Text, View } from 'react-native';
-import { SensiConversationThread } from './SensiConversationThread';
-import { Btn } from './ui';
-import * as repo from '../lib/db/repositories';
-import { appAudio } from '../lib/voice/audioOwnership';
-import { responsivenessProbe } from '../lib/voice/responsivenessDiagnostics';
-import { ResponsivenessDiagnostics } from './ResponsivenessDiagnostics';
-import { AssistantConversation, CONVERSATION_REVISION, type ConversationState } from '../modules/local-foundation-models/assistantConversation';
-import { assertAssistantPlatform, assertAssistantSpeechCapabilities, selectAssistantVoice, conversationStatus, conversationMessage } from '../modules/local-foundation-models/conversationPolicy';
+import { SensiConversationThread } from '../../../components/SensiConversationThread';
+import { Btn } from '../../../components/ui';
+import * as repo from '../../../lib/db/repositories';
+import { appAudio } from '../../../lib/voice/audioOwnership';
+import { responsivenessProbe } from '../../../lib/voice/responsivenessDiagnostics';
+import { ResponsivenessDiagnostics } from '../../../components/ResponsivenessDiagnostics';
+import { AssistantConversation, CONVERSATION_REVISION, type ConversationState } from '../../../modules/local-foundation-models/assistantConversation';
+import { assertAssistantPlatform, assertAssistantSpeechCapabilities, selectAssistantVoice, conversationStatus, conversationMessage } from '../../../modules/local-foundation-models/conversationPolicy';
 import { cancelLocalSpeech, cancelOfflineListening, checkDriverAssistantSpeechAvailability,
   checkOfflineSpeechCapability, listLocalVoices, listenOffline, speakLocal,
   subscribeOfflineSpeechProgress, type LocalVoice } from '../modules/local-foundation-models';

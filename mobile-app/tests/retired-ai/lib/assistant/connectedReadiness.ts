@@ -1,3 +1,4 @@
+// Historical test fixture only. Never import from application code.
 /** Release gate, not a credential or a Settings preference.
  * Change only after separately approved deployment + authenticated staging verification.
  * Do not infer readiness from a URL, publishable key, session, or EXPO_PUBLIC flag. */

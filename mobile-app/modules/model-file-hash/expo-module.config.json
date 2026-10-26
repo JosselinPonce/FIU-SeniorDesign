@@ -1,0 +1,5 @@
+{
+  "platforms": ["ios", "android"],
+  "apple": { "modules": ["ModelFileHashModule"] },
+  "android": { "modules": ["expo.modules.modelfilehash.ModelFileHashModule"] }
+}

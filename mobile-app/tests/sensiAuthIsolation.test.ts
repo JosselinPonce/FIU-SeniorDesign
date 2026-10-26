@@ -76,14 +76,14 @@ test('Sensi SDK session, headers and sign-out stay isolated from upload client',
 });
 
 test('demo and Connected wiring use Sensi; upload wiring and disabled readiness remain intact', () => {
-  const panel = source('../components/DemoAuthPanel.tsx');
+  const panel = source('../components/DemoStartup.tsx');
   assert.match(panel, /import \{ sensiSessionStorage, sensiSupabase \} from '..\/lib\/assistant\/sensiSupabase'/);
   assert.doesNotMatch(panel, /\bsupabase\.auth/);
-  assert.match(source('../lib/assistant/phoneAssistantProvider.ts'), /connectedAssistantProvider\(sensiSupabase,/);
+  assert.match(source('./retired-ai/lib/assistant/phoneAssistantProvider.ts'), /connectedAssistantProvider\(sensiSupabase,/);
   for (const file of ['profileSync', 'liveSync', 'deletion']) {
     const upload = source(`../lib/db/${file}.ts`);
     assert.match(upload, /import \{ supabase \} from '..\/supabase'/);
     assert.doesNotMatch(upload, /sensiSupabase/);
   }
-  assert.match(source('../lib/assistant/connectedReadiness.ts'), /verified: false/);
+  assert.match(source('./retired-ai/lib/assistant/connectedReadiness.ts'), /verified: false/);
 });

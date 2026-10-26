@@ -1,35 +1,13 @@
 import { requireOptionalNativeModule } from 'expo';
 import { Platform } from 'react-native';
 
-export type AvailabilityReason =
-  | 'available'
-  | 'unsupported_os'
-  | 'device_not_eligible'
-  | 'apple_intelligence_not_enabled'
-  | 'model_not_ready'
-  | 'unknown_unavailable'
-  | 'unknown_availability'
-  | 'framework_not_in_build'
-  | 'unsupported_platform'
-  | 'native_module_missing';
-
-export type FoundationModelsAvailability = {
-  available: boolean;
-  reason: AvailabilityReason;
-  message: string;
-};
-
-type NativeAvailabilityModule = {
-  checkAvailability(): Promise<FoundationModelsAvailability>;
-  interpretDriverResponse?(text: string, requestId: string): Promise<DriverInterpretationResponse>;
-  cancelInterpretation?(requestId: string): Promise<void>;
+type NativeSpeechModule = {
   checkOfflineSpeechCapability?(locale: string): Promise<OfflineSpeechCapability>;
   listenOffline?(locale: string, requestId: string, timeoutMs: number): Promise<OfflineTranscription>;
   cancelOfflineListening?(requestId: string): Promise<void>;
   listLocalVoices?(): Promise<LocalVoice[]>;
   speakLocal?(text: string, voiceId: string, requestId: string): Promise<LocalPlaybackResult>;
   cancelLocalSpeech?(requestId: string): Promise<void>;
-  interpretConversation?(text: string, context: string, requestId: string): Promise<DriverInterpretationResponse>;
   addListener?(event: 'offlineSpeechProgress', listener: (progress: OfflineSpeechProgress) => void): { remove(): void };
 };
 
@@ -45,9 +23,9 @@ export type LocalPlaybackResult = {
   elapsedMs: number;
 };
 
-function playbackModule(): NativeAvailabilityModule {
-  if (Platform.OS !== 'ios') throw new Error('The local assistant supports iOS only.');
-  const native = requireOptionalNativeModule<NativeAvailabilityModule>('LocalFoundationModels');
+function playbackModule(): NativeSpeechModule {
+  if (Platform.OS !== 'ios') throw new Error('Native system playback supports iOS only.');
+  const native = requireOptionalNativeModule<NativeSpeechModule>('LocalFoundationModels');
   if (!native?.listLocalVoices || !native.speakLocal || !native.cancelLocalSpeech) {
     throw new Error('Local playback methods are missing. Rebuild the native app with local speech playback.');
   }
@@ -141,9 +119,9 @@ export function subscribeOfflineSpeechProgress(listener: (progress: OfflineSpeec
   return native.addListener('offlineSpeechProgress', listener);
 }
 
-function offlineSpeechModule(): NativeAvailabilityModule {
+function offlineSpeechModule(): NativeSpeechModule {
   if (Platform.OS !== 'ios') throw new Error('Offline speech diagnostics support iOS only.');
-  const native = requireOptionalNativeModule<NativeAvailabilityModule>('LocalFoundationModels');
+  const native = requireOptionalNativeModule<NativeSpeechModule>('LocalFoundationModels');
   if (!native?.checkOfflineSpeechCapability || !native.listenOffline || !native.cancelOfflineListening) {
     throw new Error('Offline speech methods are missing. Rebuild the native app with offline speech methods.');
   }
@@ -176,63 +154,10 @@ export type DriverInterpretationResponse =
   | { status: 'success'; processingTimeMs: number; interpretation: DriverInterpretation }
   | { status: 'error'; processingTimeMs: number; error: { code: string; message: string } };
 
-function interpretationModule(): NativeAvailabilityModule {
-  if (Platform.OS !== 'ios') throw new Error('This prototype supports iOS only.');
-  const native = requireOptionalNativeModule<NativeAvailabilityModule>('LocalFoundationModels');
-  if (!native?.interpretDriverResponse || !native.cancelInterpretation) {
-    throw new Error('Native interpretation methods are missing. Rebuild the native app.');
-  }
-  return native;
-}
-
-/** No side effects beyond on-device generation. requestId owns cancellation. */
-export async function interpretDriverResponse(text: string, requestId: string): Promise<DriverInterpretationResponse> {
-  const native = interpretationModule();
-  return native.interpretDriverResponse!(text, requestId);
-}
-
-export async function cancelDriverInterpretation(requestId: string): Promise<void> {
-  const native = interpretationModule();
-  await native.cancelInterpretation!(requestId);
-}
-
-/** Explicit diagnostic only: importing this file does not check or generate anything. */
-export async function checkFoundationModelsAvailability(): Promise<FoundationModelsAvailability> {
-  if (Platform.OS !== 'ios') {
-    return { available: false, reason: 'unsupported_platform', message: 'This prototype supports iOS only.' };
-  }
-  const native = requireOptionalNativeModule<NativeAvailabilityModule>('LocalFoundationModels');
-  if (!native) {
-    return { available: false, reason: 'native_module_missing', message: 'Rebuild the native app with LocalFoundationModels included. Expo Go and existing binaries do not contain this module.' };
-  }
-  return native.checkAvailability();
-}
-
-/** Bounded, in-memory conversation context; no consent or app services are passed to AI. */
-export async function interpretConversation(text: string, context: string, requestId: string): Promise<DriverInterpretationResponse> {
-  const native = interpretationModule();
-  if (!native.interpretConversation) throw new Error('Conversation method missing. A native rebuild is required.');
-  return native.interpretConversation(text, context, requestId);
-}
-
-/** Check the complete runtime bridge before the assistant starts any audio. */
-export async function checkDriverAssistantAvailability(): Promise<FoundationModelsAvailability> {
-  if (Platform.OS !== 'ios') return checkFoundationModelsAvailability();
-  const native = requireOptionalNativeModule<NativeAvailabilityModule>('LocalFoundationModels');
-  if (!native?.interpretConversation || !native.cancelInterpretation || !native.checkOfflineSpeechCapability
-      || !native.listenOffline || !native.cancelOfflineListening || !native.listLocalVoices
-      || !native.speakLocal || !native.cancelLocalSpeech || !native.addListener) {
-    return { available: false, reason: 'native_module_missing',
-      message: 'The Driver Assistant bridge is missing or outdated. Rebuild the native app; Expo Go cannot run it.' };
-  }
-  return native.checkAvailability();
-}
-
-
 /** Speech/playback bridge availability is independent of Apple Intelligence. */
 export function checkDriverAssistantSpeechAvailability(): { available: boolean; message: string } {
   if (Platform.OS !== 'ios') return { available: false, message: 'The Driver Assistant requires iOS offline speech and Apple voice playback.' };
-  const native = requireOptionalNativeModule<NativeAvailabilityModule>('LocalFoundationModels');
+  const native = requireOptionalNativeModule<NativeSpeechModule>('LocalFoundationModels');
   if (!native?.checkOfflineSpeechCapability || !native.listenOffline || !native.cancelOfflineListening
     || !native.listLocalVoices || !native.speakLocal || !native.cancelLocalSpeech || !native.addListener) {
     return { available: false, message: 'The offline speech/playback bridge is missing. Rebuild the native app.' };

@@ -1,3 +1,7 @@
+import type { AnswerScope } from '../voice/voiceCheck';
+import { phoneSafetyAcknowledgment } from '../../modules/gemma-poc/phone';
+import { SENSI_MODE } from '../assistant/mode';
+import { openAuthorizedPhoneInterface } from '../voice/phoneHandoff';
 /**
  * Application state for one driver's drive.
  *
@@ -6,7 +10,7 @@
  * reactive surface is a handful of values on a few screens.
  */
 import { useCallback, useEffect, useMemo, useReducer, useRef } from 'react';
-import { Linking } from 'react-native';
+import { AppState, Linking } from 'react-native';
 import type { CheckAnswer } from '../voice/voiceCheck';
 import * as Haptics from 'expo-haptics';
 
@@ -26,7 +30,7 @@ import { SignalAnalyzer, type SignalQuality } from '../analysis/signal';
 import { CAL_SECONDS, applyCalibration } from '../analysis/calibration';
 import { computeTrend, type Trend } from '../analysis/trend';
 import { SafetyController, initialSafety, type DemoScenario, type SafetyState } from '../analysis/safetyController';
-import { phoneVoiceIO, prepareVoice, releaseAudio, resetVoiceCache, setPreferredVoice } from '../voice/speechIO';
+import { phoneSensiVoiceIO, prepareVoice, releaseAudio, resetVoiceCache, setPreferredVoice } from '../voice/speechIO';
 
 /** Seconds of vitals kept for the on-screen charts. */
 export const CHART_SECONDS = 120;
@@ -267,10 +271,23 @@ export function useDriveSession() {
   const safety = useMemo(
     () =>
       new SafetyController({
-        voiceIO: phoneVoiceIO,
-        handoffContact: (phone) => Linking.openURL(`tel:${phone}`),
+        interactionCurrent: () => AppState.currentState === 'active' && supportedScreen.current,
+        assistantMode: () => SENSI_MODE,
+        startAcknowledgment: phoneSafetyAcknowledgment,
+        voiceIO: phoneSensiVoiceIO,
+        handoffContact: (phone, origin) => {
+          // Last platform-boundary check, including transitions ahead of React effects.
+          return openAuthorizedPhoneInterface(phone, origin, () => AppState.currentState === 'active'
+            && supportedScreen.current && connected.current && Date.now() - lastRx.current < 3000,
+          url => Linking.openURL(url));
+        },
         releaseAudio,
-        save: repo.saveAlert,
+        save: async row => {
+          await repo.saveAlert(row);
+          // A check may complete after End Drive's final upload. Reuse the
+          // existing final-flush path for its original, now-ended recording.
+          if (row.response && sessionRef.current?.id !== row.session_id) void live.finish(row.session_id);
+        },
         saveAck: repo.setAck,
         saveSnapshot: repo.saveSnapshot,
         haptic: (k) =>
@@ -282,6 +299,25 @@ export function useDriveSession() {
       }),
     [],
   );
+
+  // Foreground safety lifecycle is independent of optional recording ownership.
+  const foreground = useRef(AppState.currentState === 'active');
+  const supportedScreen = useRef(false);
+  const updateMonitoring = useCallback(() => {
+    safety.setMonitoringContext(connected.current, foreground.current, supportedScreen.current);
+  }, [safety]);
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', next => {
+      foreground.current = next === 'active';
+      updateMonitoring();
+    });
+    const timer = setInterval(() => safety.checkSensorFreshness(Date.now()), 500);
+    return () => { subscription.remove(); clearInterval(timer); };
+  }, [safety, updateMonitoring]);
+  const setSafetyPresentationEnabled = useCallback((enabled: boolean) => {
+    supportedScreen.current = enabled;
+    updateMonitoring();
+  }, [updateMonitoring]);
 
   // What the dashboard's "link" pill shows, reported with every heartbeat.
   const linkState = useCallback((): LinkState => {
@@ -308,6 +344,9 @@ export function useDriveSession() {
 
   const onBytes = useCallback(
     (bytes: Uint8Array) => {
+      if (foreground.current !== (AppState.currentState === 'active')) {
+        foreground.current = AppState.currentState === 'active'; updateMonitoring();
+      }
       const rx = new Date(); // stamped on arrival, before any queueing
       rxBytes.current += bytes.length;
       for (const raw of deframer.current.feed(bytes)) {
@@ -364,9 +403,12 @@ export function useDriveSession() {
         });
         const rolloverSession = esp32Restarted && sessionRef.current?.status === 'active' ? sessionRef.current : null;
         // Revoke consent immediately, before queued database work can yield to a dialogue.
-        if (rolloverSession) safety.endSession();
+        if (esp32Restarted) {
+          safety.setMonitoringContext(false, foreground.current, supportedScreen.current);
+          updateMonitoring();
+        }
+        safety.onFrame(f, rx, missingNow, sq);
         if (sessionRef.current?.status === 'active') {
-          safety.onFrame(f, rx, missingNow, sq);
           live.nudge(); // flags and answers reach the dashboard without waiting for the tick
         }
 
@@ -384,7 +426,7 @@ export function useDriveSession() {
                 return;
               }
               sessionRef.current = next;
-              safety.startSession(next.id);
+              safety.setRecordingSession(next.id);
               seen.current.clear();
               dispatch({ type: 'rollover', session: next });
               void (async () => {
@@ -419,7 +461,7 @@ export function useDriveSession() {
           .catch(() => undefined);
       }
     },
-    [live, safety],
+    [live, safety, updateMonitoring],
   );
 
   const connection = useMemo(
@@ -427,6 +469,7 @@ export function useDriveSession() {
       new WheelConnection({
         onStateChange: (s, error) => {
           connected.current = s === 'connected';
+          updateMonitoring();
           if (s === 'connected') {
             // A new link starts a fresh byte stream: no half-frame carries over.
             deframer.current = new Deframer();
@@ -440,7 +483,7 @@ export function useDriveSession() {
           dispatch({ type: 'relay', relay });
         },
       }),
-    [onBytes],
+    [onBytes, updateMonitoring],
   );
 
   useEffect(() => {
@@ -496,6 +539,9 @@ export function useDriveSession() {
       avgBpm.current = [];
       avgSpo2.current = [];
       dispatch({ type: 'driver', driver });
+      // Driver selection is a foreground user action; prepare voice before an
+      // automatic event, independently of whether a trip is being recorded.
+      void prepareVoice().then(voice => dispatch({ type: 'voice', voice }));
       void loadBaseline(driver, 'profile');
     },
     [loadBaseline, safety],
@@ -563,7 +609,7 @@ export function useDriveSession() {
         return;
       }
       sessionRef.current = session;
-      safety.startSession(session.id);
+      safety.setRecordingSession(session.id);
       dispatch({ type: 'session', session });
       live.follow(session.id);
       // Microphone + speech permission now, so an emergency is never blocked by a dialog.
@@ -576,8 +622,13 @@ export function useDriveSession() {
     if (!session || endingSession.current) return;
     endingSession.current = true;
     try {
-      safety.endSession();
-      const ended = await repo.endSession(session);
+      safety.setRecordingSession(null);
+      let ended: DriveSession;
+      try { ended = await repo.endSession(session); }
+      catch (error) {
+        if (sessionRef.current === session) safety.setRecordingSession(session.id);
+        throw error;
+      }
       sessionRef.current = null;
       dispatch({ type: 'session', session: ended });
       await queue.current; // every frame of this session is stored before folding
@@ -616,7 +667,7 @@ export function useDriveSession() {
   /** Back to the driver list. An active session is ended first, never dropped. */
   const leaveDriver = useCallback(async () => {
     const selection = selectedProfile.current;
-    safety.cancelCheck();
+    safety.endSession();
     if (sessionRef.current) await endSession();
     if (selectedProfile.current !== selection) return;
     selectedProfile.current = null;
@@ -636,7 +687,8 @@ export function useDriveSession() {
   }, [safety, state.voice]);
 
   /** On-screen answer to the voice check (always available). */
-  const respondAlert = useCallback((response: CheckAnswer) => safety.answer(response), [safety]);
+  const respondAlert = useCallback((response: CheckAnswer, scope?: AnswerScope & { episodeId: string }) => safety.answer(response, scope), [safety]);
+  const respondAlertText = useCallback((text: string, scope: AnswerScope & { episodeId: string }) => safety.answerText(text, scope), [safety]);
 
   return {
     ...state,
@@ -648,12 +700,17 @@ export function useDriveSession() {
     stopConnecting: useCallback(() => connection.stop(), [connection]),
     setAllowDirect: useCallback((v: boolean) => connection.setAllowDirect(v), [connection]),
     startSession,
+    setSafetyPresentationEnabled,
     beginProfileEdit,
     saveProfileEdit,
     closeProfileEdit,
     endSession,
     setStorageMode,
     respondAlert,
+    respondAlertText,
+    continueSafetyConversation: useCallback((episodeId: string) => safety.consumeSafetyContinuation(episodeId), [safety]),
+    canContinueSafetyConversation: useCallback((episodeId: string) => safety.safetyContinuation(episodeId), [safety]),
+    dismissSafetyConversation: useCallback((episodeId: string) => safety.dismissSafetyConversation(episodeId), [safety]),
     assistantContactAvailability: useCallback(() => safety.assistantContactAvailability(), [safety]),
     assistantOwnership: useCallback(() => safety.assistantOwnership(), [safety]),
     assistantContact: useCallback((text: string, offered: boolean, current: () => boolean) =>

@@ -3,9 +3,9 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { URL as NodeURL } from 'node:url';
 import ts from 'typescript';
-import { connectedPilotReadiness, connectedUnavailableMessage, CONNECTED_PILOT_UNAVAILABLE } from '../lib/assistant/connectedPilotPolicy.ts';
-import { CONNECTED_BACKEND_READINESS } from '../lib/assistant/connectedReadiness.ts';
-import { snapshotAssistantLaunch } from '../lib/assistant/mode.ts';
+import { connectedPilotReadiness, connectedUnavailableMessage, CONNECTED_PILOT_UNAVAILABLE } from './retired-ai/lib/assistant/connectedPilotPolicy.ts';
+import { CONNECTED_BACKEND_READINESS } from './retired-ai/lib/assistant/connectedReadiness.ts';
+import { snapshotAssistantLaunch } from './retired-ai/lib/assistant/mode.ts';
 
 const source = (path: string) => readFileSync(new NodeURL(path, import.meta.url), 'utf8');
 
@@ -24,7 +24,7 @@ test('only exact opt-in on iOS development permits Connected launch; production 
 });
 
 test('actual phone readiness module enforces __DEV__, platform and the Expo build flag', () => {
-  const compiled = ts.transpileModule(source('../lib/assistant/phoneConnectedReadiness.ts'), {
+  const compiled = ts.transpileModule(source('./retired-ai/lib/assistant/phoneConnectedReadiness.ts'), {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
   }).outputText;
   for (const [development, platform, flag, expected] of [
@@ -42,12 +42,12 @@ test('actual phone readiness module enforces __DEV__, platform and the Expo buil
 
 test('phone launch, dashboard and provider consume the same guarded readiness', () => {
   const shell = source('../components/SmartWheelScreen.tsx');
-  assert.match(shell, /snapshotAssistantLaunch\(assistantMode, PHONE_CONNECTED_READINESS\)/);
-  assert.match(shell, /!PHONE_CONNECTED_READINESS.verified/);
+  assert.doesNotMatch(shell, /<DriverAssistant/);
+  assert.doesNotMatch(shell, /PHONE_CONNECTED_READINESS/);
   const entry = source('../components/DashboardAssistantEntry.tsx');
-  assert.match(entry, /props.mode === 'connected' && !PHONE_CONNECTED_READINESS.verified/);
-  assert.match(source('../lib/assistant/phoneAssistantProvider.ts'), /readiness: PHONE_CONNECTED_READINESS/);
-  const ui = source('../components/DriverAssistant.tsx');
+  assert.doesNotMatch(entry, /PHONE_CONNECTED_READINESS|checkDriverAssistantAvailability/);
+  assert.match(source('./retired-ai/lib/assistant/phoneAssistantProvider.ts'), /readiness: PHONE_CONNECTED_READINESS/);
+  const ui = source('./retired-ai/components/DriverAssistant.tsx');
   assert.match(ui, /props.mode === 'connected' \? connectedUnavailableMessage/);
   assert.match(ui, /Backend access is checked when you send a response/);
 });

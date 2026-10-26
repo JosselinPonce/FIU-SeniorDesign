@@ -1,16 +1,17 @@
-import { useTheme } from '../../lib/theme/ThemeProvider';
+// Historical test fixture only. Never import from application code.
+import { useTheme } from '../../../../lib/theme/ThemeProvider';
 import { useEffect, useRef, useState } from 'react';
 import { AppState, Pressable, Text, View } from 'react-native';
 import * as Speech from 'expo-speech';
 import { ExpoSpeechRecognitionModule } from 'expo-speech-recognition';
-import { Btn } from '../../components/ui';
+import { Btn } from '../../../../components/ui';
 import {
   cancelDriverInterpretation, cancelLocalSpeech, cancelOfflineListening,
   checkFoundationModelsAvailability, checkOfflineSpeechCapability, interpretDriverResponse,
   listLocalVoices, listenOffline, speakLocal, subscribeOfflineSpeechProgress,
   type DriverInterpretationResponse, type LocalVoice, type OfflineTranscription,
-} from './index';
-import { finalTranscript, safeSpokenReply } from './conversationPolicy';
+} from '.';
+import { finalTranscript, safeSpokenReply } from '../../../../modules/local-foundation-models/conversationPolicy';
 
 const QUESTION = 'Are you feeling okay? Please tell me how you feel.';
 const PREVIEW = 'This is the voice for the local driving assistant test.';

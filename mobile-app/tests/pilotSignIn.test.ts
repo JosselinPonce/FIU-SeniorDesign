@@ -52,10 +52,10 @@ test('blank pilot credentials make no Auth requests', async () => {
 
 test('pilot sign-in cannot activate Connected, alter upload identity, or introduce persistent passwords', () => {
   const source = (path: string) => readFileSync(new NodeURL(path, import.meta.url), 'utf8');
-  assert.match(source('../lib/assistant/connectedReadiness.ts'), /verified: false/);
-  const panel = source('../components/DemoAuthPanel.tsx');
+  assert.match(source('./retired-ai/lib/assistant/connectedReadiness.ts'), /verified: false/);
+  const panel = source('./retired-ai/components/DemoAuthPanel.tsx');
   assert.match(panel, /signInConfirmedPilot\(sensiSupabase.auth/);
   assert.match(panel, /sensiSessionStorage.select\(false\)/);
   assert.doesNotMatch(panel, /setSetting|functions.invoke|\.from\(/);
-  assert.match(source('../components/SettingsView.tsx'), /sensiSignInEnabled\(__DEV__, process.env.EXPO_PUBLIC_SENSI_PILOT_SIGN_IN\)/);
+  assert.doesNotMatch(source('../components/SettingsView.tsx'), /sensiSignInEnabled|DemoAuthPanel|EXPO_PUBLIC_SENSI_PILOT_SIGN_IN/);
 });

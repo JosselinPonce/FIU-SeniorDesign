@@ -38,26 +38,22 @@ test('compact charts retain actual point data, gap behavior and honest stale/emp
   assert.match(chart, /v === null \? 0/);
   assert.match(chart, /props.endLabel \?\? 'now'/);
 });
-test('shell keeps assistant controller, hook, safety modal and original launch ownership', () => {
+test('shell keeps safety workflow but disables ordinary assistant launch', () => {
   const shell = source('components/SmartWheelScreen.tsx');
   assert.equal((shell.match(/const drive = useDriveSession\(\)/g) ?? []).length, 1);
-  assert.equal((shell.match(/<DriverAssistant visible=/g) ?? []).length, 1);
+  assert.equal((shell.match(/<DriverAssistant visible=/g) ?? []).length, 0);
   assert.match(shell, /<VoiceCheckModal drive=\{drive\}/);
   assert.match(shell, /<DashboardAssistantEntry[\s\S]*?onPress=\{openAssistant\}/);
-  assert.match(shell, /const launch = snapshotAssistantLaunch\(assistantMode, PHONE_CONNECTED_READINESS\)/);
+  assert.match(shell, /openSensi\(drive.safety, setAssistantOpen\)/);
   assert.match(shell, /<SafeAreaView style=\{st.root\}/);
   assert.match(shell, /\['drive', 'Drive'\]/); assert.match(shell, /\['history', 'History'\]/); assert.match(shell, /\['settings', 'Settings'\]/);
   assert.doesNotMatch(shell, /DriverAssistant[^>]*key=/);
 });
-test('assistant entry reports passive capabilities, respects the guarded pilot gate and never starts audio during checks', () => {
+test('assistant entry is passive and never checks legacy providers or starts audio', () => {
   const entry = source('components/DashboardAssistantEntry.tsx');
-  assert.match(entry, /checkDriverAssistantAvailability\(\)/);
-  assert.match(entry, /checkOfflineSpeechCapability\('en-US'\)/);
-  assert.match(entry, /selectAssistantVoice\(voices, preferred\)/);
-  assert.match(entry, /PHONE_CONNECTED_READINESS.verified \? 'Development pilot' : 'Unavailable · see Sensi Settings'/);
-  assert.match(entry, /const disabled = props.disabled \|\| \(props.mode === 'connected' && !PHONE_CONNECTED_READINESS.verified\)/);
-  assert.doesNotMatch(entry, /listenOffline\(|speakLocal\(|interpretConversation\(|functions.invoke\(/);
-  assert.match(entry, /current && request === version/);
+  assert.match(entry, /Sensi responds automatically to safety events/);
+  assert.match(entry, /const disabled = props.disabled/);
+  assert.doesNotMatch(entry, /checkDriverAssistantAvailability|checkOfflineSpeechCapability|selectAssistantVoice|listenOffline\(|speakLocal\(|interpretConversation\(|functions.invoke\(/);
 });
 test('BrandMark leaves an explicit approved-asset integration point without a substitute image', () => {
   const brand = source('components/BrandMark.tsx');
@@ -105,7 +101,7 @@ test('details and back use presentation state only while session and safety rema
   assert.doesNotMatch(detail, /useDriveSession\(|startSession\(|endSession\(|speakLocal\(|listenOffline\(/);
   const shell = source('components/SmartWheelScreen.tsx');
   assert.match(shell, /<VitalsDetailView drive=\{drive\}/);
-  assert.match(shell, /!drive.safety.check && !drive.safety.demo && !assistantOpen/);
+  assert.match(shell, /!assistantOpen \? <DraggableSensiLauncher/);
   const entry = source('components/DashboardAssistantEntry.tsx');
   assert.match(entry, /accessibilityLabel="Driver Assistant"/);
   assert.match(entry, /width: 58, height: 58, borderRadius: 29/);
@@ -121,9 +117,9 @@ test('header uses a compact named selector with the original switching handler',
   assert.match(shell, /switch: \{ minHeight: 44, minWidth: 44/);
 });
 test('Sensi introduction is interface-only and wheel control remains separate from branding', () => {
-  const assistant = source('components/DriverAssistant.tsx');
-  const presentation = assistant.slice(assistant.indexOf('if (!props.visible) return null;'));
-  assert.match(presentation, />Sensi<\/Text>/);
+  const assistant = source('components/SensiSafetyConversation.tsx');
+  const presentation = assistant;
+  assert.match(presentation, /Sensi · Safety check/);
   assert.match(presentation, /<SensiConversationThread/);
   const thread = source('components/SensiConversationThread.tsx');
   assert.match(thread, /Hi, I’m Sensi, your driving assistant/);
@@ -139,12 +135,12 @@ test('Sensi introduction is interface-only and wheel control remains separate fr
 test('launcher overlays the home viewport above tabs with an icon-only target and accessible gated status', () => {
   const shell = source('components/SmartWheelScreen.tsx');
   assert.ok(shell.indexOf('<DashboardAssistantEntry') < shell.indexOf('<View style={st.tabs}>'));
-  assert.match(shell, /!drive.safety.check && !drive.safety.demo && !assistantOpen/);
+  assert.match(shell, /!assistantOpen \? <DraggableSensiLauncher/);
   const entry = source('components/DashboardAssistantEntry.tsx');
   assert.doesNotMatch(entry, /Dismiss Sensi greeting|<Text/);
   assert.match(shell, /<DraggableSensiLauncher defaultAnchor=\{vitalsAnchor\}>/);
   assert.doesNotMatch(shell, /SENSI_RAIL_WIDTH|paddingRight:/);
   assert.match(shell, /<AppearanceMenu \/>/);
   assert.doesNotMatch(entry, /CONNECTED_PILOT_STATUS|CONNECTED_UNAVAILABLE/);
-  assert.match(entry, /Unavailable · see Sensi Settings/);
+  assert.match(entry, /Sensi responds automatically to safety events/);
 });

@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { AssistantConversation, type AssistantDeps, type ConversationState } from '../modules/local-foundation-models/assistantConversation.ts';
-import type { OfflineTranscription } from '../modules/local-foundation-models/index.ts';
+import type { OfflineTranscription } from './retired-ai/modules/local-foundation-models/index.ts';
 import { AudioOwnership } from '../lib/voice/audioOwnership.ts';
 import { nearThreadBottom, playbackLabel } from '../lib/assistant/threadPresentation.ts';
 const capture = (text: string): OfflineTranscription => ({ status: 'success', transcript: text, finalTranscript: text,

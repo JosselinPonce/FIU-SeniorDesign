@@ -1,5 +1,5 @@
 import { AssistantConversation, type AssistantDeps, type ConversationState } from '../../modules/local-foundation-models/assistantConversation.ts';
-import { connectedAdvisory } from './connectedProvider.ts';
+import { connectedAdvisory } from './advisoryContract.ts';
 import type { LocalPlaybackResult, LocalVoice, OfflineTranscription } from '../../modules/local-foundation-models/index.ts';
 import type { AudioOwnership } from '../voice/audioOwnership.ts';
 

@@ -1,10 +1,11 @@
+// Historical test fixture only. Never import from application code.
 import { useEffect, useRef, useState } from 'react';
 import { Text, TextInput, View } from 'react-native';
-import { sensiSessionStorage, sensiSupabase } from '../lib/assistant/sensiSupabase';
-import { signOutDemo } from '../lib/assistant/demoAuth';
-import { sensiSignInEnabled, signInConfirmedPilot } from '../lib/assistant/pilotSignIn';
-import { useTheme } from '../lib/theme/ThemeProvider';
-import { Btn, Card, SectionTitle } from './ui';
+import { sensiSessionStorage, sensiSupabase } from '../../../lib/assistant/sensiSupabase';
+import { signOutDemo } from '../../../lib/assistant/demoAuth';
+import { sensiSignInEnabled, signInConfirmedPilot } from '../../../lib/assistant/pilotSignIn';
+import { useTheme } from '../../../lib/theme/ThemeProvider';
+import { Btn, Card, SectionTitle } from '../../../components/ui';
 
 const enabled = sensiSignInEnabled(__DEV__, process.env.EXPO_PUBLIC_SENSI_PILOT_SIGN_IN);
 

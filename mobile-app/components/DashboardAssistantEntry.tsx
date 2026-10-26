@@ -1,53 +1,16 @@
-import { useEffect, useState } from 'react';
-import { AppState, Platform, Pressable, View } from 'react-native';
+import { Pressable, View } from 'react-native';
 import { useTheme } from '../lib/theme/ThemeProvider';
 import type { AssistantMode } from '../lib/assistant/mode';
-import { PHONE_CONNECTED_READINESS } from '../lib/assistant/phoneConnectedReadiness';
-import { checkDriverAssistantAvailability, checkOfflineSpeechCapability, listLocalVoices } from '../modules/local-foundation-models';
-import { assertAssistantPlatform, assertAssistantCapabilities, selectAssistantVoice } from '../modules/local-foundation-models/conversationPolicy';
-import { getSetting } from '../lib/db/repositories';
-
-/** Passive capability checks only: no microphone, playback, inference or cloud request. */
+/** Passive event-only Sensi entry. Never checks or invokes a legacy AI provider. */
 export function DashboardAssistantEntry(props: {
   mode: AssistantMode | null; language: string; disabled: boolean; error: string; onPress(): void;
 }) {
   const { tokens } = useTheme();
-  const [availability, setAvailability] = useState<{ key: string; available: boolean; message: string } | null>(null);
-  const key = `${props.mode}:${props.language}`;
-  useEffect(() => {
-    let current = true;
-    let version = 0;
-    async function refresh() {
-      const request = ++version;
-      if (props.mode !== 'local') return;
-      setAvailability(null);
-      try {
-        assertAssistantPlatform(Platform.OS, props.language);
-        const [model, speech, voices, preferred] = await Promise.all([
-          checkDriverAssistantAvailability(), checkOfflineSpeechCapability('en-US'), listLocalVoices(), getSetting('voice:en'),
-        ]);
-        assertAssistantCapabilities(model, speech);
-        selectAssistantVoice(voices, preferred);
-        if (speech.speechPermission === 'denied' || speech.speechPermission === 'restricted' || speech.microphonePermission === 'denied')
-          throw new Error('Enable microphone and speech access in iOS Settings.');
-        if (current && request === version) setAvailability({ key, available: true, message: 'Available · speech permissions checked when starting' });
-      } catch (error) {
-        if (current && request === version) setAvailability({ key, available: false,
-          message: error instanceof Error ? error.message : 'Availability could not be verified. Open Settings to check your voice setup.' });
-      }
-    }
-    void refresh();
-    const subscription = AppState.addEventListener('change', state => { if (state === 'active') void refresh(); });
-    return () => { current = false; version++; subscription.remove(); };
-  }, [key, props.mode, props.language]);
-  const checked = availability?.key === key ? availability : null;
-  const status = props.mode === 'connected' ? (PHONE_CONNECTED_READINESS.verified ? 'Development pilot' : 'Unavailable · see Sensi Settings')
-    : props.mode === 'core' ? 'Tools in Settings'
-    : props.mode === 'local' ? checked ? checked.available ? 'Ready' : 'Unavailable · see Settings' : 'Checking availability…' : 'Loading Assistant Mode…';
-  const disabled = props.disabled || (props.mode === 'connected' && !PHONE_CONNECTED_READINESS.verified) || checked?.available === false;
-  const modeLabel = props.mode === 'core' ? 'CORE' : props.mode === 'connected' ? 'CONNECTED AI' : props.mode === 'local' ? 'LOCAL AI' : 'Mode loading';
+  const modeLabel = 'Gemma on-device';
+  const status = 'Open Sensi. Sensi responds automatically to safety events';
+  const disabled = props.disabled;
   return (
-    <Pressable accessibilityRole="button" accessibilityLabel="Driver Assistant" accessibilityHint={`Open Sensi. ${modeLabel}. ${status}. Drag in any direction to reposition.`}
+    <Pressable accessibilityRole="button" accessibilityLabel="Driver Assistant" accessibilityHint={`${modeLabel}. ${status}. Drag in any direction to reposition.`}
       accessibilityState={{ disabled }} disabled={disabled} onPress={props.onPress}
       style={({ pressed }) => ({ width: 58, height: 58, borderRadius: 29, alignItems: 'center', justifyContent: 'center',
         backgroundColor: disabled ? tokens.disabledSurface : tokens.primary, opacity: pressed ? .85 : 1,

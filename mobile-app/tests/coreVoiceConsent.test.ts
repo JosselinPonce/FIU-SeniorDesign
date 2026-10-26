@@ -47,15 +47,15 @@ for (const [name, change] of Object.entries({
   });
 }
 
-test('CORE partial direct request may guide wellness but cannot skip final consent', async () => {
+test('CORE partial direct request cannot classify wellness or skip final consent', async () => {
   let count = 0;
   const check = new VoiceCheck({ speak: async () => {}, cancel: () => {},
     listen: async (_l, _m, _h, id) => ++count === 1
       ? recognitionEvidence(id, { status: 'timeout', transcript: 'call my mom', isFinal: false }) : null,
   }, 'en', '', { contactAvailable: true });
   const result = await check.run('bpm_high');
-  assert.equal(result.outcome, 'not_ok');
-  assert.equal(result.contactCall, 'unconfirmed_offer');
+  assert.equal(result.outcome, 'no_response');
+  assert.equal(result.contactCall, 'not_requested');
   assert.equal(check.authorizesContact(result), false);
 });
 

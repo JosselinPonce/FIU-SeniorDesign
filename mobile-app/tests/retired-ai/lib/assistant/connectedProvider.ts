@@ -1,3 +1,4 @@
+// Historical test fixture only. Never import from application code.
 import type { AssistantProvider, GenerationInput } from './provider.ts';
 import { CONNECTED_BACKEND_READINESS, CONNECTED_UNAVAILABLE, type ConnectedReadiness } from './connectedReadiness.ts';
 import type { DriverInterpretationResponse } from '../../modules/local-foundation-models/index.ts';

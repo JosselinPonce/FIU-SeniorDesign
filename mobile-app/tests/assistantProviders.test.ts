@@ -2,14 +2,14 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { URL as NodeURL } from 'node:url';
-import { connectedAssistantProvider, connectedAdvisory, connectedRequest, type ConnectedClient, type ConnectedSession } from '../lib/assistant/connectedProvider.ts';
-import { CONNECTED_BACKEND_READINESS } from '../lib/assistant/connectedReadiness.ts';
-import { connectedPilotReadiness, connectedUnavailableMessage, CONNECTED_PILOT_UNAVAILABLE } from '../lib/assistant/connectedPilotPolicy.ts';
-import { localAssistantProvider, selectAssistantProvider, type GenerationInput } from '../lib/assistant/provider.ts';
-import { snapshotAssistantLaunch, routeAssistantLaunch } from '../lib/assistant/mode.ts';
+import { connectedAssistantProvider, connectedAdvisory, connectedRequest, type ConnectedClient, type ConnectedSession } from './retired-ai/lib/assistant/connectedProvider.ts';
+import { CONNECTED_BACKEND_READINESS } from './retired-ai/lib/assistant/connectedReadiness.ts';
+import { connectedPilotReadiness, connectedUnavailableMessage, CONNECTED_PILOT_UNAVAILABLE } from './retired-ai/lib/assistant/connectedPilotPolicy.ts';
+import { localAssistantProvider, selectAssistantProvider, type GenerationInput } from './retired-ai/lib/assistant/provider.ts';
+import { snapshotAssistantLaunch, routeAssistantLaunch } from './retired-ai/lib/assistant/mode.ts';
 import { AssistantConversation, type ConversationState, type AssistantDeps } from '../modules/local-foundation-models/assistantConversation.ts';
 import { assertAssistantSpeechCapabilities } from '../modules/local-foundation-models/conversationPolicy.ts';
-import type { OfflineTranscription, DriverInterpretationResponse } from '../modules/local-foundation-models/index.ts';
+import type { OfflineTranscription, DriverInterpretationResponse } from './retired-ai/modules/local-foundation-models/index.ts';
 import { validateRequest } from '../supabase/functions/driver-assistant/contracts.ts';
 
 const userId = '11111111-1111-4111-8111-111111111111';
@@ -200,9 +200,9 @@ test('account switch or stale session token revokes pending reply and conversati
 
 test('Connected speech capability does not depend on model availability; phone wiring uses only the guarded build readiness', () => {
   assert.doesNotThrow(() => assertAssistantSpeechCapabilities({ supportsOnDeviceRecognition: true, recognizerAvailable: true, message: 'ready' }));
-  const source = readFileSync(new NodeURL('../modules/local-foundation-models/index.ts', import.meta.url), 'utf8').split('export function checkDriverAssistantSpeechAvailability')[1];
+  const source = readFileSync(new NodeURL('./retired-ai/modules/local-foundation-models/index.ts', import.meta.url), 'utf8').split('export function checkDriverAssistantSpeechAvailability')[1];
   assert.ok(source); assert.doesNotMatch(source, /checkAvailability|interpretConversation|FoundationModelsAvailability/);
-  const wiring = readFileSync(new NodeURL('../lib/assistant/phoneAssistantProvider.ts', import.meta.url), 'utf8');
+  const wiring = readFileSync(new NodeURL('./retired-ai/lib/assistant/phoneAssistantProvider.ts', import.meta.url), 'utf8');
   assert.match(wiring, /connectedAssistantProvider\(sensiSupabase/);
   assert.match(wiring, /readiness: PHONE_CONNECTED_READINESS/);
   assert.doesNotMatch(wiring, /EXPO_PUBLIC|createClient|verified: true/);

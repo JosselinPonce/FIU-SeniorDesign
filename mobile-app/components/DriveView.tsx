@@ -1,3 +1,5 @@
+import { SafetyTypedResponse } from './SafetyTypedResponse';
+import { monitoringMessage } from '../lib/analysis/sensorContinuity';
 import { useEffect, useRef, useState } from 'react';
 import { CompactVitalCard } from './CompactVitalCard';
 import { InformationButton } from './Information';
@@ -30,7 +32,7 @@ const WATCH_TEXT: Record<string, string> = {
 const OUTCOME_TEXT: Record<string, string> = {
   ok: 'you said you were OK',
   not_ok: 'you said you were not OK',
-  no_response: 'no answer — emergency recorded',
+  no_response: 'no confirmed answer',
 };
 
 /** Phone → Pi → wheel sensor, each hop with its own state. */
@@ -111,6 +113,7 @@ export function DriveView(props: { drive: Drive; busy: boolean; guard: (fn: () =
       onScroll={({ nativeEvent }) => { scrollOffset.current = nativeEvent.contentOffset.y; reportHeading(); }}>
       <Chain drive={d} />
       <View style={{ gap: 8, paddingHorizontal: 2 }}>
+        <Text accessibilityLiveRegion="polite" style={st.subtle}>{monitoringMessage(sf.monitoring)}</Text>
         {!d.hasActiveSession ? (
           <>
             <Btn
@@ -220,7 +223,8 @@ export function DriveView(props: { drive: Drive; busy: boolean; guard: (fn: () =
           </Text>
         ) : null}
         {sf.last?.handoff ? <Text style={st.body}>{
-          sf.last.handoff === 'opened' ? 'Phone interface opened for the saved emergency contact. Call connection is not confirmed.'
+          sf.last.handoff === 'simulated' ? 'Simulation complete. In a real emergency, DriveSense would open the phone interface.'
+          : sf.last.handoff === 'opened' ? 'Phone interface opened for the saved emergency contact. Call connection is not confirmed.'
           : sf.last.handoff === 'missing_contact' ? 'No emergency contact number is saved. No phone interface was opened.'
           : sf.last.handoff === 'invalid_phone' ? 'The saved emergency contact number is invalid. Update the driver profile.'
           : sf.last.handoff === 'open_failed' ? 'Could not open the phone interface. Use the call buttons below or your phone.'
@@ -228,7 +232,7 @@ export function DriveView(props: { drive: Drive; busy: boolean; guard: (fn: () =
         }</Text> : null}
         {sf.last?.result.contactCall === 'declined_offer' ? <Text style={st.body}>You declined the phone handoff.</Text> : null}
         {sf.last?.result.contactCall === 'unconfirmed_offer' ? <Text style={st.body}>No clear call consent was received. The phone interface was not opened.</Text> : null}
-        {sf.last && sf.last.result.outcome !== 'ok' ? (
+        {sf.last && !sf.last.simulation && sf.last.result.outcome !== 'ok' ? (
           <View style={st.callRow}>
             {d.driver?.emergency_phone ? (
               <Btn
@@ -269,6 +273,7 @@ export function VoiceCheckModal(props: { drive: Drive }) {
   const d = props.drive;
   const sf = d.safety;
   const offer = sf.check?.question === 'contact_offer';
+  if (sf.conversation) return null; // Local/Connected use the shared Sensi safety view.
   return (
     <Modal visible={sf.check !== null} transparent animationType="fade">
         <View style={st.scrim}>
@@ -281,17 +286,19 @@ export function VoiceCheckModal(props: { drive: Drive }) {
             <View style={st.phase}>
               <View style={[st.phaseDot, { backgroundColor: sf.check?.phase === 'listening' ? C.heart : C.brand }]} />
               <Text style={st.phaseText}>
-                {sf.check?.phase === 'listening' ? 'Listening — just say "yes" or "no"' : 'Speaking…'}
+                {sf.check?.fallbackText ? 'Audio unavailable — use the buttons below' : sf.check?.phase === 'listening' ? 'Listening — just say "yes" or "no"' : 'Speaking…'}
               </Text>
             </View>
+            {sf.check?.fallbackText ? <Text style={st.alertBody}>{sf.check.fallbackText}</Text> : null}
             <Text style={st.alertHint}>
               You can answer out loud or tap below. The phone interface opens only after a call request or agreement.
               Simulated vitals demos never open it. If you need emergency help, pull over safely and call 911.
             </Text>
-            <Btn title={offer ? "Open phone interface" : "I'm OK"} onPress={() => d.respondAlert(offer ? 'call_yes' : 'ok')} />
-            <Pressable onPress={() => d.respondAlert(offer ? 'call_no' : 'not_ok')} style={st.unwell} accessibilityRole="button">
+            <Btn title={offer ? "Open phone interface" : "I'm OK"} onPress={() => sf.check && d.respondAlert(offer ? 'call_yes' : 'ok', { episodeId: sf.check.episode.id, question: sf.check.question, captureId: sf.check.captureId })} />
+            <Pressable onPress={() => sf.check && d.respondAlert(offer ? 'call_no' : 'not_ok', { episodeId: sf.check.episode.id, question: sf.check.question, captureId: sf.check.captureId })} style={st.unwell} accessibilityRole="button">
               <Text style={st.unwellText}>{offer ? "No thanks" : "I'm not OK"}</Text>
             </Pressable>
+            {sf.check ? <SafetyTypedResponse scope={{ episodeId: sf.check.episode.id, question: sf.check.question, captureId: sf.check.captureId }} submit={d.respondAlertText} /> : null}
           </View>
         </View>
     </Modal>

@@ -1,9 +1,10 @@
+import { recognitionEvidence } from '../lib/voice/coreRecognition.ts';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
 import { readFileSync } from 'node:fs';
 import { URL as NodeURL } from 'node:url';
-import { assistantModeSettings, ASSISTANT_MODE_KEY, ASSISTANT_MODES, snapshotAssistantLaunch, routeAssistantLaunch } from '../lib/assistant/mode.ts';
+import { assistantModeSettings, ASSISTANT_MODE_KEY, ASSISTANT_MODES, snapshotAssistantLaunch, routeAssistantLaunch } from './retired-ai/lib/assistant/mode.ts';
 import { SafetyController, type SafetyState } from '../lib/analysis/safetyController.ts';
 
 function settings() {
@@ -26,7 +27,7 @@ test('existing installations default to Local AI and selections persist in app_s
     assert.equal(await f.modes.load(), 'local');
     for (const { key } of ASSISTANT_MODES) {
       await f.modes.save(key);
-      assert.equal(await assistantModeSettings(f.store).load(), key);
+      assert.equal(await assistantModeSettings(f.store).load(), key === 'connected' ? 'local' : key);
       assert.equal(await f.store.getSetting(ASSISTANT_MODE_KEY), key);
     }
     assert.equal(await f.store.getSetting('storage_mode'), 'full');
@@ -52,7 +53,7 @@ test('Core routes to existing tools, Local routes to its assistant, Connected in
   for (const { key } of ASSISTANT_MODES) routeAssistantLaunch(snapshotAssistantLaunch(key), routes);
   assert.deepEqual(calls, ['core-tools', 'local']);
   assert.equal(snapshotAssistantLaunch('connected').destination, 'unavailable');
-  assert.match(ASSISTANT_MODES.find(m => m.key === 'connected')!.title, /Not configured/);
+  assert.match(ASSISTANT_MODES.find(m => m.key === 'connected')!.title, /Legacy \/ inactive/);
 });
 
 test('an interaction snapshot remains Local after the stored mode changes and contains no consent', async () => {
@@ -70,10 +71,10 @@ test('an interaction snapshot remains Local after the stored mode changes and co
   } finally { f.db.close(); }
 });
 
-test('live warning orchestration never imports or reads optional assistant selection', () => {
+test('mode-aware safety presentation never invokes a model or reads model output for safety decisions', () => {
   for (const path of ['lib/hooks/useDriveSession.ts', 'lib/analysis/safetyController.ts', 'lib/voice/voiceCheck.ts', 'lib/voice/speechIO.ts']) {
     const source = readFileSync(new NodeURL(`../${path}`, import.meta.url), 'utf8');
-    assert.doesNotMatch(source, /assistant_mode|assistantMode|assistant\/mode/, path);
+    assert.doesNotMatch(source, /phoneAssistantProvider|connectedAssistantProvider|\.generate\(|functions\.invoke\(|interpretConversation\(/, path);
   }
 });
 
@@ -90,7 +91,8 @@ test('each persisted mode leaves real frame-triggered warning, incident and thre
       let resolve!: () => void;
       const done = new Promise<void>(r => { resolve = r; });
       const controller = new SafetyController({
-        voiceIO: () => ({ speak: async text => { spoken.push(text); }, listen: async () => "I'm fine", cancel: () => {} }),
+        assistantMode: () => key,
+        voiceIO: () => ({ speak: async text => { spoken.push(text); }, listen: async (_l, _m, _h, id) => recognitionEvidence(id, { status: 'success', transcript: "I'm fine", finalTranscript: "I'm fine", isFinal: true, finalResultReceived: true }), cancel: () => {} }),
         save: async row => { saved.push(row); }, saveAck: async (_, ack) => { acks.push(ack); },
         haptic: () => {}, newId: () => 'episode',
         onChange: state => { states.push(state); if (state.last) resolve(); },

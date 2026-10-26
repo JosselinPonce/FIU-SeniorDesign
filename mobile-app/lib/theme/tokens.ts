@@ -2,6 +2,7 @@
 export type ThemeName = 'light' | 'dark';
 export type ThemePreference = ThemeName | 'system';
 export type ThemeTokens = Readonly<{
+  switchOn: string; switchOff: string; switchThumb: string;
   heartAccent: string; oxygenAccent: string; heartText: string; oxygenText: string; connected: string; metricChartSurface: string; metricChartBand: string; graphite: string; pearl: string; accent: string; background: string; surface: string; surfaceMuted: string; text: string; textSecondary: string;
   textMuted: string; border: string; primary: string; onPrimary: string; disabledSurface: string;
   disabledText: string; chartTrace: string; chartSecondary: string; chartBackground: string;
@@ -9,6 +10,7 @@ export type ThemeTokens = Readonly<{
   danger: string; dangerSurface: string; dangerButton: string; onDanger: string; shadow: string;
 }>;
 export const light: ThemeTokens = Object.freeze({
+  switchOn: '#2D9259', switchOff: '#697580', switchThumb: '#FFFFFF',
   heartAccent: '#D69B8D', oxygenAccent: '#28A9E0', heartText: '#A74740', oxygenText: '#006B91', connected: '#25734A', metricChartSurface: '#30373A', metricChartBand: '#465257',
   graphite: '#30373A', pearl: '#F6F4F0', accent: '#D69B8D', background: '#F6F4F0', surface: '#FFFFFF', surfaceMuted: '#ECE8E1', text: '#30373A',
   textSecondary: '#505359', textMuted: '#62666D', border: '#DCD7CF', primary: '#30373A',
@@ -18,6 +20,7 @@ export const light: ThemeTokens = Object.freeze({
   danger: '#9B2929', dangerSurface: '#FBE5E5', dangerButton: '#9B2929', onDanger: '#FFFFFF', shadow: '#000000',
 });
 export const dark: ThemeTokens = Object.freeze({
+  switchOn: '#2D9259', switchOff: '#71808E', switchThumb: '#FFFFFF',
   heartAccent: '#F28F87', oxygenAccent: '#28A9E0', heartText: '#F28F87', oxygenText: '#28A9E0', connected: '#74C69D', metricChartSurface: '#1C252B', metricChartBand: '#35434B',
   graphite: '#30373A', pearl: '#F6F4F0', accent: '#D69B8D', background: '#1C252B', surface: '#29343B', surfaceMuted: '#35424B', text: '#F6F4F0',
   textSecondary: '#DCD7CF', textMuted: '#CBC7C0', border: '#4E5D65', primary: '#DCD7CF',

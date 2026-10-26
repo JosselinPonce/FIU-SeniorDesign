@@ -3,6 +3,9 @@
 # dependencies
 node_modules/
 
+# On-device model weights are provisioned into app-private storage, never Git.
+*.gguf
+
 # Expo
 .expo/
 dist/

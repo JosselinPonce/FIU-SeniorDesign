@@ -1,14 +1,15 @@
-import { useTheme } from '../../lib/theme/ThemeProvider';
-import { presentationColors, type ThemeTokens } from '../../lib/theme/tokens';
+// Historical test fixture only. Never import from application code.
+import { useTheme } from '../../../../lib/theme/ThemeProvider';
+import { presentationColors, type ThemeTokens } from '../../../../lib/theme/tokens';
 import { useEffect, useRef, useState } from 'react';
 import { Modal, SafeAreaView, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
-import { Btn } from '../../components/ui';
-import { OfflineSpeechTest } from './OfflineSpeechTest';
+import { Btn } from '../../../../components/ui';
+import { OfflineSpeechTest } from '../../../../modules/local-foundation-models/OfflineSpeechTest';
 import { VoiceConversationTest } from './VoiceConversationTest';
 import {
   cancelDriverInterpretation, checkFoundationModelsAvailability, interpretDriverResponse,
   type DriverInterpretationResponse, type FoundationModelsAvailability,
-} from './index';
+} from '.';
 
 /** Temporary development-only entry, independent of driver/session navigation. */
 export function LocalAITest(props: { onAudioBusyChange?: (busy: boolean) => void }) {

@@ -10,11 +10,11 @@ test('home launcher renders only the existing accessible circular icon, with gat
   assert.doesNotMatch(render, /<Text|greeting|tooltip|Dismiss/);
   assert.doesNotMatch(entry,/sensiGreeting|useSyncExternalStore/);
   assert.match(render,/accessibilityLabel="Driver Assistant"/);
-  assert.match(render,/accessibilityHint=\{`Open Sensi\. \$\{modeLabel\}\. \$\{status\}/);
+  assert.match(render,/accessibilityHint=\{`\$\{modeLabel\}\. \$\{status\}/);
   assert.match(render,/accessibilityState=\{\{ disabled \}\} disabled=\{disabled\} onPress=\{props.onPress\}/);
   assert.match(render,/width: 58, height: 58, borderRadius: 29/);
   assert.match(render,/shadowOpacity: .15/);
-  assert.match(entry,/props.mode === 'connected' && !PHONE_CONNECTED_READINESS.verified/);
+  assert.match(entry,/Sensi responds automatically to safety events/);
 });
 test('floating wrapper measures the compact icon and retains free dragging, persistence and touch pass-through', () => {
   const wrapper=source('components/DraggableSensiLauncher.tsx');
@@ -25,6 +25,6 @@ test('floating wrapper measures the compact icon and retains free dragging, pers
   assert.match(wrapper,/clampPosition\(origin.current.x \+ gesture.dx, origin.current.y \+ gesture.dy/);
   assert.match(wrapper,/repo.setSetting\('sensi:launcher-position', JSON.stringify\(fraction.current\)\)/);
   const shell=source('components/SmartWheelScreen.tsx');
-  assert.match(shell,/!drive.safety.check && !drive.safety.demo && !assistantOpen/);
+  assert.match(shell,/!assistantOpen \? <DraggableSensiLauncher/);
   assert.equal((shell.match(/<DashboardAssistantEntry /g)??[]).length,1);
 });

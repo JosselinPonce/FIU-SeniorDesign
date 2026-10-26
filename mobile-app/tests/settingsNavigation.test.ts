@@ -6,11 +6,14 @@ import { createRequire } from 'node:module';
 import ts from 'typescript';
 import { SETTINGS_CATEGORIES, settingsTitle } from '../lib/ui/settingsNavigation.ts';
 import { voiceDisplayLabel } from '../lib/ui/voiceLabel.ts';
-import { light, presentationColors } from '../lib/theme/tokens.ts';
-import { ASSISTANT_MODES } from '../lib/assistant/mode.ts';
+import { light, dark, presentationColors } from '../lib/theme/tokens.ts';
+import { settingsSwitchColors } from '../lib/ui/settingsSwitch.ts';
+import { REHEARSAL_SAFETY_REVISION } from '../lib/voice/phoneHandoff.ts';
+import { ASSISTANT_MODES } from './retired-ai/lib/assistant/mode.ts';
 import { sensiSignInEnabled } from '../lib/assistant/pilotSignIn.ts';
+import { simulationCompletion } from '../lib/assistant/safetyConversation.ts';
 const require = createRequire(import.meta.url);
-function harness(development: boolean, active = false) {
+function harness(development: boolean, active = false, theme = light) {
   const state = new Map<number, any>(); let index = 0; let back: (() => boolean) | undefined;
   const calls: unknown[] = [];
   const host = Object.fromEntries(['Pressable','ScrollView','Switch','Text','View'].map(n => [n,n]));
@@ -24,11 +27,14 @@ function harness(development: boolean, active = false) {
       useEffect: (fn: () => void) => fn() },
     'react/jsx-runtime': require('react/jsx-runtime'),
     'react-native': { ...host, Alert: { alert: forbidden }, BackHandler: { addEventListener: (_: string, fn: () => boolean) => { back = fn; return { remove() {} }; } }, StyleSheet: { create: (s: any) => s } },
-    '../lib/theme/ThemeProvider': { useTheme: () => ({ tokens: light, colors: presentationColors(light), preference: 'light', setPreference: (v: string) => calls.push(['appearance',v]) }) },
+    '../lib/theme/ThemeProvider': { useTheme: () => ({ tokens: theme, colors: presentationColors(theme), preference: 'light', setPreference: (v: string) => calls.push(['appearance',v]) }) },
+    '../lib/ui/settingsSwitch': { settingsSwitchColors },
+    '../lib/voice/phoneHandoff': { REHEARSAL_SAFETY_REVISION },
     '../lib/theme/tokens': { presentationColors }, '../lib/ui/settingsNavigation': { SETTINGS_CATEGORIES, settingsTitle },
     '../lib/db/sync': { pendingCount: forbidden, syncToSupabase: forbidden }, '../lib/db/deletion': { wipeEverything: forbidden },
     './ui': Object.fromEntries(['Btn','Card','Row','SectionTitle'].map(n => [n,n])),
     '../lib/assistant/mode': { ASSISTANT_MODES }, '../lib/assistant/pilotSignIn': { sensiSignInEnabled },
+    '../lib/assistant/safetyConversation': { simulationCompletion },
     '../lib/assistant/phoneConnectedReadiness': { PHONE_CONNECTED_READINESS: { verified: false } },
     '../lib/assistant/connectedPilotPolicy': { CONNECTED_PILOT_STATUS: 'pilot' },
   };
@@ -60,15 +66,15 @@ test('landing has five categories and secondary Advanced; category and hardware 
   f.render(); assert.equal(f.back(), false);
   assert.equal(f.calls.length, 0);
 });
-test('category controls keep existing mode, profile, storage and connection callbacks', async () => {
+test('category controls retain profile/storage/connection callbacks without a provider selector', async () => {
   const f = harness(true); let nodes = f.render();
   assert.equal(nodes.some(n => n.type === 'SectionTitle' && n.props.children === 'Appearance'),false);
   function open(title: string) { f.render().find(n => n.props?.accessibilityLabel === title).props.onPress(); return f.render(); }
   nodes = open('Driver Profile'); nodes.find(n => n.props?.title === 'Edit Driver Profile').props.onPress(); f.back();
   nodes = open('Data & Privacy'); nodes.find(n => n.type === 'Pressable' && n.key === 'full').props.onPress(); f.back();
-  nodes = open('Sensi Assistant'); nodes.find(n => n.type === 'Pressable' && n.key === 'connected').props.onPress(); f.back();
+  nodes = open('Sensi Assistant'); assert.equal(nodes.some(n => n.type === 'Pressable' && n.key === 'connected'), false); assert.ok(nodes.some(n => n.type === 'SectionTitle' && n.props.children === 'Sensi · Gemma on-device')); f.back();
   nodes = open('Connections'); nodes.find(n => n.type === 'Row' && n.props.label === 'Auto-connect to the Pi').props.value.props.onValueChange(false);
-  assert.deepEqual(f.calls, ['edit',['storage','full'],['mode','connected'],'disconnect',['auto',false]]);
+  assert.deepEqual(f.calls, ['edit',['storage','full'],'disconnect',['auto',false]]);
 });
 test('advanced preserves development gates and simulator availability; active-drive recording lock survives movement', () => {
   for (const development of [true,false]) {
@@ -89,4 +95,28 @@ test('voice display label includes tier once without changing identifiers', () =
   assert.equal(voiceDisplayLabel('Zoe (Premium)','Premium'),'Zoe (Premium)');
   assert.equal(voiceDisplayLabel('Zoe','Premium'),'Zoe (Premium)');
   assert.equal(voiceDisplayLabel('Voice (Enhanced)','Enhanced'),'Voice (Enhanced)');
+});
+
+for (const theme of [light, dark]) test(`${theme === light ? 'Light' : 'Dark'} Connection and Link Health switches share visible green styling and retain callbacks/state`, () => {
+  const f = harness(true, false, theme);
+  f.render().find(n => n.props?.accessibilityLabel === 'Connections').props.onPress();
+  let nodes = f.render();
+  const auto = nodes.find(n => n.type === 'Row' && n.props.label === 'Auto-connect to the Pi').props.value;
+  const direct = nodes.find(n => n.type === 'Switch');
+  assert.equal(auto.props.value, true); assert.equal(direct.props.value, false);
+  for (const control of [auto, direct]) {
+    assert.deepEqual(control.props.trackColor, { false: theme.switchOff, true: theme.switchOn });
+    assert.equal(control.props.thumbColor, theme.switchThumb);
+    assert.equal(control.props.ios_backgroundColor, theme.switchOff);
+  }
+  auto.props.onValueChange(false); f.props.autoOn = false;
+  direct.props.onValueChange(true);
+  nodes = f.render();
+  assert.equal(nodes.find(n => n.type === 'Row' && n.props.label === 'Auto-connect to the Pi').props.value.props.value, false);
+  assert.equal(nodes.find(n => n.type === 'Switch').props.value, true);
+  // Navigation must not reset the existing in-memory setting.
+  f.back(); f.render().find(n => n.props?.accessibilityLabel === 'Connections').props.onPress();
+  assert.equal(f.render().find(n => n.type === 'Switch').props.value, true);
+  f.render().find(n => n.type === 'Switch').props.onValueChange(false);
+  assert.deepEqual(f.calls, ['disconnect', ['auto', false], ['direct', true], ['direct', false]]);
 });

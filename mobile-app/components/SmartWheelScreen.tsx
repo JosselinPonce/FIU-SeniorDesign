@@ -1,3 +1,8 @@
+import { SENSI_MODE } from '../lib/assistant/mode';
+import { sensiSetup } from '../lib/onboarding/phone';
+import { SensiStandby } from './SensiStandby';
+import { openSensi, sensiDestination } from '../lib/assistant/sensiStandby';
+import { SensiSafetyConversation } from './SensiSafetyConversation';
 import { VitalsDetailView } from './VitalsDetailView';
 import { drivePageAfter, type DrivePage } from '../lib/ui/dashboard';
 import { BrandMark } from './BrandMark';
@@ -12,29 +17,25 @@ import { presentationColors, type ThemeTokens } from '../lib/theme/tokens';
  * Settings) under a header that always shows who is driving and lets you
  * switch drivers.
  */
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, Pressable, StyleSheet, Text, View, SafeAreaView, Platform, StatusBar as NativeStatusBar } from 'react-native';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { ActivityIndicator, Alert, AppState, Pressable, StyleSheet, Text, View, SafeAreaView, Platform, StatusBar as NativeStatusBar } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 
 import { useDriveSession } from '../lib/hooks/useDriveSession';
 import * as repo from '../lib/db/repositories';
 import type { DriverProfile } from '../lib/db/repositories';
 import { Btn } from './ui';
-import { appAudio } from '../lib/voice/audioOwnership';
-import { DriverAssistant } from './DriverAssistant';
-import { LocalAITest } from '../modules/local-foundation-models/LocalAITest';
 import { DriverPicker } from './DriverPicker';
 import { DriveView, VoiceCheckModal } from './DriveView';
 import { HistoryView } from './HistoryView';
 import { SettingsView } from './SettingsView';
 import { Onboarding } from './Onboarding';
-import { assistantModeSettings, routeAssistantLaunch, snapshotAssistantLaunch, type AssistantMode, type AssistantLaunch } from '../lib/assistant/mode';
 
-import { PHONE_CONNECTED_READINESS } from '../lib/assistant/phoneConnectedReadiness';
 
-const modeSettings = assistantModeSettings(repo);
 
 type Tab = 'drive' | 'history' | 'settings';
+
+const GemmaDiagnostic = __DEV__ ? (require('../modules/gemma-poc/GemmaDiagnostic') as typeof import('../modules/gemma-poc/GemmaDiagnostic')).GemmaDiagnostic : null;
 
 export default function SmartWheelScreen() {
   const { colors: C, tokens, name: themeName } = useTheme();
@@ -52,52 +53,29 @@ export default function SmartWheelScreen() {
   const [editingProfile, setEditingProfile] = useState<DriverProfile | null>(null);
   const [editOpening, setEditOpening] = useState(false);
   const [assistantOpen, setAssistantOpen] = useState(false);
-  const [assistantMode, setAssistantMode] = useState<AssistantMode | null>(null);
-  const [assistantModeError, setAssistantModeError] = useState('');
-  const [modeSaving, setModeSaving] = useState(false);
-  const modeSavePending = useRef(false);
-  const [assistantLaunch, setAssistantLaunch] = useState<AssistantLaunch | null>(null);
-  const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
-  const [diagnosticBusy, setDiagnosticBusy] = useState(false);
+  const [gemmaOpen, setGemmaOpen] = useState(false);
   const [autoOn, setAutoOn] = useState(true);
   useEffect(() => { if (drive.safety.check) setAssistantOpen(false); }, [drive.safety.check]);
-  useEffect(() => {
-    let current = true;
-    void modeSettings.load().then(mode => { if (current) setAssistantMode(mode); })
-      .catch(() => { if (current) setAssistantModeError('Could not load Assistant Mode. Please restart the app.'); });
-    return () => { current = false; };
-  }, []);
-
-  async function selectAssistantMode(mode: AssistantMode) {
-    if (!assistantMode || modeSavePending.current || assistantOpen || drive.safety.check || drive.safety.demo) return;
-    modeSavePending.current = true;
-    setModeSaving(true);
-    try {
-      await modeSettings.save(mode);
-      setAssistantMode(mode);
-      setAssistantModeError('');
-    } catch { setAssistantModeError('Could not save Assistant Mode. Your selection has not changed.'); }
-    finally { modeSavePending.current = false; setModeSaving(false); }
-  }
+  useEffect(() => { if (drive.hasActiveSession || drive.safety.check || drive.safety.demo) setGemmaOpen(false); }, [drive.hasActiveSession, drive.safety.check, drive.safety.demo]);
 
   function openAssistant() {
-    if (!assistantMode || modeSavePending.current || drive.safety.check || drive.safety.demo) return;
-    const launch = snapshotAssistantLaunch(assistantMode, PHONE_CONNECTED_READINESS);
-    routeAssistantLaunch(launch, {
-      coreTools: () => { setAssistantOpen(false); setAssistantLaunch(launch); setTab('settings'); },
-      local: () => { setAssistantLaunch(launch); setAssistantOpen(true); },
-      connected: () => { setAssistantLaunch(launch); setAssistantOpen(true); },
-    });
+    // Preserve any current safety modal; opening never restarts the check.
+    openSensi(drive.safety, setAssistantOpen);
   }
-  // First run: the introduction (null = still loading the flag).
-  const [showIntro, setShowIntro] = useState<boolean | null>(null);
+  // First run: mandatory, versioned setup. An already-active safety/recording
+  // lifecycle is never interrupted to re-run installation or launch checks.
+  const [setupState, setSetupState] = useState(sensiSetup.state);
+  const [reviewIntro, setReviewIntro] = useState(false);
+  const ongoing = drive.hasActiveSession || !!drive.safety.check || !!drive.safety.demo || drive.safety.monitoring === 'active';
+  const showIntro = reviewIntro || (setupState.booted && !setupState.ready && !ongoing);
+  useEffect(() => sensiSetup.subscribe(setSetupState), []);
   useEffect(() => {
-    void repo.getSetting('onboarded').then((v) => setShowIntro(v !== '1'));
+    // Covers returning-user launch checks before the onboarding view is mounted.
+    const app = AppState.addEventListener('change', next => { if (next !== 'active') sensiSetup.cancel(); });
+    return () => { app.remove(); };
   }, []);
-  const finishIntro = useCallback(() => {
-    setShowIntro(false);
-    void repo.setSetting('onboarded', '1');
-  }, []);
+  useEffect(() => { if (!ongoing) void sensiSetup.boot(); }, [ongoing]);
+  const finishIntro = useCallback(() => { if (sensiSetup.state.ready) setReviewIntro(false); }, []);
   // Re-render once a second so timers and "x s ago" stay current.
   const [, setTick] = useState(0);
   useEffect(() => {
@@ -109,6 +87,13 @@ export default function SmartWheelScreen() {
   useEffect(() => {
     void reload();
   }, [reload]);
+
+  // Early-return routes cannot host the safety modal. Pause before they are
+  // presented, revoking active capture/consent rather than running invisibly.
+  useLayoutEffect(() => {
+    drive.setSafetyPresentationEnabled(!!drive.driver && !!profiles && showIntro === false && (setupState.ready || ongoing)
+      && !editingProfile && !editOpening && !gemmaOpen);
+  }, [drive.driver?.id, profiles, setupState.ready, ongoing, showIntro, editingProfile, editOpening, gemmaOpen, drive.setSafetyPresentationEnabled]);
 
   const guard = useCallback((fn: () => Promise<unknown>) => {
     setBusy(true);
@@ -128,6 +113,10 @@ export default function SmartWheelScreen() {
 
   async function openProfileEditor(afterSave = false) {
     if (editOpening) return;
+    if (drive.safety.check || drive.safety.demo) {
+      Alert.alert('Safety check active', 'Finish the safety check before editing the driver profile.');
+      return;
+    }
     if (drive.hasActiveSession && !afterSave) {
       Alert.alert('End and save this drive?', 'Profile editing is available after the drive has been saved.', [
         { text: 'Keep driving', style: 'cancel' },
@@ -151,12 +140,12 @@ export default function SmartWheelScreen() {
     return (
       <>
         <StatusBar style={themeName === 'dark' ? 'light' : 'dark'} />
-        <Onboarding onDone={finishIntro} />
+        <Onboarding controller={sensiSetup} review={setupState.ready} onDone={finishIntro} />
       </>
     );
   }
 
-  if (!profiles || showIntro === null) {
+  if (!profiles || (!setupState.booted && !ongoing)) {
     return (
       <View style={st.center}>
         <ActivityIndicator />
@@ -164,15 +153,9 @@ export default function SmartWheelScreen() {
     );
   }
 
-  // Advanced Settings is the only diagnostics entry. Keep the existing isolated
-  // screen and busy-exit guard; diagnostic audio cannot overlap an active drive.
-  if (__DEV__ && diagnosticsOpen) {
-    return <View style={{ flex: 1, backgroundColor: tokens.background }}>
-      <LocalAITest onAudioBusyChange={setDiagnosticBusy} />
-      <View style={{ padding: 18 }}><Btn title="Back to Settings" disabled={diagnosticBusy}
-        onPress={() => { setDiagnosticsOpen(false); setTab('settings'); }} /></View>
-    </View>;
-  }
+  if (__DEV__ && gemmaOpen && GemmaDiagnostic && !drive.hasActiveSession && !drive.safety.check && !drive.safety.demo) return <GemmaDiagnostic
+    blocked={drive.hasActiveSession || !!drive.safety.check || !!drive.safety.demo}
+    onClose={() => setGemmaOpen(false)} />;
 
   if (!drive.driver) {
     return (
@@ -212,53 +195,46 @@ export default function SmartWheelScreen() {
         <AppearanceMenu />
       </View>
 
-      <DriverAssistant visible={assistantOpen && (assistantLaunch?.destination === 'local' || assistantLaunch?.destination === 'connected')}
-        mode={assistantLaunch?.mode === 'connected' ? 'connected' : 'local'} onClose={() => setAssistantOpen(false)} language={drive.driver.language ?? 'en'}
-        ownershipKey={`${drive.driver.id}:${drive.session?.id ?? ''}:${drive.session?.status ?? ''}`}
-        contactName={drive.driver.emergency_name} contactAvailability={drive.assistantContactAvailability}
-        handoff={drive.assistantContact} captureOwnership={drive.assistantOwnership} />
 
       <View style={{ flex: 1 }}>
         {tab === 'drive' ? drivePage === 'vitals'
           ? <VitalsDetailView drive={drive} onBack={() => setDrivePage(drivePageAfter('back'))} />
           : <View style={{ flex: 1 }}>
             <View style={{ flex: 1, minWidth: 0 }}><DriveView drive={drive} busy={busy} guard={guard} onOpenVitals={() => setDrivePage(drivePageAfter('details'))} onVitalsAnchor={updateVitalsAnchor} /></View>
-            {!drive.safety.check && !drive.safety.demo && !assistantOpen ? <DraggableSensiLauncher defaultAnchor={vitalsAnchor}><DashboardAssistantEntry mode={assistantMode} language={drive.driver.language ?? 'en'}
-              disabled={!assistantMode || modeSaving || (assistantMode === 'connected' && !PHONE_CONNECTED_READINESS.verified) || !!drive.safety.check || !!drive.safety.demo}
-              error={assistantModeError} onPress={openAssistant} /></DraggableSensiLauncher> : null}
+            {!assistantOpen ? <DraggableSensiLauncher defaultAnchor={vitalsAnchor}><DashboardAssistantEntry mode={SENSI_MODE} language={drive.driver.language ?? 'en'}
+              disabled={false}
+              error="" onPress={openAssistant} /></DraggableSensiLauncher> : null}
           </View> : null}
         {tab === 'history' ? <HistoryView refreshKey={`${drive.session?.id ?? ''}:${drive.session?.status ?? ''}:${drive.fold.state}`} /> : null}
         {tab === 'settings' ? (
           <SettingsView
             drive={drive}
-            localDiagnostics={__DEV__ ? <>
-              <Btn title={diagnosticsOpen ? 'Hide Local AI diagnostics' : 'Local AI diagnostics'} kind="ghost"
-                disabled={drive.hasActiveSession || diagnosticBusy || !appAudio.available || !!drive.safety.check || !!drive.safety.demo || assistantOpen}
-                onPress={() => { if (!drive.hasActiveSession && appAudio.available) setDiagnosticsOpen(true); }} />
-              {drive.hasActiveSession ? <Text style={{ color: C.sub }}>End and save the drive before opening Local AI diagnostics.</Text> : null}
-            </> : null}
-            assistantMode={assistantMode}
-            assistantModeBusy={!assistantMode || modeSaving || assistantOpen || !!drive.safety.check || !!drive.safety.demo}
-            assistantModeError={assistantModeError}
-            onAssistantModeChange={selectAssistantMode}
+            gemmaDiagnostics={__DEV__ ? <Btn title="Gemma diagnostics" kind="ghost"
+              disabled={drive.hasActiveSession || !!drive.safety.check || !!drive.safety.demo || assistantOpen}
+              onPress={() => { if (!drive.hasActiveSession && !drive.safety.check && !drive.safety.demo) setGemmaOpen(true); }} /> : null}
             autoOn={autoOn}
             setAutoOn={setAutoOn}
             onWiped={async () => {
               await drive.leaveDriver();
               await reload();
               setAssistantOpen(false);
-              setAssistantLaunch(null);
-              setAssistantMode(await modeSettings.load());
               setTab('drive');
             }}
             onEditProfile={() => { void openProfileEditor(); }}
-            onShowIntro={() => setShowIntro(true)}
+            onShowIntro={() => {
+              if (ongoing) { Alert.alert('Safety monitoring active', 'Finish the current recording or safety check and pause the sensor connection before reviewing setup.'); return; }
+              setReviewIntro(true);
+            }}
           />
         ) : null}
       </View>
 
       <InformationHost blocked={!!drive.safety.check || !!drive.safety.demo || assistantOpen} />
       <VoiceCheckModal drive={drive} />
+      <SensiSafetyConversation drive={drive} onContinue={() => { /* Event-only Sensi. */ }}
+        onStandbyClose={() => setAssistantOpen(false)}
+        standby={assistantOpen && sensiDestination(drive.safety) === 'standby'
+          ? <SensiStandby visible drive={drive} mode={SENSI_MODE} onClose={() => setAssistantOpen(false)} /> : null} />
 
       <View style={st.tabs}>
         {(

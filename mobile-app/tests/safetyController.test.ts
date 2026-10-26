@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 
 import { SafetyController, contactPhone, type SafetyState } from '../lib/analysis/safetyController.ts';
 import type { VoiceIO } from '../lib/voice/voiceCheck.ts';
+import { simulationCompletion } from '../lib/assistant/safetyConversation.ts';
 
 const profile = {
   id: 'p1', custom_id: null, display_name: 'Luis Test', weight_kg: 80, age: 30, height_cm: 180, gender: 'male' as const,
@@ -14,7 +15,7 @@ function controller(answer: string | null) {
   const saved: unknown[] = [];
   const acks: unknown[] = [];
   const states: SafetyState[] = [];
-  const io: VoiceIO = { speak: async () => {}, listen: async () => answer, cancel: () => {} };
+  const io: VoiceIO = { speak: async () => {}, listen: async (_l, _m, _h, id) => answer == null ? null : recognitionEvidence(id, { status: 'success', transcript: answer, finalTranscript: answer, isFinal: true, finalResultReceived: true }), cancel: () => {} };
   const c = new SafetyController({
     voiceIO: () => io,
     save: async (r) => void saved.push(r),
@@ -101,13 +102,13 @@ test('declined, negated, 911 and unanswered requests do not dial', async () => {
   }
 });
 
-test('Try the voice check opens the saved contact for direct requests and accepted offers without a drive', async () => {
+test('Try the voice check simulates direct requests and accepted offers without opening the dialer', async () => {
   for (const direct of [true, false]) {
     const f = callController(direct ? ["No, I'm feeling dizzy, please call my mom"] : ['not okay', 'yes']);
     f.c.endSession();
     assert.equal((await f.c.rehearse()).contactCall, direct ? 'explicit_request' : 'accepted_offer');
-    assert.deepEqual(f.dialed, ['+13055550123']);
-    assert.equal(f.states.at(-1)?.last?.handoff, 'opened');
+    assert.deepEqual(f.dialed, []);
+    assert.equal(f.states.at(-1)?.last?.handoff, 'simulated');
     assert.equal(f.said.filter(text => text.includes('Would you like')).length, direct ? 0 : 1);
     assert.deepEqual(f.saved, []);
   }
@@ -161,12 +162,13 @@ test('rehearsal retains refusal, silence, 911 and contact validation protections
   }
 });
 
-test('rehearsal reports native handoff failure without recording an incident', async () => {
+test('rehearsal never invokes even a failing native handoff handler', async () => {
   const f = callController(['call my mom'], '3055550123', true);
   f.c.endSession();
   await f.c.rehearse();
-  assert.equal(f.states.at(-1)?.last?.handoff, 'open_failed');
+  assert.equal(f.states.at(-1)?.last?.handoff, 'simulated');
   assert.deepEqual(f.saved, []);
+  assert.deepEqual(f.dialed, []);
 });
 
 test('demo with explicit consent never opens the phone interface', async () => {
@@ -174,6 +176,44 @@ test('demo with explicit consent never opens the phone interface', async () => {
   assert.equal((await f.c.simulate('high_critical'))?.contactCall, 'explicit_request');
   assert.deepEqual(f.dialed, []);
   assert.deepEqual(f.saved, []);
+  assert.equal(f.states.at(-1)?.last?.simulation, true);
+  assert.equal(f.states.at(-1)?.last?.handoff, 'simulated');
+});
+
+for (const channel of ['typed', 'button'] as const) for (const accepted of [true, false]) {
+  test(`${channel}: rehearsal consent/refusal never dials; live consent preserves phone handoff (${accepted})`, async () => {
+    for (const simulation of [true, false]) {
+      const f = callController([]);
+      const seen = new Set<string>();
+      f.onState(state => {
+        const check = state.check;
+        if (!check || seen.has(check.captureId)) return;
+        seen.add(check.captureId);
+        const scope = { episodeId: check.episode.id, captureId: check.captureId, question: check.question };
+        const wellness = check.question === 'wellness';
+        if (channel === 'typed') f.c.answerText(wellness ? "I'm dizzy" : accepted ? 'yes please' : 'no thanks', scope);
+        else f.c.answer(wellness ? 'not_ok' : accepted ? 'call_yes' : 'call_no', scope);
+      });
+      if (simulation) await f.c.rehearse();
+      else { f.trigger(); await f.settle(); }
+      assert.deepEqual(f.dialed, !simulation && accepted ? ['+13055550123'] : []);
+      const last = f.states.at(-1)!.last!;
+      assert.equal(last.result.contactCall, accepted ? 'accepted_offer' : 'declined_offer');
+      assert.equal(last.result.outcome, 'not_ok');
+      if (simulation) {
+        assert.equal(last.handoff, accepted ? 'simulated' : undefined);
+        assert.match(simulationCompletion(last.result), accepted ? /In a real emergency.*would open/ : /declined.*No phone interface/);
+        assert.deepEqual(f.saved, []);
+      }
+    }
+  });
+}
+test('simulated vitals with rejected voice consent never open the dialer', async () => {
+  const f = callController(['not okay', 'no thanks']);
+  const result = await f.c.simulate('high_critical');
+  assert.equal(result?.contactCall, 'declined_offer');
+  assert.deepEqual(f.dialed, []); assert.deepEqual(f.saved, []);
+  assert.match(simulationCompletion(result!), /declined.*No phone interface/);
 });
 
 test('phone opening failure is visible and the incident stays recorded', async () => {
@@ -363,7 +403,8 @@ test('existing safety workflow uses edited contact and revokes an in-flight old 
   const f = callController(['call my mom']);
   f.c.endSession();
   f.c.refreshProfile({ ...profile, emergency_phone: '+12125550123' }, null, { high: null, low: null });
-  await f.c.rehearse();
+  f.c.startSession('edited-contact');
+  f.trigger(); await f.settle();
   assert.deepEqual(f.dialed, ['+12125550123']);
   const stale = callController(['call my mom']);
   stale.c.endSession();

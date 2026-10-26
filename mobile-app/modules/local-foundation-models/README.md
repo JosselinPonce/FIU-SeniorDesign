@@ -1,3 +1,5 @@
+> Stage 2B retirement notice: Apple/OpenAI inference and provider selection are removed from the application. This document is historical; do not follow its legacy provider setup/deployment instructions. See `docs/LEGACY_AI_CLEANUP.md`. The native module now serves shared speech/playback only.
+
 # DriveSense Driver Assistant integration
 
 The main app now opens the existing dashboard flow. After selecting a driver,

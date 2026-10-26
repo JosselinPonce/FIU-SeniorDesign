@@ -2,6 +2,6 @@
   "name": "local-foundation-models",
   "version": "0.1.0",
   "private": true,
-  "description": "Isolated Foundation Models availability prototype",
+  "description": "Native offline speech recognition and system voice playback",
   "main": "index.ts"
 }
