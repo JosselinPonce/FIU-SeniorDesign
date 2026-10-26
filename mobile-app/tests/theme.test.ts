@@ -100,7 +100,11 @@ test('Warm Pearl palette and iOS native appearance support persisted explicit an
   assert.equal(nativeAppearancePreference('dark'), 'dark');
   assert.equal(nativeAppearancePreference('system'), null);
   const read = (path: string) => readFileSync(new NodeURL(`../${path}`, import.meta.url), 'utf8');
-  assert.equal(JSON.parse(read('app.json')).expo.userInterfaceStyle, 'automatic');
-  assert.match(read('ios/SmartWheel/Info.plist'), /<key>UIUserInterfaceStyle<\/key>\s*<string>Automatic<\/string>/);
+  // Expo prebuild generates the ignored ios/ tree after unit tests in CI.
+  // Validate its tracked source, including any platform/plist overrides.
+  const config = JSON.parse(read('app.json')).expo;
+  assert.equal(config.userInterfaceStyle, 'automatic');
+  assert.equal(config.ios?.userInterfaceStyle ?? config.userInterfaceStyle, 'automatic');
+  assert.equal(config.ios?.infoPlist?.UIUserInterfaceStyle ?? 'Automatic', 'Automatic');
   assert.match(read('lib/theme/ThemeProvider.tsx'), /Appearance.setColorScheme\(nativeAppearancePreference\(preference\)\)/);
 });
