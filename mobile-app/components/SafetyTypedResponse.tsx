@@ -1,5 +1,6 @@
+import { LocalizedText as Text, LocalizedTextInput as TextInput } from '../lib/i18n/native';
 import { useEffect, useRef, useState } from 'react';
-import { Text, TextInput, View } from 'react-native';
+import { View } from 'react-native';
 import type { AnswerScope } from '../lib/voice/voiceCheck';
 import { useTheme } from '../lib/theme/ThemeProvider';
 import { Btn } from './ui';

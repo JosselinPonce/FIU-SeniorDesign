@@ -24,6 +24,16 @@ function fake(answers: (string | null)[], opts: { listenDelay?: number } = {}) {
   return { io, said, cancelled: () => cancelled };
 }
 
+test('Spanish contact prompts use the validated configured name and preserve deterministic consent', async () => {
+  for (const contactName of ['Aunt María', 'Dr. Rivera', '', 'not-a-name@invalid']) {
+    const f = fake(['no estoy bien', 'sí, por favor']);
+    const result = await new VoiceCheck(f.io, 'es', 'Luis', { contactAvailable: true, contactName }).run('bpm_high');
+    assert.equal(result.contactCall, 'accepted_offer');
+    const suitable = ['Aunt María', 'Dr. Rivera'].includes(contactName);
+    assert.ok(f.said.some(text => text === (suitable ? `¿Quieres que llame a ${contactName}?` : '¿Quieres que llame a tu contacto de emergencia?')));
+  }
+});
+
 test('"yeah I\'m fine" on the first try → ok, reassured', async () => {
   const f = fake(["yeah i'm fine"]);
   const r = await new VoiceCheck(f.io, 'en', 'Luis').run('bpm_high');
@@ -52,7 +62,7 @@ test('"help, call 911" → urgent', async () => {
   const f = fake(['help call 911']);
   const r = await new VoiceCheck(f.io, 'en', '').run('bpm_high');
   assert.deepEqual([r.outcome, r.urgent], ['not_ok', true]);
-  assert.match(f.said[1]!, /call nine one one now/);
+  assert.match(f.said[1]!, /call 911 now/);
 });
 
 test('Spanish: "sí, estoy bien" → ok, spoken in Spanish', async () => {
@@ -200,4 +210,119 @@ test('failed playback keeps each button window open, then exhausts retries witho
   const result = await pending;
   assert.equal(result.outcome, 'no_response'); assert.equal(result.attempts, 2);
   assert.equal(result.contactCall, 'not_requested'); assert.equal(check.authorizesContact(result), false);
+});
+
+for (const response of ['button', 'typed', 'none', 'cancel'] as const) {
+  test(`returned recognition error retains bounded response window: ${response}`, async t => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const spoken: string[] = [];
+    let unavailable = 0;
+    let scope!: { captureId: string; question: 'wellness' | 'contact_offer' };
+    const check = new VoiceCheck({
+      speak: async text => { spoken.push(text); },
+      listen: async (_l, _m, _h, id) => recognitionEvidence(id, {
+        status: 'error', reason: 'audio_setup_failed', transcript: '', isFinal: false,
+      }),
+      responseUnavailable: () => { unavailable++; }, cancel() {},
+    }, 'en', '', { onQuestion: (question, captureId) => { scope = { question, captureId }; } });
+    const pending = check.run('bpm_high');
+    const cancelled = response === 'cancel' ? assert.rejects(pending, /cancelled/) : null;
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(unavailable, 1);
+    t.mock.timers.tick(5999);
+    assert.equal(spoken.length, 1);
+    if (response === 'button') {
+      assert.equal(check.answerByButton('ok', scope), true);
+      assert.equal(check.answerByButton('not_ok', scope), false);
+    } else if (response === 'typed') assert.equal(check.answerByText("I'm okay", scope), true);
+    else if (response === 'cancel') check.cancel();
+    else {
+      t.mock.timers.tick(1); await new Promise<void>(resolve => setImmediate(resolve));
+      assert.equal(spoken.length, 2);
+      t.mock.timers.tick(6000);
+    }
+    if (cancelled) await cancelled;
+    else assert.equal((await pending).outcome, response === 'none' ? 'no_response' : 'ok');
+  });
+}
+
+test('recognition waits for playback completion', async () => {
+  let done!: () => void;
+  let listens = 0;
+  const check = new VoiceCheck({
+    speak: async () => { if (!listens) await new Promise<void>(resolve => { done = resolve; }); },
+    listen: async (_l, _m, _h, id) => { listens++; return recognitionEvidence(id, {
+      status: 'success', transcript: 'yes', finalTranscript: 'yes', isFinal: true, finalResultReceived: true,
+    }); }, cancel() {},
+  }, 'en', '');
+  const pending = check.run('bpm_high');
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.equal(listens, 0); done();
+  assert.equal((await pending).outcome, 'ok'); assert.equal(listens, 1);
+});
+
+for (const language of ['en', 'es'] as const) test(`${language}: capture preparation is registered before TTS; listening waits for completion and keeps 6000 ms`, async () => {
+  const events: string[] = [];
+  let finishPrompt!: () => void;
+  let capture = '';
+  const io: VoiceIO = {
+    prepareRecognition: (lang, id) => { assert.equal(lang, language); capture = id; events.push('prepare'); },
+    speak: async () => { if (!events.includes('listen')) { events.push('speak'); await new Promise<void>(resolve => { finishPrompt = resolve; }); } },
+    listen: async (_lang, ms, _hints, id) => {
+      assert.equal(id, capture); assert.equal(ms, 6000); events.push('listen');
+      return recognitionEvidence(id, { status: 'success', transcript: language === 'es' ? 'sí' : 'yes', finalTranscript: language === 'es' ? 'sí' : 'yes', isFinal: true, finalResultReceived: true });
+    }, cancel() {},
+  };
+  const pending = new VoiceCheck(io, language, '').run('bpm_high');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(events, ['prepare', 'speak']);
+  finishPrompt(); await pending;
+  assert.deepEqual(events, ['prepare', 'speak', 'listen']);
+});
+test('cancellation during prewarmed TTS cancels the capture and cannot activate late listening', async () => {
+  let finish!: () => void, cancelled = 0, listens = 0;
+  const check = new VoiceCheck({ prepareRecognition() {}, speak: () => new Promise(resolve => { finish = resolve; }),
+    listen: async () => { listens++; return null; }, cancel: () => { cancelled++; } }, 'es', '');
+  const pending = check.run('bpm_low');
+  await new Promise(resolve => setImmediate(resolve));
+  const rejected = assert.rejects(pending, /cancelled/);
+  check.cancel(); finish(); await rejected;
+  assert.equal(listens, 0); assert.ok(cancelled > 0);
+});
+
+for (const channel of ['typed', 'button'] as const) test(`${channel} can answer during prewarmed TTS without microphone activation`, async () => {
+  let scope: any, finish!: () => void, spoken = 0, listens = 0, cancelled = 0;
+  const check = new VoiceCheck({ prepareRecognition() {},
+    speak: () => ++spoken === 1 ? new Promise(resolve => { finish = resolve; }) : Promise.resolve(),
+    listen: async () => { listens++; return null; }, cancel: () => { cancelled++; } }, 'es', '',
+    { onQuestion: (question, captureId) => { scope = { question, captureId }; } });
+  const pending = check.run('spo2_low');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(channel === 'typed' ? check.answerByText('estoy bien', scope) : check.answerByButton('ok', scope), true);
+  const result = await pending; finish(); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(result.outcome, 'ok'); assert.equal(result.channel, channel); assert.equal(listens, 0); assert.ok(cancelled > 0);
+});
+
+test('Debug trace correlates incomplete native evidence, manual winner and question closure without text', async () => {
+  const { responsiveness } = await import('../lib/voice/responsivenessDiagnostics.ts');
+  const host = globalThis as typeof globalThis & { __DEV__?: boolean };
+  const previous = host.__DEV__; host.__DEV__ = true; responsiveness.setEnabled(true);
+  let scope!: { captureId: string; question: 'wellness' | 'contact_offer' };
+  let check!: VoiceCheck;
+  try {
+    check = new VoiceCheck({ speak: async () => {}, cancel() {},
+      listen: async (_l, _m, _h, id) => recognitionEvidence(id, {
+        status: 'incomplete', reason: 'empty_final_after_partial', transcript: 'PRIVATE PARTIAL',
+        finalTranscript: '', isFinal: false, finalResultReceived: true,
+      }),
+      responseUnavailable: () => { queueMicrotask(() => check.answerByButton('ok', scope)); },
+    }, 'en', '', { onQuestion: (question, captureId) => { scope = { question, captureId }; } });
+    assert.equal((await check.run('bpm_high')).outcome, 'ok');
+    const record = responsiveness.snapshot().find(r => r.operation === 'VoiceCheck decision')!;
+    assert.ok(record.events.some(e => e.point === 'unavailable requested' && e.details.status === 'incomplete'));
+    assert.ok(record.events.some(e => e.point === 'answer selected' && e.details.channel === 'button'));
+    assert.ok(record.events.some(e => e.point === 'question closed'));
+    assert.ok(record.events.every(e => e.details.captureId === scope.captureId));
+    assert.equal(JSON.stringify(responsiveness.snapshot()).includes('PRIVATE PARTIAL'), false);
+  } finally { responsiveness.setEnabled(false); host.__DEV__ = previous; }
 });

@@ -1,4 +1,5 @@
-import { Pressable, View } from 'react-native';
+import { LocalizedPressable as Pressable } from '../lib/i18n/native';
+import { View } from 'react-native';
 import { useTheme } from '../lib/theme/ThemeProvider';
 import type { AssistantMode } from '../lib/assistant/mode';
 /** Passive event-only Sensi entry. Never checks or invokes a legacy AI provider. */

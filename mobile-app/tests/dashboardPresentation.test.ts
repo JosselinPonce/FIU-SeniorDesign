@@ -122,7 +122,7 @@ test('Sensi introduction is interface-only and wheel control remains separate fr
   assert.match(presentation, /Sensi · Safety check/);
   assert.match(presentation, /<SensiConversationThread/);
   const thread = source('components/SensiConversationThread.tsx');
-  assert.match(thread, /Hi, I’m Sensi, your driving assistant/);
+  assert.match(thread, /Hi, I’m Sensi\. I respond during safety checks/);
   assert.doesNotMatch(thread, /speakLocal\(|listenOffline\(|provider\.generate\(/);
   assert.doesNotMatch(presentation, /speakLocal\(|interpretConversation\(/);
   const entry = source('components/DashboardAssistantEntry.tsx');

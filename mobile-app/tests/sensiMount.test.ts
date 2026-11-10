@@ -27,6 +27,7 @@ function harness(theme: typeof light) {
   const native = Object.fromEntries(['View', 'Text', 'ScrollView', 'SafeAreaView', 'Pressable'].map(name => [name, name]));
   const forbidden = () => { throw new Error('Initial render must not access app services'); };
   const dependencies: Record<string, unknown> = {
+    '../lib/i18n/native': { LocalizedText: 'Text', LocalizedPressable: 'Pressable' },
     react, 'react/jsx-runtime': jsx, 'react-native': native,
     '../lib/theme/ThemeProvider': { useTheme: () => { hooks++; return { tokens: theme, colors: presentationColors(theme) }; } },
     '../lib/assistant/threadPresentation': { nearThreadBottom, playbackLabel },

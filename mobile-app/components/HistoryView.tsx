@@ -1,3 +1,4 @@
+import { LocalizedAlert as Alert, LocalizedPressable as Pressable, LocalizedText as Text } from '../lib/i18n/native';
 import { useTheme } from '../lib/theme/ThemeProvider';
 import { presentationColors, type ThemeTokens } from '../lib/theme/tokens';
 /**
@@ -6,7 +7,7 @@ import { presentationColors, type ThemeTokens } from '../lib/theme/tokens';
  * archive after checking its SHA-256.
  */
 import { useCallback, useEffect, useState } from 'react';
-import { ActivityIndicator, Alert, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, RefreshControl, ScrollView, StyleSheet, View } from 'react-native';
 
 import * as repo from '../lib/db/repositories';
 import { deleteDriveEverywhere } from '../lib/db/deletion';

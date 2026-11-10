@@ -1,3 +1,4 @@
+import { LocalizedPressable as Pressable, LocalizedText as Text } from '../lib/i18n/native';
 import { useTheme } from '../lib/theme/ThemeProvider';
 import { presentationColors, type ThemeTokens } from '../lib/theme/tokens';
 /**
@@ -5,7 +6,7 @@ import { presentationColors, type ThemeTokens } from '../lib/theme/tokens';
  * (no UI library) so the build stays dependency-light.
  */
 import type { ReactNode } from 'react';
-import { ActivityIndicator, Pressable, StyleSheet, Text, View, type StyleProp, type ViewStyle } from 'react-native';
+import { ActivityIndicator, StyleSheet, View, type StyleProp, type ViewStyle } from 'react-native';
 
 export const C = {
   bg: '#f4f6f8',
@@ -72,6 +73,8 @@ export function Pill(props: { tone: Tone; children: ReactNode }) {
 
 export function Btn(props: {
   title: string;
+  accessibilityRole?: 'button' | 'radio';
+  accessibilityState?: { selected?: boolean };
   onPress: () => void;
   kind?: 'primary' | 'danger' | 'ghost';
   disabled?: boolean;
@@ -85,8 +88,8 @@ export function Btn(props: {
   const fg = props.disabled ? tokens.disabledText : kind === 'ghost' ? tokens.primary : kind === 'danger' ? tokens.onDanger : tokens.onPrimary;
   return (
     <Pressable
-      accessibilityRole="button"
-      accessibilityState={{ disabled: !!(props.disabled || props.busy), busy: !!props.busy }}
+      accessibilityRole={props.accessibilityRole ?? "button"}
+      accessibilityState={{ ...props.accessibilityState, disabled: !!(props.disabled || props.busy), busy: !!props.busy }}
       disabled={props.disabled || props.busy}
       onPress={props.onPress}
       style={({ pressed }) => [

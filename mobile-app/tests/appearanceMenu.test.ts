@@ -14,6 +14,8 @@ test('shared header menu uses existing preference and setter for all three choic
     let buttons: any[]=[]; const calls: string[]=[];
     const exports: any={};
     new Function('require','exports',compiled)((name:string)=>{
+      if(name==='../lib/i18n/native')return {LocalizedPressable:'Pressable',LocalizedText:'Text',LocalizedAlert:{alert:(_title:string,_body:string,choices:any[])=>{buttons=choices;}}};
+      if(name==='../lib/i18n/LanguageProvider')return {useAppLanguage:()=>({t:(text:string)=>text})};
       if(name==='react/jsx-runtime')return require(name);
       if(name==='react-native')return {Pressable:'Pressable',Text:'Text',View:'View',Alert:{alert:(_title:string,_body:string,choices:any[])=>{buttons=choices;}}};
       assert.equal(name,'../lib/theme/ThemeProvider');return {useTheme:()=>({tokens:light,preference,setPreference:(value:string)=>calls.push(value)})};

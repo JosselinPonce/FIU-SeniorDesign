@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { URL as NodeURL } from 'node:url';
 import ts from 'typescript';
+import { saveSelectedProfile } from '../lib/db/profileEditing.ts';
 import { SafetyController, initialSafety } from '../lib/analysis/safetyController.ts';
 import { SeqTracker } from '../lib/ble/protocol.ts';
 import { openAuthorizedPhoneInterface } from '../lib/voice/phoneHandoff.ts';
@@ -37,7 +38,13 @@ function harness() {
     useEffect: (fn: any, deps: any[]) => memo(() => { effects.push(fn); }, deps),
   };
   let trip = 0, id = 0;
+  const profileSaves: any[] = [];
   const repo = {
+    getProfile: async () => driver,
+    updateProfile: async (id: string, input: any, revision: string, languageOnly: boolean) => {
+      profileSaves.push({ id, input, revision, languageOnly });
+      return { ...driver, language: input.language };
+    },
     saveAlert: async (row: any) => { saved.push(row); }, setAck: async () => {}, saveSnapshot: async () => {},
     recoverInterruptedSessions: async () => 0, getStorageMode: async () => 'vitals', getSetting: async () => null,
     driverBaseline: async () => null, getAck: async () => ({ high: null, low: null }), driveMedians: async () => [],
@@ -55,7 +62,7 @@ function harness() {
     '../ble/bleService': { WheelConnection: class { constructor(cb: any) { callbacks = cb; } start() {} stop() {} setAllowDirect() {} } },
     '../ble/protocol': { SeqTracker, uuidv4: () => `id-${++id}`, Deframer: class { crcErrors = 0; feed() { return [input]; } } },
     '../db/liveSync': { LiveUploader: class { status = { bytesSent: 0 }; nudge() {} stop() {} follow(id: string) { followed.push(id); } async finish(id: string) { finished.push(id); } } },
-    '../db/repositories': repo, '../db/sync': { syncToSupabase: async () => {} }, '../db/profileEditing': {},
+    '../db/repositories': repo, '../db/sync': { syncToSupabase: async () => {} }, '../db/profileEditing': { saveSelectedProfile },
     '../db/profileSync': { syncProfiles: async () => {} }, '../db/deletion': { processPendingDeletes: async () => {} },
     '../voice/audioOwnership': { appAudio: { stopActive: async () => {} } }, '../archive/archiveStore': { foldSession: async () => null },
     '../analysis/signal': { SignalAnalyzer: class { feed() { return null; } } },
@@ -81,7 +88,7 @@ function harness() {
   function render() { index = 0; const value = exports.useDriveSession(); effects.splice(0).forEach(fn => fn()); return value; }
   const driver = { id: 'driver', display_name: 'Driver', age: 30, gender: 'male', height_cm: 180, weight_kg: 80,
     emergency_phone: '+13055550123', created_at: '', updated_at: '' };
-  return { render, saved, stored, followed, finished, calls,
+  return { profileSaves, render, saved, stored, followed, finished, calls,
     spoken: (answers: string[]) => { spoken = answers; },
     get nextSequence() { return lastSeq + 1; },
     async select() { render().selectDriver(driver); await tick(); render().setSafetyPresentationEnabled(true); callbacks.onStateChange('connected'); },
@@ -205,4 +212,21 @@ test('a genuine live incident preempts simulator warm-up without inheriting simu
   assert.equal(f.render().safety.last.episode.id, episode);
   assert.equal(f.render().safety.conversation.simulation, false);
   assert.equal(f.render().safety.conversation.messages.some((m: any) => /Simulation complete/.test(m.text)), false);
+});
+
+
+test('compact VoiceCheck language uses guarded profile lifecycle and publishes Spanish without a drive', async () => {
+  const f = harness(); await f.select();
+  const before = f.render().driver;
+  await f.render().updateVoiceCheckLanguage('es'); await tick();
+  assert.equal(f.profileSaves.length, 1);
+  assert.equal(f.profileSaves[0].languageOnly, true);
+  assert.equal(f.profileSaves[0].id, before.id);
+  assert.equal(f.profileSaves[0].input.language, 'es');
+  assert.equal(f.render().driver.language, 'es');
+  assert.equal(f.render().driver.display_name, before.display_name);
+  assert.equal(f.render().hasActiveSession, false);
+  await f.render().startSession(); await tick();
+  await assert.rejects(f.render().updateVoiceCheckLanguage('en'), /drive/);
+  assert.equal(f.profileSaves.length, 1);
 });

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { Animated, PanResponder, Text, View } from 'react-native';
+import { Animated, PanResponder, View } from 'react-native';
+import { LocalizedText as Text } from '../lib/i18n/native';
 import { useTheme } from '../lib/theme/ThemeProvider';
 import { greetingPosition } from '../lib/ui/launcherGreeting';
 import * as repo from '../lib/db/repositories';

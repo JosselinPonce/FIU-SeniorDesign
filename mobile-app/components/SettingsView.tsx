@@ -1,3 +1,4 @@
+import { LocalizedAlert as Alert, LocalizedPressable as Pressable, LocalizedText as Text } from '../lib/i18n/native';
 import { simulationCompletion } from '../lib/assistant/safetyConversation';
 import { settingsSwitchColors } from '../lib/ui/settingsSwitch';
 import { REHEARSAL_SAFETY_REVISION } from '../lib/voice/phoneHandoff';
@@ -8,9 +9,9 @@ import { presentationColors, type ThemeTokens } from '../lib/theme/tokens';
  * Storage choice, cloud backlog, and the technical link details that used to
  * crowd the drive screen.
  */
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { SETTINGS_CATEGORIES, settingsTitle, type SettingsPage } from '../lib/ui/settingsNavigation';
-import { Alert, BackHandler, Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
+import { BackHandler, ScrollView, StyleSheet, Switch, View } from 'react-native';
 
 import type { useDriveSession } from '../lib/hooks/useDriveSession';
 import type { StorageMode } from '../lib/db/repositories';
@@ -21,6 +22,10 @@ import { VoicePicker } from './VoicePicker';
 import { CalibrationCard } from './CalibrationCard';
 import { ThresholdHistory } from './ThresholdHistory';
 import { ResponsivenessDiagnostics } from './ResponsivenessDiagnostics';
+import { EmergencyDialerDemo } from './EmergencyDialerDemo';
+import { LanguageMenu } from './LanguageMenu';
+import { GemmaModelSettings } from './GemmaModelSettings';
+import { SpeechCapabilityStatus } from './SpeechCapabilityStatus';
 
 // Metro removes this branch from release builds, including the diagnostic module.
 const SensiVoicePlaybackDiagnostic = __DEV__
@@ -45,6 +50,7 @@ const MODES: { key: StorageMode; title: string; body: string }[] = [
 ];
 
 export function SettingsView(props: {
+  initialPage?: SettingsPage;
   drive: Drive;
   gemmaDiagnostics?: ReactNode;
   autoOn: boolean;
@@ -56,14 +62,18 @@ export function SettingsView(props: {
   const { colors: C, tokens } = useTheme();
   const st = makeStyles(tokens);
   const d = props.drive;
-  const [page, setPage] = useState<SettingsPage>(null);
+  const [page, setPage] = useState<SettingsPage>(props.initialPage ?? null);
+  const scroll = useRef<ScrollView>(null);
+  const focusedDemo = useRef(false);
   useEffect(() => {
     const back = BackHandler.addEventListener('hardwareBackPress', () => {
       if (page === null) return false;
-      setPage(null); return true;
+      setPage(page === 'safety_testing' ? 'safety' : null); return true;
     });
     return () => back.remove();
   }, [page]);
+  const [languageBusy, setLanguageBusy] = useState(false);
+  const [languageError, setLanguageError] = useState('');
   const [direct, setDirect] = useState(false);
   const [syncMsg, setSyncMsg] = useState('');
   const [syncing, setSyncing] = useState(false);
@@ -95,9 +105,10 @@ export function SettingsView(props: {
   }
 
   return (
-    <ScrollView key={page ?? 'landing'} contentContainerStyle={st.container}>
+    <ScrollView ref={scroll} key={page ?? 'landing'} contentContainerStyle={st.container}>
       {page === null ? <>
         <SectionTitle>Settings</SectionTitle>
+        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}><Text style={st.modeTitle}>App language</Text><LanguageMenu /></View>
         {SETTINGS_CATEGORIES.map(category => <Pressable key={category.key} accessibilityRole="button"
           accessibilityLabel={category.title} onPress={() => setPage(category.key)} style={st.category}>
           <View style={{ flex: 1, gap: 4 }}><Text style={st.modeTitle}>{category.title}</Text><Text style={st.note}>{category.description}</Text></View>
@@ -107,15 +118,15 @@ export function SettingsView(props: {
           <View style={{ flex: 1, gap: 4 }}><Text style={st.modeTitle}>Advanced Settings</Text><Text style={st.note}>Diagnostics and demonstration tools</Text></View><Text accessible={false} style={st.modeTitle}>›</Text>
         </Pressable>
       </> : <>
-        <Pressable accessibilityRole="button" accessibilityLabel="Back to Settings" onPress={() => setPage(null)} style={st.secondary}>
-          <Text style={st.modeTitle}>‹ Settings</Text>
+        <Pressable accessibilityRole="button" accessibilityLabel={page === 'safety_testing' ? 'Back to Health & Safety' : 'Back to Settings'} onPress={() => setPage(page === 'safety_testing' ? 'safety' : null)} style={st.secondary}>
+          <Text style={st.modeTitle}>{page === 'safety_testing' ? '‹ Health & Safety' : '‹ Settings'}</Text>
         </Pressable>
         <SectionTitle>{settingsTitle(page)}</SectionTitle>
       </>}
       {page === 'profile' ? <>
       <Card>
         <SectionTitle>Driver profile</SectionTitle>
-        <Text style={st.note}>{d.driver?.display_name}</Text>
+        <Text localize={false} style={st.note}>{d.driver?.display_name}</Text>
         <Text style={st.note}>{d.driver?.emergency_phone ? `Emergency contact: ${d.driver.emergency_name || 'Saved contact'} · ${d.driver.emergency_phone}` : 'No emergency contact configured. Saved-contact phone handoff is unavailable.'}</Text>
         <Btn title="Edit Driver Profile" onPress={props.onEditProfile} />
         <InformationButton title="Profile storage" body="Profiles are saved on this phone. Cloud updates retry when online; emergency contacts stay on this phone." />
@@ -123,9 +134,26 @@ export function SettingsView(props: {
       </Card>
       </> : null}
       {page === 'assistant' ? <>
+      <GemmaModelSettings blocked={d.hasActiveSession || !!sf.check || !!sf.demo || sf.monitoring === 'active'} />
       <Card>
-        <SectionTitle>Sensi · Gemma on-device</SectionTitle>
-        <Text style={st.note}>Sensi is an offline safety assistant. Gemma selects brief approved acknowledgments; safety decisions, guidance and emergency-contact consent remain deterministic.</Text>
+        <SectionTitle>Sensi Assistant</SectionTitle>
+        <Text style={st.note}>Sensi checks how you feel after confirmed sensor events. You can answer by voice, typing or buttons. Calling your saved contact requires your explicit agreement.</Text>
+        <Text style={st.modeTitle}>VoiceCheck Language</Text>
+        <View accessibilityRole="radiogroup" style={{ flexDirection: 'row', gap: 12 }}>
+          {(['en', 'es'] as const).map(language => <Btn key={language} title={language === 'es' ? 'Español' : 'English'}
+            kind={d.driver?.language === language ? undefined : 'ghost'}
+            accessibilityRole="radio" accessibilityState={{ selected: (d.driver?.language ?? 'en') === language }}
+            disabled={languageBusy || d.hasActiveSession || !!sf.check || !!sf.demo || !d.driver}
+            onPress={async () => {
+              if (languageBusy || !d.driver || (d.driver.language ?? 'en') === language) return;
+              setLanguageBusy(true); setLanguageError('');
+              try { await d.updateVoiceCheckLanguage(language); }
+              catch { setLanguageError('Could not save VoiceCheck language. Please try again.'); }
+              finally { setLanguageBusy(false); }
+            }} />)}
+        </View>
+        <SpeechCapabilityStatus language={d.driver?.language === 'es' ? 'es' : 'en'} blocked={!!sf.check || !!sf.demo} />
+        {languageError ? <Text accessibilityRole="alert" style={st.note}>{languageError}</Text> : null}
       </Card>
       <Card>
         <Text style={st.voiceHead}>Voice</Text>
@@ -133,15 +161,14 @@ export function SettingsView(props: {
           <VoicePicker lang={d.driver.language === 'es' ? 'es' : 'en'} driverName={d.driver.display_name.split(' ')[0] ?? ''} />
         ) : null}
         <Text style={st.note}>
-          Speech is handled by the phone itself (no paid services). The check speaks at full volume through the speaker or your
-          car's Bluetooth, even on silent; turn the phone's volume up. For the most natural voice, download a free Premium or
-          Enhanced voice: iPhone Settings → Accessibility → Read & Speak → Voices → English (and Español) → pick one marked
-          Premium or Enhanced (about 100–400 MB, on Wi-Fi). On iOS 17–18 the menu is called Spoken Content. The app picks the
-          best one automatically (tap "Try the voice check" to hear the new one).
+          Speech is processed on this phone. Audio follows the current speaker or Bluetooth route and the device volume.
+          Use Voice to choose an installed system voice. Optional Premium or Enhanced voices can be downloaded in iPhone Settings → Accessibility → Read & Speak → Voices.
+          VoiceCheck recognition remains offline; no models are downloaded during a check.
         </Text>
       </Card>
       </> : null}
       {page === 'safety' ? <>
+      <Btn title="Safety Testing" kind="ghost" onPress={() => setPage('safety_testing')} />
       <Card>
         <SectionTitle>Safety checks</SectionTitle>
         {sf.th && sf.prior ? (
@@ -177,7 +204,7 @@ export function SettingsView(props: {
         <Row
           label="Voice check"
           value={
-            !d.voice ? 'permission prepared at driver selection' : !d.voice.granted ? 'off — buttons only' : d.voice.onDevice ? 'on, fully on-device' : 'on'
+            d.driver?.language === 'es' ? 'Check Spanish capability in Sensi Assistant' : !d.voice ? 'permission prepared at driver selection' : !d.voice.granted ? 'off — buttons only' : d.voice.onDevice ? 'on, fully on-device' : 'on'
           }
           tone={d.voice && !d.voice.granted ? 'warn' : 'good'}
         />
@@ -257,7 +284,7 @@ export function SettingsView(props: {
 
       <Card>
         <SectionTitle>Your data</SectionTitle>
-        <Btn title="Show the introduction again" kind="ghost" onPress={props.onShowIntro} />
+        <Btn title="Review Introduction & Setup" kind="ghost" onPress={props.onShowIntro} />
         <Text style={st.note}>
           To delete one driver: go back to "Who's driving?", long-press them, and choose Delete. To delete one drive: open it
           in History. Deleting removes it here and on the dashboard.
@@ -349,7 +376,17 @@ export function SettingsView(props: {
       {page === 'advanced' ? <>
       {__DEV__ ? props.gemmaDiagnostics : null}
       {__DEV__ && SensiVoicePlaybackDiagnostic ? <SensiVoicePlaybackDiagnostic blocked={!!sf.check || !!sf.demo} /> : null}
-      {__DEV__ ? <ResponsivenessDiagnostics /> : null}
+      {__DEV__ ? <ResponsivenessDiagnostics blocked={d.hasActiveSession || !!sf.check || !!sf.demo} /> : null}
+
+      </> : null}
+      {page === 'safety_testing' ? <>
+      <EmergencyDialerDemo blocked={d.hasActiveSession || !!sf.check || !!sf.demo} />
+      <View onLayout={event => {
+        if (props.initialPage === 'safety_testing' && !focusedDemo.current) {
+          focusedDemo.current = true;
+          scroll.current?.scrollTo({ y: event.nativeEvent.layout.y, animated: false });
+        }
+      }}>
       <Card>
         <SectionTitle>Demo — trigger a warning</SectionTitle>
         <Text style={st.note}>
@@ -385,6 +422,7 @@ export function SettingsView(props: {
         ) : null}
         {demoResult ? <Text style={st.note}>{demoResult}</Text> : null}
       </Card>
+      </View>
 
       </> : null}
       <Text style={st.disclaimer}>Prototype — not a medical device. Alerts use prototype thresholds. Only real checks can open the saved contact's phone interface with your explicit agreement. Settings rehearsals and simulated vitals demos never do.</Text>

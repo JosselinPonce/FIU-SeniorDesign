@@ -8,7 +8,7 @@ export function canOfferSafetyContinuation(result: CheckResult): boolean {
   return result.outcome === 'ok' && result.contactCall === 'not_requested';
 }
 export function safetyButtonText(question: CheckQuestion, positive: boolean): string {
-  return question === 'contact_offer' ? positive ? 'Open phone interface' : 'No thanks' : positive ? "I'm OK" : "I'm not OK";
+  return question === 'contact_offer' ? positive ? 'Yes, open phone' : 'No, thanks' : positive ? "I'm OK" : "I'm not OK";
 }
 export function simulationCompletion(result: CheckResult): string {
   return result.contactCall === 'explicit_request' || result.contactCall === 'accepted_offer'

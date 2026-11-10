@@ -1,20 +1,28 @@
 import { TEST_PROMPT, GEMMA_ARTIFACT } from './artifact.ts';
-import { CONCERN_ACK_PROMPT } from '../../lib/assistant/safetyAcknowledgment.ts';
+import { acknowledgmentPrompt, canGenerateAcknowledgment, type AcknowledgmentContext } from '../../lib/assistant/safetyAcknowledgment.ts';
 import type { ProvisionProgress } from './provisioning.ts';
 
 export type Context = { generate(prompt: string): Promise<string>; stop(): Promise<void>; release(): Promise<void> };
-export type PocState = { progress: ProvisionProgress | null; phase: string; installed: boolean; loaded: boolean; busy: boolean; response: string; error: string; loadMs: number | null; inferenceMs: number | null };
+export type PocState = { progress: ProvisionProgress | null; phase: string; installed: boolean; loaded: boolean; busy: boolean; response: string; error: string; loadMs: number | null; inferenceMs: number | null; cleanupRequired?: boolean };
 export type PocDeps = {
   verify(signal: AbortSignal, progress?: (bytes: number) => void, force?: boolean): Promise<boolean>;
   provision(signal: AbortSignal, progress: (value: ProvisionProgress) => void): Promise<void>;
   initialize(): Promise<Context>;
 };
-const initial = (): PocState => ({ progress: null, phase: 'Not checked', installed: false, loaded: false, busy: false, response: '', error: '', loadMs: null, inferenceMs: null });
+const initial = (): PocState => ({ progress: null, phase: 'Not checked', installed: false, loaded: false, busy: false, response: '', error: '', loadMs: null, inferenceMs: null, cleanupRequired: false });
 
-/** No driver, sensor, audio, provider routing, or phone services are accepted here. */
+/** Serialized inference ownership only; no sensor classification, audio or phone services. */
 export class GemmaPoc {
   state = initial();
   private context: Context | null = null;
+  private invalidated = false;
+  get cleanupRequired(): boolean { return this.invalidated; }
+  private async releaseContext() {
+    if (!this.context) return;
+    this.invalidated = true; this.set({ cleanupRequired: true });
+    await this.context.release();
+    this.context = null; this.invalidated = false; this.set({ cleanupRequired: false });
+  }
   private active: { abort: AbortController; done: Promise<void>; inference: boolean } | null = null;
   private disposal: Promise<void> | null = null;
   private stopping: Promise<void> = Promise.resolve();
@@ -30,7 +38,7 @@ export class GemmaPoc {
     const abort = new AbortController();
     let finish!: () => void;
     const done = new Promise<void>(resolve => { finish = resolve; });
-    this.active = { abort, done, inference: phase === 'Running fixed test' };
+    this.active = { abort, done, inference: phase === 'Running fixed test' || phase === 'Generating safety acknowledgment' };
     this.set({ busy: true, error: '', phase });
     const timer = deadline === undefined ? undefined : setTimeout(() => {
       this.set({ error: `${phase} timed out. Waiting for native cleanup.`, phase: 'Stopping' });
@@ -75,11 +83,11 @@ export class GemmaPoc {
     if (signal.aborted) throw new Error('Model provisioning cancelled.');
     this.set({ installed: true });
   }); }
-  load() { return this.operation('Loading model', async signal => {
+  load(force = false) { return this.operation('Loading model', async signal => {
     if (this.context) throw new Error('Model is already loaded.');
     this.set({ installed: false, response: '', loadMs: null, progress: null });
     const verifying = Date.now();
-    if (!await this.deps.verify(signal, completed => this.set({ phase: 'Verifying SHA-256', progress: { stage: 'verify', completed, total: GEMMA_ARTIFACT.bytes, elapsedMs: Date.now() - verifying } }))) throw new Error('Model is missing. Provision it first.');
+    if (!await this.deps.verify(signal, completed => this.set({ phase: 'Verifying SHA-256', progress: { stage: 'verify', completed, total: GEMMA_ARTIFACT.bytes, elapsedMs: Date.now() - verifying } }), force)) throw new Error('Model is missing. Provision it first.');
     if (signal.aborted) throw new Error('Model loading cancelled.');
     this.set({ installed: true, phase: 'Loading model' });
     const started = Date.now();
@@ -87,13 +95,13 @@ export class GemmaPoc {
     // Initialization cannot be forcibly aborted. Retain ownership until it returns.
     this.context = context;
     if (signal.aborted) {
-      await context.release(); this.context = null;
+      await this.releaseContext();
       throw new Error('Model loading cancelled.');
     }
     this.set({ loadMs: Date.now() - started });
   }, 30000); }
   run() { return this.operation('Running fixed test', async signal => {
-    if (!this.context) throw new Error('Initialize the model first.');
+    if (!this.context || this.invalidated) throw new Error('Model cleanup is required before inference.');
     this.set({ response: '', inferenceMs: null });
     const started = Date.now();
     try {
@@ -101,13 +109,18 @@ export class GemmaPoc {
       if (!signal.aborted) this.set({ response });
     } finally { this.set({ inferenceMs: Date.now() - started }); }
   }, this.deadlineMs); }
-  /** Fixed, non-sensitive vocabulary task; never an arbitrary chat prompt. */
-  async selectSafetyAcknowledgment(): Promise<string> {
+  /** Bounded event-scoped empathy task; never an arbitrary chat prompt. */
+  async generateSafetyAcknowledgment(context: AcknowledgmentContext): Promise<string> {
+    if (!canGenerateAcknowledgment(context)) return '';
     let selected = '';
-    await this.operation('Running fixed test', async signal => {
-      if (!this.context) throw new Error('Model unavailable.');
-      const text = await this.context.generate(CONCERN_ACK_PROMPT);
-      if (!signal.aborted) selected = text;
+    await this.operation('Generating safety acknowledgment', async signal => {
+      if (!this.context || this.invalidated) throw new Error('Model unavailable or cleanup required.');
+      const started = Date.now();
+      this.set({ inferenceMs: null });
+      try {
+        const text = await this.context.generate(acknowledgmentPrompt(context));
+        if (!signal.aborted) selected = text;
+      } finally { this.set({ inferenceMs: Date.now() - started }); }
     }, 1500);
     return selected;
   }
@@ -117,7 +130,7 @@ export class GemmaPoc {
     this.disposal = (async () => {
       await this.active?.done;
       await this.operation('Unloading model', async () => {
-        if (this.context) { await this.context.release(); this.context = null; }
+        await this.releaseContext();
       }, 30000);
     })().finally(() => { this.disposal = null; });
     return this.disposal;

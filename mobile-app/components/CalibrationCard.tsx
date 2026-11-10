@@ -1,3 +1,4 @@
+import { LocalizedText as Text, LocalizedTextInput as TextInput } from '../lib/i18n/native';
 import { InformationButton } from './Information';
 import { useTheme } from '../lib/theme/ThemeProvider';
 import { presentationColors, type ThemeTokens } from '../lib/theme/tokens';
@@ -5,7 +6,7 @@ import { presentationColors, type ThemeTokens } from '../lib/theme/tokens';
  * Settings → Calibrate against a reference device (lib/analysis/calibration.ts).
  */
 import { useState } from 'react';
-import { Text, TextInput, View, StyleSheet } from 'react-native';
+import { View, StyleSheet } from 'react-native';
 
 import type { useDriveSession } from '../lib/hooks/useDriveSession';
 import { CAL_MAX_HR, CAL_SECONDS, accumulate, computeCalibration } from '../lib/analysis/calibration';

@@ -1,10 +1,13 @@
-import { Alert, Pressable, Text, View } from 'react-native';
+import { LocalizedAlert as Alert, LocalizedPressable as Pressable, LocalizedText as Text } from '../lib/i18n/native';
+import { View } from 'react-native';
 import { useTheme } from '../lib/theme/ThemeProvider';
+import { useAppLanguage } from '../lib/i18n/LanguageProvider';
 
 /** Uses the same native choice-sheet pattern as Switch Driver; no duplicate theme state. */
 export function AppearanceMenu() {
   const { tokens, preference, setPreference, error } = useTheme();
-  const labels = { light: 'Light', dark: 'Dark', system: 'System' } as const;
+  const { t } = useAppLanguage();
+  const labels = { light: t('Light'), dark: t('Dark'), system: t('System') } as const;
   const icons = { light: '☀', dark: '☾', system: '◐' } as const;
   return <View style={{ flexShrink: 1 }}>
     <Pressable accessibilityRole="button" accessibilityLabel={`Appearance: ${labels[preference]}. Change appearance`}

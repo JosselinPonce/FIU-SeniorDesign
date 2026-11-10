@@ -1,4 +1,5 @@
-import { approvedAcknowledgment, type SafetyAcknowledgment } from '../assistant/safetyAcknowledgment.ts';
+import { responsivenessProbe, traceVoiceCheckPublication } from '../voice/responsivenessDiagnostics.ts';
+import { approvedAcknowledgment, type SafetyAcknowledgment, type AcknowledgmentContext } from '../assistant/safetyAcknowledgment.ts';
 import { simulationCompletion, canOfferSafetyContinuation, type SafetyConversation } from '../assistant/safetyConversation.ts';
 import type { AssistantMode } from '../assistant/mode.ts';
 import type { PhoneHandoffOrigin } from '../voice/phoneHandoff.ts';
@@ -50,7 +51,7 @@ export function contactPhone(raw: string | null | undefined): { phone: string | 
   return { phone, error: null };
 }
 
-export type CheckPhase = 'speaking' | 'listening';
+export type CheckPhase = 'speaking' | 'preparing' | 'ready' | 'listening' | 'finalizing' | 'response_unavailable';
 
 export type SafetyState = {
   monitoring: MonitoringStatus;
@@ -94,7 +95,7 @@ type Deps = {
   /** Immediate foreground/screen check, independent of React effect delivery. */
   interactionCurrent?: () => boolean;
   assistantMode?: () => AssistantMode;
-  startAcknowledgment?: () => SafetyAcknowledgment;
+  startAcknowledgment?: (context: AcknowledgmentContext) => SafetyAcknowledgment;
   /** Opens the phone interface only; resolution does not mean a connected call. */
   handoffContact?: (phone: string, origin: PhoneHandoffOrigin) => Promise<unknown>;
   voiceIO: () => VoiceIO;
@@ -139,7 +140,15 @@ export class SafetyController {
   }
 
   private set(patch: Partial<SafetyState>) {
+    const previousCheck = this.state.check;
     this.state = { ...this.state, ...patch };
+    if ('check' in patch && (patch.check || previousCheck)) {
+      const check = patch.check ?? previousCheck;
+      traceVoiceCheckPublication({
+        captureId: check?.captureId, question: check?.question, phase: patch.check ? check?.phase : 'cleared',
+        fallbackText: !!check?.fallbackText,
+      });
+    }
     this.deps.onChange(this.state);
   }
 
@@ -506,18 +515,16 @@ export class SafetyController {
     };
     let messageSequence = 0;
     let activeSpeech: { interrupted: boolean } | null = null;
+    let recognitionEpoch = 0;
     let question: CheckQuestion = 'wellness';
     let captureId = '';
     let acknowledgment: SafetyAcknowledgment | null = null;
-    if (selected !== 'core') {
-      try { acknowledgment = this.deps.startAcknowledgment?.() ?? null; } catch { /* Fixed fallback. */ }
-    }
-    this.acknowledgment = acknowledgment;
     publishDialogue();
     this.deps.haptic('warning');
     const base = this.deps.voiceIO();
     // Report what the voice check is doing so the screen can show it.
     const io: VoiceIO = {
+      prepareRecognition: (lang, id) => { if (current()) base.prepareRecognition?.(lang, id); },
       speak: async (text, lang) => {
         if (current()) this.set({ check: { episode: ep, phase: 'speaking', question, captureId } });
         const operation = { interrupted: false }; activeSpeech = operation;
@@ -534,19 +541,46 @@ export class SafetyController {
           if (current() && !operation.interrupted) this.set({ check: { episode: ep, phase: 'speaking', question, captureId, fallbackText: text } });
           throw error;
         }
-        finally { if (activeSpeech === operation) activeSpeech = null; publishDialogue(); }
+        finally {
+          if (activeSpeech === operation) {
+            activeSpeech = null;
+            if (current() && !operation.interrupted && message.playback === 'completed')
+              this.set({ check: { episode: ep, phase: 'preparing', question, captureId } });
+          }
+          publishDialogue();
+        }
       },
-      listen: (lang, ms, hints, captureId) => {
-        if (current()) this.set({ check: { episode: ep, phase: 'listening', question, captureId } });
-        return base.listen(lang, ms, hints, captureId);
+      listen: (lang, ms, hints, id) => {
+        if (current()) this.set({ check: { episode: ep, phase: 'preparing', question, captureId: id } });
+        let pending = true;
+        const epoch = ++recognitionEpoch;
+        const trace = responsivenessProbe('warning', 'VoiceCheck controller capture');
+        trace('capture registered', { captureId: id, question, current: current() });
+        const result = base.listen(lang, ms, hints, id, phase => {
+          if (pending && epoch === recognitionEpoch && current() && captureId === id && this.voice === voice && voice.isAwaitingResponse(id))
+            this.set({ check: { episode: ep, phase, question, captureId: id } });
+        });
+        return result.finally(() => {
+          trace('capture settled', { captureId: id, question, current: current(),
+            captureMatches: captureId === id, cancelled: epoch !== recognitionEpoch });
+          pending = false;
+        });
       },
-      cancel: () => { if (activeSpeech) activeSpeech.interrupted = true; base.cancel(); },
+      responseUnavailable: () => { if (current()) this.set({ check: { episode: ep, phase: 'response_unavailable', question, captureId } }); },
+      cancel: () => { recognitionEpoch++; if (activeSpeech) activeSpeech.interrupted = true; base.cancel(); },
     };
     const voice = new VoiceCheck(io, this.lang, this.name, {
       contactAvailable: contact.phone !== null,
       onQuestion: (q, id) => { question = q; captureId = id; },
       contactName: selected !== 'core' ? profile?.emergency_name ?? undefined : undefined,
-      acknowledgment: () => {
+      cancelAcknowledgment: () => acknowledgment?.cancel(),
+      startAcknowledgment: context => {
+        if (!current() || selected === 'core') return;
+        try { acknowledgment = this.deps.startAcknowledgment?.(context) ?? null; } catch { /* Fixed fallback. */ }
+        this.acknowledgment = acknowledgment;
+      },
+      acknowledgment: context => {
+        if (!current()) return approvedAcknowledgment(null, this.lang, context);
         const text = acknowledgment?.get(this.lang) ?? approvedAcknowledgment(null, this.lang);
         dialogue.acknowledgmentSource = acknowledgment?.source ?? 'fallback';
         publishDialogue();
@@ -567,7 +601,7 @@ export class SafetyController {
       result = voice.cancelledResult ?? { outcome: 'no_response', urgent: false, channel: 'none', attempts: 0, confidence: null, contactCall: 'not_requested' };
     }
     this.voice = null;
-    acknowledgment?.cancel();
+    this.acknowledgment?.cancel();
     if (this.acknowledgment === acknowledgment) this.acknowledgment = null;
     this.deps.releaseAudio?.();
     try {

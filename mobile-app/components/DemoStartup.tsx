@@ -1,7 +1,9 @@
+import { LocalizedPressable as Pressable, LocalizedText as Text, LocalizedTextInput as TextInput } from '../lib/i18n/native';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { Image, KeyboardAvoidingView, Platform, Pressable, ScrollView, Text, TextInput, View } from 'react-native';
+import { Image, KeyboardAvoidingView, Platform, ScrollView, View } from 'react-native';
 import { SafeAreaView } from 'react-native';
 import { useTheme } from '../lib/theme/ThemeProvider';
+import { LanguageMenu } from './LanguageMenu';
 import { sensiSessionStorage, sensiSupabase } from '../lib/assistant/sensiSupabase';
 import { signInDemo, signOutDemo } from '../lib/assistant/demoAuth';
 import { demoEmail, DEMO_USERNAME, restoreDemoSession, startupRoute } from '../lib/assistant/demoStartup';
@@ -74,6 +76,7 @@ export function DemoStartup({ children }: { children: ReactNode }) {
     <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
       <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={{ flexGrow: 1, justifyContent: 'center', padding: 24 }}>
         <View style={{ width: '100%', maxWidth: 420, alignSelf: 'center', gap: 16 }}>
+          <LanguageMenu />
           <Image source={require('../assets/branding/drivesense-logo.png')} accessibilityLabel="DriveSense logo"
             resizeMode="contain" style={{ width: 144, height: 144, alignSelf: 'center' }} />
           <Text accessibilityRole="header" style={{ color: C.ink, fontSize: 28, fontWeight: '800', textAlign: 'center' }}>DriveSense</Text>

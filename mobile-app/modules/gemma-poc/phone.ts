@@ -7,7 +7,7 @@ import { GEMMA_ARTIFACT, MODEL_URL } from './artifact';
 import { GemmaPoc } from './controller';
 import { ModelProvisioner } from './provisioning';
 import { VerifiedModelFile } from './verifiedFile';
-import { startSafetyAcknowledgment } from '../../lib/assistant/safetyAcknowledgment';
+import { startSafetyAcknowledgment, type AcknowledgmentContext } from '../../lib/assistant/safetyAcknowledgment';
 import { GEMMA_TERMS_TEXT, GEMMA_POLICY_TEXT } from '../../lib/onboarding/gemmaTerms';
 
 function supported() {
@@ -95,17 +95,20 @@ const provisioner = new ModelProvisioner({
 
 // A single process-wide controller prevents two native contexts.
 export const gemmaPoc = new GemmaPoc({
-  verify: (signal, progress, force) => verifyFile(paths().model, signal, progress, force),
+  verify: (signal, progress, force) => {
+    if (provisioner.busy) throw new Error('Previous model download cleanup is still pending. Wait and retry.');
+    return verifyFile(paths().model, signal, progress, force);
+  },
   provision: (signal, progress) => provisioner.run(signal, progress),
   initialize: async () => {
     supported();
     try {
       const { initLlama } = await import('llama.rn');
-      const context = await initLlama({ model: paths().model, n_ctx: 512, n_batch: 64,
+      const context = await initLlama({ model: paths().model, n_ctx: 1024, n_batch: 64,
         n_threads: 2, n_gpu_layers: Platform.OS === 'ios' ? 99 : 0, use_mlock: false, use_mmap: true });
       return {
         generate: async prompt => (await context.completion({ messages: [{ role: 'user', content: prompt }],
-          n_predict: 32, temperature: 0, stop: ['<end_of_turn>', '<eos>'] })).text,
+          n_predict: 64, temperature: 0, stop: ['<end_of_turn>', '<eos>'] })).text,
         stop: () => context.stopCompletion(), release: () => context.release(),
       };
     } catch (error) {
@@ -115,10 +118,19 @@ export const gemmaPoc = new GemmaPoc({
 });
 
 let safetyGemmaOwned = false;
+let maintenanceOwned = false;
+/** Hold the existing runtime across the entire explicit repair sequence. */
+export async function withGemmaMaintenance(action: () => Promise<void>): Promise<void> {
+  if (maintenanceOwned || safetyGemmaOwned || provisioner.busy || gemmaPoc.state.busy
+      || gemmaPoc.state.loaded && !gemmaPoc.cleanupRequired)
+    throw new Error('Gemma is busy. Wait for the current operation to finish and retry.');
+  maintenanceOwned = true;
+  try { await action(); } finally { maintenanceOwned = false; }
+}
 /** Event-only warm request. Never provisions or downloads a model. */
-export function phoneSafetyAcknowledgment() {
+export function phoneSafetyAcknowledgment(context: AcknowledgmentContext) {
   return startSafetyAcknowledgment(async signal => {
-    if (safetyGemmaOwned || gemmaPoc.state.busy || AppState.currentState !== 'active') throw new Error('Gemma is busy or app is inactive.');
+    if (maintenanceOwned || safetyGemmaOwned || provisioner.busy || gemmaPoc.state.busy || gemmaPoc.cleanupRequired || AppState.currentState !== 'active') throw new Error('Gemma is busy or app is inactive.');
     safetyGemmaOwned = true;
     let current = true;
     const cancel = () => gemmaPoc.cancel();
@@ -130,13 +142,16 @@ export function phoneSafetyAcknowledgment() {
       if (signal.aborted || !current) return '';
       if (!gemmaPoc.state.loaded) await gemmaPoc.load();
       if (signal.aborted || !current || !gemmaPoc.state.loaded) return '';
-      const text = await gemmaPoc.selectSafetyAcknowledgment();
+      const text = await gemmaPoc.generateSafetyAcknowledgment(context);
       return signal.aborted || !current ? '' : text;
     } finally {
       signal.removeEventListener('abort', cancel);
       subscription.remove();
-      await gemmaPoc.dispose();
-      safetyGemmaOwned = false;
+      try {
+        await gemmaPoc.dispose();
+        if (gemmaPoc.state.loaded || gemmaPoc.cleanupRequired || gemmaPoc.state.error)
+          throw new Error('Model cleanup did not complete; using fixed acknowledgment.');
+      } finally { safetyGemmaOwned = false; }
     }
-  });
+  }, context);
 }

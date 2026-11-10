@@ -2,6 +2,108 @@ import AVFoundation
 import Foundation
 import UIKit
 
+/// Short local cue, completed before recognition starts. Shares the caller's existing audio lease.
+@MainActor
+final class VoiceCheckListeningCue {
+  static let shared = VoiceCheckListeningCue()
+  @MainActor private final class Operation: NSObject, AVAudioPlayerDelegate {
+    let id: String
+    var player: AVAudioPlayer?
+    var task: Task<Void, Error>?
+    var completion: CheckedContinuation<Void, Error>?
+    var timeout: Task<Void, Never>?
+    init(_ id: String) { self.id = id; super.init() }
+    func finish(_ error: Error? = nil) {
+      timeout?.cancel(); timeout = nil
+      let pending = completion; completion = nil
+      if let error { pending?.resume(throwing: error) } else { pending?.resume() }
+    }
+    func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
+      finish(flag ? nil : NSError(domain: "VoiceCheckCue", code: 2, userInfo: [NSLocalizedDescriptionKey: "Listening cue playback did not finish."]))
+    }
+    func audioPlayerDecodeErrorDidOccur(_ player: AVAudioPlayer, error: Error?) {
+      finish(error ?? NSError(domain: "VoiceCheckCue", code: 3))
+    }
+  }
+  private var active: Operation?
+  private var cancelled: [String] = []
+  private func waveform() -> Data {
+    let rate = 44100, count = 6174 // 140 ms with a smooth attack and release.
+    var pcm = Data()
+    func append<T: FixedWidthInteger>(_ value: T, to data: inout Data) {
+      var little = value.littleEndian
+      withUnsafeBytes(of: &little) { data.append(contentsOf: $0) }
+    }
+    for index in 0..<count {
+      let t = Double(index) / Double(rate)
+      let envelope = pow(sin(.pi * Double(index) / Double(count)), 2)
+      let sample = 0.12 * envelope * (sin(2 * .pi * 660 * t) + 0.4 * sin(2 * .pi * 880 * t))
+      append(Int16(sample * 32767), to: &pcm)
+    }
+    var wav = Data("RIFF".utf8)
+    append(UInt32(36 + pcm.count), to: &wav); wav.append(Data("WAVEfmt ".utf8))
+    append(UInt32(16), to: &wav); append(UInt16(1), to: &wav); append(UInt16(1), to: &wav)
+    append(UInt32(rate), to: &wav); append(UInt32(rate * 2), to: &wav)
+    append(UInt16(2), to: &wav); append(UInt16(16), to: &wav)
+    wav.append(Data("data".utf8)); append(UInt32(pcm.count), to: &wav); wav.append(pcm)
+    return wav
+  }
+  func play(_ requestId: String, preservingRecordingSession: Bool = false, timings: VoiceRecognitionTimings? = nil) async throws {
+    if let index = cancelled.firstIndex(of: requestId) { cancelled.remove(at: index); return }
+    guard active == nil else { throw NSError(domain: "VoiceCheckCue", code: 5, userInfo: [NSLocalizedDescriptionKey: "Another listening cue is already active."]) }
+    let operation = Operation(requestId)
+    active = operation
+    defer { if active === operation { active = nil } }
+    operation.task = Task {
+      defer { operation.player?.stop(); operation.player = nil }
+      try Task.checkCancellation()
+      let session = AVAudioSession.sharedInstance()
+      if !preservingRecordingSession {
+        try session.setCategory(.playback, mode: .voicePrompt, options: [.duckOthers])
+        try session.setActive(true)
+      }
+      let player = try AVAudioPlayer(data: waveform())
+      operation.player = player
+      player.delegate = operation
+      player.volume = 0.65 // Moderate cue gain; hardware volume and the selected route remain user-controlled.
+      try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+        operation.completion = continuation
+        timings?.mark("cuePlayerPreparationStarted")
+        let prepared = player.prepareToPlay()
+        timings?.mark("cuePlayerPreparationReturned")
+        guard prepared, player.play() else {
+          operation.finish(NSError(domain: "VoiceCheckCue", code: 1, userInfo: [NSLocalizedDescriptionKey: "Listening cue could not start on the current audio route."]))
+          return
+        }
+        timings?.mark("cuePlayerPlayReturned")
+        operation.timeout = Task {
+          do { try await Task.sleep(nanoseconds: 800_000_000) } catch { return }
+          player.stop()
+          operation.finish(NSError(domain: "VoiceCheckCue", code: 4, userInfo: [NSLocalizedDescriptionKey: "Listening cue playback timed out."]))
+        }
+      }
+      timings?.mark("cuePlaybackCompletionObserved")
+      // Preserve the short acoustic tail, but measure completion from actual playback, not a startup estimate.
+      try await Task.sleep(nanoseconds: 40_000_000)
+      timings?.mark("cueAcousticTailCompleted")
+    }
+    try await operation.task!.value
+  }
+  func cancel(_ requestId: String) async {
+    stop(requestId)
+    if let operation = active, operation.id == requestId { _ = await operation.task?.result }
+  }
+  func stop(_ requestId: String) {
+    guard let operation = active, operation.id == requestId else {
+      cancelled.append(requestId); if cancelled.count > 16 { cancelled.removeFirst() }; return
+    }
+    operation.player?.stop()
+    operation.finish(CancellationError())
+    operation.task?.cancel()
+  }
+  func cancelAll() { if let operation = active { stop(operation.id) } }
+}
+
 // BEGIN PLAYBACK COMPLETION STATE: exercised by host Swift regression tests.
 struct LocalPlaybackCompletion {
   private(set) var didStart = false

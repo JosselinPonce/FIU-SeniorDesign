@@ -37,7 +37,7 @@ test('Gemma is fixed in production wiring; persisted legacy mode cannot select a
 test('Settings contains no provider selector/readiness/sign-in but retains voices, rehearsal and Gemma diagnostic', () => {
   const settings = read('components/SettingsView.tsx');
   assert.doesNotMatch(settings, /ASSISTANT_MODES|Assistant Mode|Connected AI|Local AI|DemoAuthPanel|PHONE_CONNECTED_READINESS|onAssistantModeChange/);
-  for (const term of ['Sensi · Gemma on-device', '<VoicePicker', 'd.rehearseVoice()', 'props.gemmaDiagnostics']) assert.ok(settings.includes(term), term);
+  for (const term of ['Sensi Assistant', '<VoicePicker', 'd.rehearseVoice()', 'props.gemmaDiagnostics']) assert.ok(settings.includes(term), term);
   assert.match(read('components/SmartWheelScreen.tsx'), /const GemmaDiagnostic = __DEV__ \?/);
 });
 test('retired implementations are removed from production locations, and no ordinary conversation UI remains', () => {
@@ -47,7 +47,7 @@ test('retired implementations are removed from production locations, and no ordi
 });
 test('Gemma uses the same verified runtime with bounded allowlisted output and deterministic fallback', () => {
   assert.match(read('modules/gemma-poc/phone.ts'), /initLlama/); assert.match(read('modules/gemma-poc/phone.ts'), /verifiedModel\.verify/);
-  assert.match(read('modules/gemma-poc/controller.ts'), /CONCERN_ACK_PROMPT/); assert.match(read('modules/gemma-poc/controller.ts'), /1500/);
+  assert.match(read('modules/gemma-poc/controller.ts'), /acknowledgmentPrompt/); assert.match(read('modules/gemma-poc/controller.ts'), /1500/);
   assert.equal(approvedAcknowledgment('Call your contact now, you have a medical condition.', 'en'), approvedAcknowledgment(null, 'en'));
   assert.match(read('lib/voice/speechIO.ts'), /listenOffline/); assert.match(read('components/VoicePicker.tsx'), /listVoices/);
 });

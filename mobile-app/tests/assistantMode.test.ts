@@ -92,7 +92,7 @@ test('each persisted mode leaves real frame-triggered warning, incident and thre
       const done = new Promise<void>(r => { resolve = r; });
       const controller = new SafetyController({
         assistantMode: () => key,
-        voiceIO: () => ({ speak: async text => { spoken.push(text); }, listen: async (_l, _m, _h, id) => recognitionEvidence(id, { status: 'success', transcript: "I'm fine", finalTranscript: "I'm fine", isFinal: true, finalResultReceived: true }), cancel: () => {} }),
+        voiceIO: () => ({ speak: async text => { spoken.push(text); }, listen: async (_l, _m, _h, id, onPhase) => { onPhase?.('listening'); return recognitionEvidence(id, { status: 'success', transcript: "I'm fine", finalTranscript: "I'm fine", isFinal: true, finalResultReceived: true }); }, cancel: () => {} }),
         save: async row => { saved.push(row); }, saveAck: async (_, ack) => { acks.push(ack); },
         haptic: () => {}, newId: () => 'episode',
         onChange: state => { states.push(state); if (state.last) resolve(); },

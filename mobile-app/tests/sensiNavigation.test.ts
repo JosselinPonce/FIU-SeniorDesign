@@ -16,6 +16,7 @@ function nodes(tree: any): any[] {
 function harness(model: GemmaFileStatus, tokens = light) {
   const exports: any = {};
   const deps: Record<string, unknown> = {
+    '../lib/i18n/native': { LocalizedText: 'Text', LocalizedPressable: 'Pressable' },
     react: { useState: () => [model, () => {}], useEffect() {} },
     'react/jsx-runtime': require('react/jsx-runtime'),
     'react-native': { Modal: 'Modal', SafeAreaView: 'SafeAreaView', Text: 'Text', View: 'View', Pressable: 'Pressable' },
@@ -62,12 +63,12 @@ for (const tokens of [light, dark]) {
     const rendered = nodes(tree);
     const text = rendered.filter(node => node.type === 'Text').map(node => node.props.children).flat().join(' ');
     assert.match(text, /Hi, I'm Sensi!/); assert.match(text, /driver safety assistant/);
-    assert.match(text, /Gemma model unavailable/); assert.match(text, /Waiting for.*sensor connection/);
+    assert.doesNotMatch(text, /Gemma model/); assert.match(text, /Waiting for.*sensor connection/);
     assert.match(text, /Voice readiness is checked/);
     assert.equal(rendered.find(node => node.type === 'SafeAreaView').props.style.backgroundColor, tokens.background);
     assert.equal(rendered.some(node => /TextInput|TypedResponse|ConversationThread/.test(String(node.type))), false);
-    const buttons = rendered.filter(node => node.type === 'Btn'); assert.deepEqual(buttons.map(node => node.props.title), ['Back']);
-    buttons[0].props.onPress(); assert.equal(closed, true);
+    const buttons = rendered.filter(node => node.type === 'Btn'); assert.deepEqual(buttons.map(node => node.props.title), ['Try Sensi Safety Check', 'Back']);
+    buttons[1].props.onPress(); assert.equal(closed, true);
     assert.equal(ui.SensiStandby({ visible: false }), null);
   });
 }

@@ -10,7 +10,7 @@ type RecordState = { version: 1; noticeVersion: string; termsVersion: string; ar
 export type SetupState = { booted: boolean; busy: boolean; ready: boolean; modelReady: boolean;
   page: number; notices: boolean; terms: boolean; recovery: boolean; error: string };
 export type SetupRuntime = { state: PocState; subscribe(fn: (s: PocState) => void): () => void;
-  load(): Promise<void>; provision(): Promise<void>; dispose(): Promise<void>; cancel(): void };
+  load(force?: boolean): Promise<void>; maintenance?(action: () => Promise<void>): Promise<void>; provision(): Promise<void>; dispose(): Promise<void>; cancel(): void };
 type Store = { getSetting(key: string): Promise<string | null>; setSetting(key: string, value: string): Promise<unknown> };
 
 /** Launch-only setup gate. Never observes sensors, profiles, calls or recording.
@@ -50,7 +50,8 @@ export class SensiSetup {
           const page = Number.isInteger(saved.page) ? Math.max(0, Math.min(4, saved.page)) : 0;
           this.set({ notices, terms, page: !notices ? Math.min(page, 2) : !terms ? Math.min(page, 4) : page });
           if (saved.completed === true && notices && terms) {
-            await this.prepare(false, true);
+            // Admission is persisted consent/completion, never runtime readiness.
+            this.set({ ready: true, modelReady: false, page: 5, recovery: false, error: '' });
           }
         }
       } catch (error) { this.set({ error: `Could not restore setup: ${String(error)}. You can review and retry.` }); }
@@ -72,20 +73,37 @@ export class SensiSetup {
     if (!this.state.busy) return;
     this.epoch++;
     this.runtime.cancel();
-    this.set({ ready: false, modelReady: false, error: 'Setup interrupted. Return to this screen and retry when ready.' });
+    this.set({ ready: this.state.ready, modelReady: false, error: 'Setup interrupted. Return to this screen and retry when ready.' });
   }
-  async prepare(allowDownload = true, returning = false) {
-    if (this.state.busy || this.state.ready) return;
-    if (!this.canRun()) { this.set({ page: 4, recovery: true, error: 'Bring DriveSense to the foreground and retry setup.' }); return; }
+  prepare(allowDownload = true, returning = false) {
+    return this.prepareModel(allowDownload, returning, false, () => true);
+  }
+  /** Explicit Release-accessible maintenance never revokes dashboard admission. */
+  async repair(isCurrent: () => boolean = () => true) {
+    if (this.state.busy || !this.state.ready) return;
+    try {
+      const action = () => this.prepareModel(true, false, true, isCurrent);
+      if (this.runtime.maintenance) await this.runtime.maintenance(action); else await action();
+    } catch (error) {
+      this.set({ modelReady: false, recovery: true, error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+  private async prepareModel(allowDownload: boolean, returning: boolean, maintenance: boolean, isCurrent: () => boolean) {
+    if (this.state.busy || this.state.ready && !maintenance) return;
+    if (!this.canRun() || !isCurrent()) { this.set({ page: maintenance ? this.state.page : 4, recovery: true, error: 'Bring DriveSense to the foreground and retry setup.' }); return; }
     if (!this.state.notices || !this.state.terms) { this.set({ error: 'Acknowledge the safety/privacy notices and Gemma terms before setup.' }); return; }
     if (this.runtime.state.busy) { this.set({ error: 'Gemma is busy. Wait for the current operation to finish and retry.' }); return; }
     const epoch = ++this.epoch;
-    const check = () => { if (epoch !== this.epoch || !this.canRun()) throw new Error('Setup interrupted. Retry when the app is active.'); };
+    const check = () => { if (epoch !== this.epoch || !this.canRun() || !isCurrent()) throw new Error('Setup interrupted. Retry when the app is active.'); };
     const success = () => { if (this.runtime.state.error) throw new Error(this.runtime.state.error); check(); };
     this.set({ busy: true, error: '', modelReady: false });
     try {
       await this.writes; check();
-      await this.runtime.load(); check();
+      if (maintenance && this.runtime.state.loaded) {
+        await this.runtime.dispose(); success();
+        if (this.runtime.state.loaded) throw new Error('Model cleanup has not completed. Retry after cleanup.');
+      }
+      await this.runtime.load(maintenance); check();
       const replaceable = /Model is missing|Model size is incorrect|Model integrity check failed/.test(this.runtime.state.error);
       if (replaceable && !this.runtime.state.installed && allowDownload) {
         // Existing model missing/corrupt: use the same exclusive staging writer.
@@ -97,12 +115,12 @@ export class SensiSetup {
       if (!this.runtime.state.installed || !this.runtime.state.loaded) throw new Error('Verified model initialization did not complete.');
       await this.runtime.dispose(); success();
       if (this.runtime.state.loaded) throw new Error('Model cleanup has not completed. Retry after cleanup.');
-      this.set({ page: 5, modelReady: true, recovery: false });
-      await this.persist(returning); check();
+      this.set({ page: maintenance ? this.state.page : 5, modelReady: true, recovery: false });
+      if (!maintenance) { await this.persist(returning); check(); }
       if (returning) this.set({ ready: true });
     } catch (error) {
-      this.set({ page: 4, recovery: true, error: error instanceof Error ? error.message : String(error) });
-      await this.runtime.dispose();
+      this.set({ page: maintenance ? this.state.page : 4, modelReady: false, recovery: true, error: error instanceof Error ? error.message : String(error) });
+      try { await this.runtime.dispose(); } catch { /* Retained native ownership requires an explicit cleanup retry. */ }
     } finally { this.set({ busy: false }); }
   }
   async complete() {

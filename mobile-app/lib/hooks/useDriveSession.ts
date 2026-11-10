@@ -566,14 +566,14 @@ export function useDriveSession() {
     } catch (e) { profileEdit.current = null; throw e; }
   }, [state.driver, safety, loadBaseline]);
 
-  const saveProfileEdit = useCallback(async (original: DriverProfile, input: repo.NewProfileInput) => {
+  const saveProfileEdit = useCallback(async (original: DriverProfile, input: repo.NewProfileInput, languageOnly = false) => {
     const selection = selectedProfile.current;
     const current = () => profileEdit.current === original.id && selection === selectedProfile.current
       && selection?.id === original.id && !sessionRef.current && !startingSession.current && !endingSession.current;
     await saveSelectedProfile(original, input, {
       isCurrent: current,
       cancel: async () => { safety.cancelCheck(); await appAudio.stopActive(); },
-      save: repo.updateProfile,
+      save: (id, input, revision) => repo.updateProfile(id, input, revision, languageOnly),
       load: async saved => {
         const [baseline, ack, medians] = await Promise.all([
           repo.driverBaseline(saved.id), repo.getAck(saved.id), repo.driveMedians(saved.id),
@@ -591,6 +591,13 @@ export function useDriveSession() {
   }, [safety]);
 
   const closeProfileEdit = useCallback(() => { profileEdit.current = null; }, []);
+  const updateVoiceCheckLanguage = useCallback(async (language: 'en' | 'es') => {
+    if (state.safety.check || state.safety.demo) throw new Error('Safety check active.');
+    const original = await beginProfileEdit();
+    try { await saveProfileEdit(original, { ...original, language,
+      conditions: JSON.parse(original.conditions || '[]'), medications: JSON.parse(original.medications || '[]') }, true); }
+    finally { closeProfileEdit(); }
+  }, [beginProfileEdit, saveProfileEdit, closeProfileEdit, state.safety.check, state.safety.demo]);
   useEffect(() => {
     const timer = setInterval(() => { void syncProfiles().catch(() => undefined); }, 60_000);
     return () => clearInterval(timer);
@@ -702,6 +709,7 @@ export function useDriveSession() {
     startSession,
     setSafetyPresentationEnabled,
     beginProfileEdit,
+    updateVoiceCheckLanguage,
     saveProfileEdit,
     closeProfileEdit,
     endSession,

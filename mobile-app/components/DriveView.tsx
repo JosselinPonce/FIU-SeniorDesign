@@ -1,3 +1,5 @@
+import { traceVoiceCheckUI } from '../lib/voice/responsivenessDiagnostics';
+import { LocalizedPressable as Pressable, LocalizedText as Text } from '../lib/i18n/native';
 import { SafetyTypedResponse } from './SafetyTypedResponse';
 import { monitoringMessage } from '../lib/analysis/sensorContinuity';
 import { useEffect, useRef, useState } from 'react';
@@ -9,7 +11,7 @@ import { presentationColors, type ThemeTokens } from '../lib/theme/tokens';
  * The in-car screen: is everything connected, what are the vitals, is data
  * flowing, and one big start/stop button. Technical detail lives in Settings.
  */
-import { Linking, Modal, Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
+import { Linking, Modal, ScrollView, StyleSheet, View, useWindowDimensions } from 'react-native';
 
 import type { useDriveSession } from '../lib/hooks/useDriveSession';
 import { CHART_SECONDS } from '../lib/hooks/useDriveSession';
@@ -272,6 +274,10 @@ export function VoiceCheckModal(props: { drive: Drive }) {
   const st = makeStyles(tokens);
   const d = props.drive;
   const sf = d.safety;
+  const diagnosticCheck = props.drive.safety.check;
+  useEffect(() => {
+    if (diagnosticCheck && !sf.conversation) traceVoiceCheckUI(diagnosticCheck, 'drive');
+  }, [diagnosticCheck?.captureId, diagnosticCheck?.question, diagnosticCheck?.phase, !!diagnosticCheck?.fallbackText, !!sf.conversation]);
   const offer = sf.check?.question === 'contact_offer';
   if (sf.conversation) return null; // Local/Connected use the shared Sensi safety view.
   return (
@@ -286,7 +292,7 @@ export function VoiceCheckModal(props: { drive: Drive }) {
             <View style={st.phase}>
               <View style={[st.phaseDot, { backgroundColor: sf.check?.phase === 'listening' ? C.heart : C.brand }]} />
               <Text style={st.phaseText}>
-                {sf.check?.fallbackText ? 'Audio unavailable — use the buttons below' : sf.check?.phase === 'listening' ? 'Listening — just say "yes" or "no"' : 'Speaking…'}
+                {sf.check?.fallbackText ? 'Audio unavailable — use the buttons below' : sf.check?.phase === 'listening' ? 'Listening — just say "yes" or "no"' : sf.check?.phase === 'preparing' ? 'Preparing microphone' : sf.check?.phase === 'finalizing' ? 'Processing response…' : sf.check?.phase === 'response_unavailable' ? 'Voice unavailable — use buttons or type a response' : 'Speaking…'}
               </Text>
             </View>
             {sf.check?.fallbackText ? <Text style={st.alertBody}>{sf.check.fallbackText}</Text> : null}

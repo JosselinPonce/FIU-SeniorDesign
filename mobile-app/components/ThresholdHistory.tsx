@@ -1,10 +1,11 @@
+import { LocalizedText as Text } from '../lib/i18n/native';
 import { useTheme } from '../lib/theme/ThemeProvider';
 import { presentationColors, type ThemeTokens } from '../lib/theme/tokens';
 /**
  * Settings → how this driver's warning lines have adapted, newest first.
  */
 import { useEffect, useState } from 'react';
-import { StyleSheet, Text, View } from 'react-native';
+import { StyleSheet, View } from 'react-native';
 
 import * as repo from '../lib/db/repositories';
 import type { ThresholdSnapshot } from '../lib/db/repositories';

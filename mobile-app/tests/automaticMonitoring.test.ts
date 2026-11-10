@@ -18,7 +18,7 @@ function fixture() {
   let partial: ((text: string) => void) | null = null;
   const saved: any[] = [], calls: string[] = [], speech: string[] = [];
   const c = new SafetyController({ assistantMode: () => 'local',
-    startAcknowledgment: () => { inference++; return { get: () => 'I hear you.', source: 'gemma', cancel() { inferenceCancelled++; } }; },
+    startAcknowledgment: () => { inference++; return { get: () => "I'm sorry you're feeling dizzy.", source: 'gemma', cancel() { inferenceCancelled++; } }; },
     voiceIO: () => ({ speak: async text => { speech.push(text); }, listen: async (_l, _m, _h, id) => new Promise(resolve => {
       final = text => resolve(recognitionEvidence(id, { status: 'success', transcript: text, finalTranscript: text, isFinal: true, finalResultReceived: true }));
       partial = text => resolve(recognitionEvidence(id, { status: 'timeout', transcript: text, isFinal: false, finalResultReceived: false }));
@@ -41,10 +41,12 @@ test('foreground valid sensors activate VoiceCheck without recording, inference 
   const f = fixture();
   assert.equal(f.state.monitoring, 'waiting'); f.trigger(); await tick();
   assert.equal(f.state.monitoring, 'active'); assert.equal(f.state.conversation?.finished, false);
-  assert.ok(f.speech[0]?.includes('okay')); assert.equal(f.inference, 1);
+  assert.ok(f.speech[0]?.includes('okay')); assert.equal(f.inference, 0);
   assert.deepEqual(f.saved, []);
   f.c.answerText("I'm dizzy", f.scope()); await tick();
-  assert.match(f.speech.join(' '), /I hear you\..*pull over/);
+  assert.equal(f.inference, 1);
+  assert.match(f.speech.join(' '), /pull over.*I'm sorry you're feeling dizzy\./);
+  assert.match(f.speech[2]!, /Would you like me to call Mom\?/);
   assert.equal(f.state.check?.question, 'contact_offer'); assert.deepEqual(f.calls, []);
   f.final('yes'); await tick();
   assert.deepEqual(f.calls, ['+13055550123']); assert.equal(f.state.last?.handoff, 'opened');

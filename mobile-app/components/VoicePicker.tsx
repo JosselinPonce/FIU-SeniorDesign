@@ -1,3 +1,4 @@
+import { LocalizedPressable as Pressable, LocalizedText as Text } from '../lib/i18n/native';
 import { voiceDisplayLabel } from '../lib/ui/voiceLabel';
 import { useTheme } from '../lib/theme/ThemeProvider';
 import { presentationColors, type ThemeTokens } from '../lib/theme/tokens';
@@ -7,7 +8,7 @@ import { presentationColors, type ThemeTokens } from '../lib/theme/tokens';
  * it; "Automatic" goes back to picking the best one.
  */
 import { useEffect, useState } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { StyleSheet, View } from 'react-native';
 
 import * as repo from '../lib/db/repositories';
 import { listVoices, previewVoice, setPreferredVoice, type VoiceChoice } from '../lib/voice/speechIO';

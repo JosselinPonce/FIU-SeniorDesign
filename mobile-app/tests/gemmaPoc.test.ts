@@ -86,7 +86,7 @@ test('diagnostic entry stays development-only; shared provisioning requires onbo
   const phone = read('../modules/gemma-poc/phone.ts');
   assert.match(read('../modules/gemma-poc/GemmaDiagnostic.tsx'), /if \(!__DEV__\)/);
   assert.match(read('../lib/onboarding/setup.ts'), /!this.state.notices \|\| !this.state.terms/);
-  assert.match(phone, /n_predict: 32/);
+  assert.match(phone, /n_predict: 64/);
   assert.match(phone, /await verifyFile\(paths\(\).staging, signal, progress, true\)/);
   assert.match(phone, /verifyNativeFile\(nativeFileHash\(\)/);
   assert.doesNotMatch(phone, /hash.update|readBytes|base64/);
@@ -95,4 +95,24 @@ test('diagnostic entry stays development-only; shared provisioning requires onbo
   assert.match(shell, /const GemmaDiagnostic = __DEV__ \?/);
   assert.match(shell, /gemmaOpen && GemmaDiagnostic && !drive.hasActiveSession/);
   assert.doesNotMatch(read('../lib/voice/voiceCheck.ts'), /gemma-poc/);
+});
+
+test('failed release quarantines the retained context; only cleanup retry can make a subsequent load usable', async () => {
+  const { acknowledgmentContext } = await import('../lib/assistant/safetyAcknowledgment.ts');
+  let fail = true, generated = 0;
+  const f = fixture({ generate: async () => { generated++; return "I'm sorry you're feeling dizzy."; }, release: async () => { if (fail) throw Error('release failed'); } });
+  await f.poc.load(); await f.poc.dispose(); assert.equal(f.poc.cleanupRequired, true); assert.equal(f.poc.state.cleanupRequired, true);
+  await f.poc.run(); assert.equal(generated, 0);
+  assert.equal(await f.poc.generateSafetyAcknowledgment(acknowledgmentContext('bpm_high', 'en', "I'm dizzy")), '');
+  assert.equal(generated, 0); await f.poc.load(); assert.equal(f.poc.cleanupRequired, true);
+  fail = false; await f.poc.dispose(); assert.equal(f.poc.cleanupRequired, false); assert.equal(f.poc.state.loaded, false);
+  await f.poc.load(); await f.poc.run(); assert.equal(generated, 1); await f.poc.dispose();
+});
+test('cancelled initialization with failed release is also quarantined', async () => {
+  const init = deferred<Context>(); let fail = true, generated = 0;
+  const poc = new GemmaPoc({ verify: async () => true, provision: async () => {}, initialize: () => init.promise });
+  const loading = poc.load(); await tick(); poc.cancel();
+  init.resolve({ generate: async () => { generated++; return 'bad'; }, stop: async () => {}, release: async () => { if (fail) throw Error('release failed'); } });
+  await loading; assert.equal(poc.cleanupRequired, true); await poc.run(); assert.equal(generated, 0);
+  fail = false; await poc.dispose(); assert.equal(poc.state.loaded, false);
 });

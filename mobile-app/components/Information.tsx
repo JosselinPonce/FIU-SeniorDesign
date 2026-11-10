@@ -1,5 +1,6 @@
+import { LocalizedPressable as Pressable, LocalizedText as Text } from '../lib/i18n/native';
 import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
-import { AccessibilityInfo, AppState, findNodeHandle, Modal, Pressable, ScrollView, Text, View } from 'react-native';
+import { AccessibilityInfo, AppState, findNodeHandle, Modal, ScrollView, View } from 'react-native';
 import { useTheme } from '../lib/theme/ThemeProvider';
 import { createInformationState } from '../lib/ui/information';
 import { Btn } from './ui';

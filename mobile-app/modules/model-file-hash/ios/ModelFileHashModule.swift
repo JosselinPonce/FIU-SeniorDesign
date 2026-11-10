@@ -1,6 +1,29 @@
 import ExpoModulesCore
 import Foundation
 
+// BEGIN DEBUG GEMMA MEMORY
+#if DEBUG
+import Darwin
+import os
+
+// Point-in-time values only. No peak, allocation ownership or driver data.
+private func gemmaDiagnosticMemorySnapshot() -> [String: Any] {
+  var info = task_vm_info_data_t()
+  var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<integer_t>.size)
+  let result = withUnsafeMutablePointer(to: &info) { pointer in
+    pointer.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+      task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
+    }
+  }
+  return ["status": "available", "devicePhysicalBytes": ProcessInfo.processInfo.physicalMemory,
+          "availableToProcessBytes": os_proc_available_memory(),
+          "residentBytes": result == KERN_SUCCESS ? info.resident_size as Any : NSNull(),
+          "physicalFootprintBytes": result == KERN_SUCCESS ? info.phys_footprint as Any : NSNull(),
+          "uptimeMs": ProcessInfo.processInfo.systemUptime * 1000]
+}
+#endif
+// END DEBUG GEMMA MEMORY
+
 public final class ModelFileHashModule: Module {
   private let worker = DispatchQueue(label: "drivesense.model-sha256", qos: .utility)
   private let lock = NSLock()
@@ -15,6 +38,11 @@ public final class ModelFileHashModule: Module {
   public func definition() -> ModuleDefinition {
     Name("ModelFileHash")
     Events("hashProgress")
+#if DEBUG
+    AsyncFunction("gemmaMemorySnapshot") { () -> [String: Any] in
+      gemmaDiagnosticMemorySnapshot()
+    }
+#endif
     AsyncFunction("cancelHash") { (id: String) in
       self.lock.lock(); defer { self.lock.unlock() }
       self.cancelled.append(id)

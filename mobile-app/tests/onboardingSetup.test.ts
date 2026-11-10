@@ -8,12 +8,13 @@ function fixture(existing = false) {
   const values = new Map<string, string>();
   let exists = existing, corrupt = false, initFails = false, downloadFails = false, verifyFails = false;
   let downloads = 0, loads = 0, disposed = 0, downloadIntegrityFails = false;
+  const forced: boolean[] = [];
   let hold: (() => Promise<void>) | null = null;
   let holdDownload: (() => Promise<void>) | null = null;
   const state: PocState = { phase: '', installed: false, loaded: false, busy: false, response: '', error: '', progress: null, loadMs: null, inferenceMs: null };
   const runtime: SetupRuntime = { state, subscribe: fn => { fn(state); return () => {}; },
-    async load() {
-      loads++; state.error = ''; state.installed = false;
+    async load(force = false) {
+      forced.push(force); loads++; state.error = ''; state.installed = false;
       if (hold) await hold();
       if (verifyFails) { state.error = 'Native hash service unavailable'; return; }
       if (!exists) { state.error = 'Model is missing. Provision it first.'; return; }
@@ -32,7 +33,7 @@ function fixture(existing = false) {
   };
   const store = { getSetting: async (key: string) => values.get(key) ?? null, setSetting: async (key: string, value: string) => { values.set(key, value); } };
   const setup = new SensiSetup(store, runtime);
-  return { setup, runtime, store, values, get downloads() { return downloads; }, get loads() { return loads; }, get disposed() { return disposed; },
+  return { setup, runtime, store, values, forced, get downloads() { return downloads; }, get loads() { return loads; }, get disposed() { return disposed; },
     corrupt: () => { corrupt = true; }, remove: () => { exists = false; }, failInit: (v: boolean) => { initFails = v; },
     failDownload: (v: boolean) => { downloadFails = v; }, failVerify: () => { verifyFails = true; }, hold: (fn: () => Promise<void>) => { hold = fn; },
     failDownloadIntegrity: () => { downloadIntegrityFails = true; }, holdDownload: (fn: () => Promise<void>) => { holdDownload = fn; } };
@@ -57,19 +58,21 @@ test('existing model/profiles are reused without another download or profile wri
   assert.equal(f.downloads, 0); assert.equal(f.loads, 1); assert.equal(f.values.get('driver_profiles'), 'existing-profile');
   assert.deepEqual([...f.values.keys()].sort(), [SETUP_KEY, 'driver_profiles', 'onboarded'].sort());
 });
-test('returning user checks integrity/runtime then enters dashboard without repeated slides/download', async () => {
+test('returning user enters dashboard without verification, native initialization or assumed readiness', async () => {
   const f = fixture(true); await f.setup.boot(); await accept(f.setup); await f.setup.prepare(); await f.setup.complete();
+  const before = f.loads, released = f.disposed;
   const restarted = new SensiSetup(f.store, f.runtime); await restarted.boot();
-  assert.equal(restarted.state.ready, true); assert.equal(restarted.state.modelReady, true);
+  assert.equal(restarted.state.ready, true); assert.equal(restarted.state.modelReady, false);
+  assert.equal(f.loads, before); assert.equal(f.disposed, released);
   assert.equal(f.downloads, 0); assert.equal(f.runtime.state.loaded, false);
 });
-for (const problem of ['missing', 'corrupt', 'runtime'] as const) test(`returning ${problem} model blocks dashboard and offers recovery`, async () => {
+for (const problem of ['missing', 'corrupt', 'runtime'] as const) test(`returning ${problem} model does not block dashboard; explicit repair restores readiness`, async () => {
   const f = fixture(true); await f.setup.boot(); await accept(f.setup); await f.setup.prepare(); await f.setup.complete();
   if (problem === 'missing') f.remove(); if (problem === 'corrupt') f.corrupt(); if (problem === 'runtime') f.failInit(true);
   const restarted = new SensiSetup(f.store, f.runtime); await restarted.boot();
-  assert.equal(restarted.state.ready, false); assert.equal(restarted.state.page, 4); assert.ok(restarted.state.error);
+  assert.equal(restarted.state.ready, true); assert.equal(restarted.state.modelReady, false); assert.equal(restarted.state.error, '');
   assert.equal(f.downloads, 0, 'launch never silently downloads');
-  f.failInit(false); await restarted.prepare(); assert.equal(restarted.state.modelReady, true);
+  f.failInit(false); await restarted.repair(); assert.equal(restarted.state.modelReady, true);
   assert.equal(f.downloads, problem === 'runtime' ? 0 : 1);
 });
 test('failed download remains unready and retries the existing provisioner', async () => {
@@ -145,4 +148,45 @@ test('failed forced SHA-256 invalidates an earlier receipt even when metadata is
   f.corrupt(); await assert.rejects(f.cache.verify('model', signal(), undefined, true), /integrity/);
   assert.equal(f.receipt, null);
   await assert.rejects(f.cache.verify('model', signal()), /integrity/); assert.equal(f.hashes, 3);
+});
+
+async function returningFixture() {
+  const f = fixture(true); await f.setup.boot(); await accept(f.setup); await f.setup.prepare(); await f.setup.complete();
+  const setup = new SensiSetup(f.store, f.runtime); await setup.boot(); f.setup = setup; return f;
+}
+test('explicit recovery forces verification, does not redownload valid weights and preserves completed consent records', async () => {
+  const f = await returningFixture(); const saved = f.values.get(SETUP_KEY);
+  await f.setup.repair(); assert.equal(f.setup.state.ready, true); assert.equal(f.setup.state.modelReady, true);
+  assert.equal(f.forced.at(-1), true); assert.equal(f.values.get(SETUP_KEY), saved); assert.equal(f.downloads, 0);
+  assert.equal(f.runtime.state.loaded, false);
+});
+test('offline recovery fails without revoking admission and can retry successfully', async () => {
+  const f = await returningFixture(); f.remove(); f.failDownload(true);
+  await f.setup.repair(); assert.equal(f.setup.state.ready, true); assert.equal(f.setup.state.modelReady, false);
+  assert.match(f.setup.state.error, /stalled/); assert.equal(f.setup.state.busy, false);
+  f.failDownload(false); await f.setup.repair(); assert.equal(f.setup.state.ready, true); assert.equal(f.setup.state.modelReady, true);
+});
+test('native initialization or verification-service failures never trigger replacement of valid weights', async () => {
+  for (const failure of ['init', 'hash'] as const) {
+    const f = fixture(true); await accept(f.setup); await f.setup.prepare(); await f.setup.complete();
+    const setup = new SensiSetup(f.store, f.runtime); await setup.boot();
+    if (failure === 'init') f.failInit(true); else f.failVerify();
+    await setup.repair(); assert.equal(f.downloads, 0); assert.equal(setup.state.ready, true); assert.equal(setup.state.modelReady, false);
+  }
+});
+for (const cancellation of ['cancel', 'view_expired'] as const) test(`recovery ${cancellation} and duplicate retry cannot overlap or revoke admission`, async () => {
+  const f = fixture(true); await accept(f.setup); await f.setup.prepare(); await f.setup.complete();
+  const setup = new SensiSetup(f.store, f.runtime); await setup.boot();
+  let finish!: () => void, current = true; f.hold(() => new Promise<void>(resolve => { finish = resolve; }));
+  const before = f.loads, pending = setup.repair(() => current); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(setup.state.busy, true); assert.equal(setup.state.ready, true);
+  await setup.repair(); assert.equal(f.loads, before + 1);
+  if (cancellation === 'cancel') setup.cancel(); else current = false;
+  finish(); await pending; assert.equal(setup.state.ready, true); assert.equal(setup.state.modelReady, false);
+  assert.equal(setup.state.busy, false); assert.equal(f.runtime.state.loaded, false);
+});
+test('returning admission is allowed before foreground checks; maintenance still requires foreground', async () => {
+  const f = fixture(true); await accept(f.setup); await f.setup.prepare(); await f.setup.complete(); const before = f.loads;
+  const setup = new SensiSetup(f.store, f.runtime, () => false); await setup.boot(); assert.equal(setup.state.ready, true);
+  await setup.repair(); assert.equal(f.loads, before); assert.equal(setup.state.ready, true); assert.match(setup.state.error, /foreground/);
 });

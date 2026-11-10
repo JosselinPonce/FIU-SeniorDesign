@@ -10,16 +10,19 @@ import { GEMMA_TERMS_TEXT, GEMMA_POLICY_TEXT } from '../lib/onboarding/gemmaTerm
 import { GEMMA_TERMS_URL, GEMMA_POLICY_URL } from '../lib/onboarding/setup.ts';
 const require = createRequire(import.meta.url);
 const source = (path: string) => readFileSync(new NodeURL('../' + path, import.meta.url), 'utf8');
-function harness(page: number, tokens = light, accepted = false, busy = false) {
+function harness(page: number, tokens = light, accepted = false, busy = false, education = 0, review = false) {
   const calls: any[] = []; let index = 0; let background: any;
   const controller = { state: { page, notices: accepted, terms: accepted, busy, modelReady: false, ready: false, recovery: false, error: '' },
     runtime: { state: { phase: 'Downloading model', installed: false, loaded: false, progress: { stage: 'download', completed: 120000000, total: GEMMA_ARTIFACT.bytes } } },
     subscribe: (fn: any) => { fn(controller.state); return () => {}; },
     cancel: () => calls.push('cancel'), acknowledge: (...args: any[]) => { calls.push(['ack', ...args]); }, go: (p: number) => calls.push(['go', p]),
-    prepare: () => { calls.push('prepare'); }, complete: async () => true,
+    prepare: () => { calls.push('prepare'); }, complete: async () => { calls.push('complete'); return true; },
   };
   const deps: Record<string, any> = {
-    react: { useState: (initial: any) => { index++; return [initial, (value: any) => calls.push(['state', value])]; }, useEffect: (fn: any) => fn() },
+    '../lib/i18n/native': { LocalizedText: 'Text', LocalizedPressable: 'Pressable' },
+    './LanguageMenu': { LanguageMenu: 'LanguageMenu' },
+    '../lib/db/repositories': { getSetting: async () => null, setSetting: async (key: string, value: string) => { calls.push(['saved', key, value]); } },
+    react: { useState: (initial: any) => { const current = index++; return [current === 1 && review ? page : current === 5 ? education : initial, (value: any) => calls.push(['state', value])]; }, useRef: (value: any) => ({ current: value }), useEffect: (fn: any) => fn() },
     'react/jsx-runtime': require('react/jsx-runtime'),
     'react-native': { ...Object.fromEntries(['Image', 'Modal', 'Pressable', 'SafeAreaView', 'ScrollView', 'Text', 'View'].map(n => [n, n])),
       StyleSheet: { hairlineWidth: 1 }, AppState: { addEventListener: (_: any, fn: any) => { background = fn; return { remove() {} }; } },
@@ -34,7 +37,7 @@ function harness(page: number, tokens = light, accepted = false, busy = false) {
   new Function('require', 'exports', ts.transpileModule(source('components/Onboarding.tsx'), {
     compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.ES2022 },
   }).outputText)((name: string) => { assert.ok(name in deps, name); return deps[name]; }, exports);
-  const tree = exports.Onboarding({ controller, onDone: () => calls.push('done') });
+  const tree = exports.Onboarding({ controller, review, onDone: () => calls.push('done'), onChooseDriver: () => calls.push('drivers') });
   const nodes: any[] = [];
   function visit(n: any) { if (!n || typeof n !== 'object') return; if (Array.isArray(n)) { n.forEach(visit); return; }
     nodes.push(n); if (n.type === 'Modal' && !n.props.visible) return;
@@ -51,6 +54,32 @@ for (const tokens of [light, dark]) test(`${tokens === light ? 'Warm Pearl' : 'S
     assert.ok(f.nodes.some(n => n.type === 'ScrollView'));
     if (page === 0) assert.ok(f.nodes.some(n => n.type === 'Image' && n.props.source === 'approved-logo'));
   }
+});
+
+test('new baseline and alert slides persist progress without shifting notice/license gates', async () => {
+  const baseline = harness(1, light, false, false, 1);
+  assert.match(baseline.text, /Monitoring That’s Personal/);
+  assert.match(baseline.text, /60 heart-rate readings/);
+  assert.match(baseline.text, /oxygen is compared, never corrected/);
+  baseline.nodes.find(node => node.type === 'Btn' && node.props.title === 'Next').props.onPress();
+  await Promise.resolve(); await Promise.resolve();
+  assert.ok(baseline.calls.some(call => Array.isArray(call) && call[0] === 'saved' && call[1] === 'setup_education_step' && call[2] === '2'));
+  assert.equal(baseline.calls.some(call => Array.isArray(call) && call[0] === 'go'), false);
+  const alerts = harness(1, light, false, false, 2);
+  assert.match(alerts.text, /15 seconds.*8 seconds/);
+  assert.match(alerts.text, /explicit consent/);
+  alerts.nodes.find(node => node.type === 'Btn' && node.props.title === 'Next').props.onPress();
+  assert.deepEqual(alerts.calls.at(-1), ['go', 2]);
+});
+
+test('onboarding exposes app language immediately and persists spoken defaults separately', async () => {
+  assert.ok(harness(0).nodes.some(node => node.type === 'LanguageMenu'));
+  const voice = harness(3);
+  const spanish = voice.nodes.find(node => node.type === 'Btn' && node.props.title === 'Español');
+  assert.ok(spanish); spanish.props.onPress();
+  await Promise.resolve(); await Promise.resolve();
+  assert.ok(voice.calls.some(call => Array.isArray(call) && call[0] === 'saved' && call[1] === 'voicecheck_default_language' && call[2] === 'es'));
+  assert.equal(voice.calls.some(call => Array.isArray(call) && call[1] === 'app_language'), false);
 });
 test('notices and model terms have separate explicit checkbox and navigation gates', () => {
   for (const page of [2, 4]) {
@@ -87,7 +116,23 @@ test('setup is launch-only, deferred for existing work, and preserves the normal
   assert.match(shell, /if \(!ongoing\) void sensiSetup.boot/);
   assert.match(shell, /drive.safety.monitoring === 'active'/);
   assert.match(shell, /setupState.booted && !setupState.ready && !ongoing/);
-  assert.match(shell, /<DriverPicker profiles=\{profiles\} onPick=\{drive.selectDriver\}/);
+  assert.match(shell, /<DriverPicker profiles=\{profiles\} onPick=\{setPendingDriver\}/);
+  assert.match(shell, /drive.selectDriver\(pendingDriver\)/);
   assert.match(shell, /setupState.ready \|\| ongoing/);
   assert.doesNotMatch(source('lib/onboarding/setup.ts'), /createProfile|startSession|setRecordingSession|handoffContact|VoiceCheck\(/);
+});
+
+
+test('review reuses every onboarding page without setup writes, downloads or completion', async () => {
+  for (let page = 0; page < 6; page++) {
+    const f = harness(page, light, true, false, 2, true);
+    assert.ok(f.nodes.some(n => n.props?.title === 'Return to application'));
+    f.nodes.find(n => n.props?.title === 'Return to application').props.onPress();
+    f.nodes.find(n => n.props?.title === 'Choose or create a driver').props.onPress();
+    const next = f.nodes.find(n => n.props?.title === (page === 5 ? 'Continue to DriveSense' : 'Next'));
+    assert.equal(next.props.disabled, false); next.props.onPress();
+    await Promise.resolve(); await Promise.resolve();
+    assert.equal(f.calls.some(c => c === 'prepare' || c === 'complete' || c === 'cancel' || Array.isArray(c) && ['saved','go','ack'].includes(c[0])), false);
+    assert.ok(f.calls.includes('done')); assert.ok(f.calls.includes('drivers'));
+  }
 });

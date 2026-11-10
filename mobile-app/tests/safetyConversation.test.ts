@@ -51,9 +51,13 @@ for(const mode of ['local','connected'] as const){
       assert.ok(f.saved.length>0);
     }
   });
-  test(`${mode}: incomplete/legacy text cannot authorize calls or enter the confirmed thread`,async()=>{
+  test(`${mode}: incomplete/legacy text cannot authorize calls or enter the confirmed thread`,async t=>{
+    t.mock.timers.enable({apis:['setTimeout']});
     const f=fixture(mode,[],{listen:async id=>recognitionEvidence(id,{status:'incomplete',transcript:'call my mom',isFinal:false})});
-    f.trigger();await f.settle();assert.equal(f.calls.length,0);assert.equal(f.last().last?.result.outcome,'no_response');
+    f.trigger();await f.settle();
+    assert.equal(f.last().check?.phase,'response_unavailable');
+    t.mock.timers.tick(6000);await f.settle();t.mock.timers.tick(6000);await f.settle();
+    assert.equal(f.calls.length,0);assert.equal(f.last().last?.result.outcome,'no_response');
     assert.equal(f.last().conversation?.messages.some(m=>m.role==='driver'),false);
   });
   test(`${mode}: session cancellation rejects late speech and never restores a stale thread or continuation`,async()=>{
@@ -103,7 +107,7 @@ test('shared UI reuses deterministic answer handler; providers remain outside sa
   assert.match(read('components/SensiSafetyConversation.tsx'),/drive.respondAlert/);
   assert.match(read('components/SensiSafetyConversation.tsx'),/pending.current = true/);
   assert.doesNotMatch(read('components/SmartWheelScreen.tsx'),/drive.continueSafetyConversation\(episodeId\)/);
-  assert.equal(safetyButtonText('contact_offer',true),'Open phone interface');
+  assert.equal(safetyButtonText('contact_offer',true),'Yes, open phone');
 });
 
 test('emergency-services exclusion also prevents continuation after an otherwise OK wellness answer',async()=>{

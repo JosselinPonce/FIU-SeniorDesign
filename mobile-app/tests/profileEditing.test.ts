@@ -175,3 +175,21 @@ test('editing in US and metric units persists metric values under the same UUID 
     assert.equal(f.db.prepare('SELECT status FROM drive_sessions').get()?.status, 'completed');
   } finally { f.db.close(); }
 });
+
+test('compact language save changes only language and revision, queues sync and preserves other data', async () => {
+  const f = fixture();
+  const before = f.db.prepare('SELECT * FROM driver_profiles WHERE id = ?').get('p1') as any;
+  const other = f.db.prepare('SELECT * FROM driver_profiles WHERE id = ?').get('p2');
+  const saved = await updateProfileRecord(f.adapter, 'p1', { ...input, display_name: 'Must not replace name', emergency_phone: '+12025550199' }, before.updated_at, true);
+  const { language, updated_at, ...fields } = saved;
+  const { language: oldLanguage, updated_at: oldRevision, ...oldFields } = before;
+  assert.equal(language, 'es'); assert.notEqual(updated_at, oldRevision);
+  assert.deepEqual(fields, oldFields);
+  assert.deepEqual(f.db.prepare('SELECT * FROM driver_profiles WHERE id = ?').get('p2'), other);
+  assert.equal((f.db.prepare('SELECT value FROM app_settings WHERE key = ?').get('profile_sync:p1') as any).value, updated_at);
+  assert.equal(f.db.prepare('SELECT count(*) AS n FROM telemetry_events').get()!.n, 1);
+  await assert.rejects(updateProfileRecord(f.adapter, 'p1', input, oldRevision, true), /profile changed/);
+  f.db.exec("INSERT INTO drive_sessions VALUES ('active','p1','active')");
+  await assert.rejects(updateProfileRecord(f.adapter, 'p1', input, updated_at, true), /active drive/);
+  f.db.close();
+});

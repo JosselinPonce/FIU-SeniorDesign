@@ -1,23 +1,38 @@
-import { useEffect, useState } from 'react';
-import { AppState, BackHandler, ScrollView, Text, View } from 'react-native';
+import { useEffect, useRef, useState } from 'react';
+import { AppState, BackHandler, Platform, ScrollView, Text, View } from 'react-native';
 import { Btn } from '../../components/ui';
 import { useTheme } from '../../lib/theme/ThemeProvider';
 import { GEMMA_ARTIFACT, TEST_PROMPT } from './artifact';
 import { gemmaPoc } from './phone';
+import type { DiagnosticReport } from './contextualDiagnostic';
+const contextual = __DEV__ ? require('./contextualDiagnostic') as typeof import('./contextualDiagnostic') : null;
+const memory = __DEV__ ? require('./diagnosticMemory') as typeof import('./diagnosticMemory') : null;
 
 export function GemmaDiagnostic({ blocked, onClose }: { blocked: boolean; onClose(): void }) {
   const { tokens: t } = useTheme();
   const [state, setState] = useState(gemmaPoc.state);
   const [closing, setClosing] = useState(false);
+  const live = useRef(false);
+  const evaluationPending = useRef(false);
+  const closingRef = useRef(false);
+  const blockedRef = useRef(blocked); blockedRef.current = blocked;
+  const [evaluationBusy, setEvaluationBusy] = useState(false);
+  const [report, setReport] = useState<DiagnosticReport | null>(null);
+  const [evaluationError, setEvaluationError] = useState('');
+  const [runner] = useState(() => contextual && memory ? new contextual.ContextualGemmaDiagnostic(gemmaPoc, {
+    current: () => live.current && !blockedRef.current && AppState.currentState === 'active',
+    memory: memory.readGemmaDiagnosticMemory, now: () => performance.now(), osVersion: String(Platform.Version),
+  }) : null);
   useEffect(() => {
+    live.current = true;
     const unsubscribe = gemmaPoc.subscribe(setState);
-    const app = AppState.addEventListener('change', status => { if (status !== 'active') void gemmaPoc.dispose(); });
-    const back = BackHandler.addEventListener('hardwareBackPress', () => { void gemmaPoc.dispose(); return true; });
-    return () => { unsubscribe(); app.remove(); back.remove(); void gemmaPoc.dispose(); };
-  }, []);
-  useEffect(() => { if (blocked) void gemmaPoc.dispose(); }, [blocked]);
+    const app = AppState.addEventListener('change', status => { if (status !== 'active') { runner?.cancel(); void gemmaPoc.dispose(); } });
+    const back = BackHandler.addEventListener('hardwareBackPress', () => { runner?.cancel(); void gemmaPoc.dispose(); return true; });
+    return () => { live.current = false; runner?.cancel(); unsubscribe(); app.remove(); back.remove(); void gemmaPoc.dispose(); };
+  }, [runner]);
+  useEffect(() => { if (blocked) { runner?.cancel(); void gemmaPoc.dispose(); } }, [blocked, runner]);
   if (!__DEV__) return null;
-  const disabled = blocked || closing || state.busy;
+  const disabled = blocked || closing || state.busy || evaluationBusy;
   const act = (action: () => Promise<void>) => { void action().catch(() => {}); };
   return <ScrollView contentContainerStyle={{ padding: 20, gap: 12 }} style={{ backgroundColor: t.background }}>
     <Text accessibilityRole="header" style={{ color: t.text, fontSize: 22 }}>Gemma · isolated development test</Text>
@@ -34,18 +49,39 @@ export function GemmaDiagnostic({ blocked, onClose }: { blocked: boolean; onClos
     <Btn title="Initialize model" disabled={disabled || state.loaded} onPress={() => act(() => gemmaPoc.load())} />
     <Text style={{ color: t.text }}>Fixed prompt: {TEST_PROMPT}</Text>
     <Btn title="Run fixed acknowledgment test" disabled={disabled || !state.loaded} onPress={() => act(() => gemmaPoc.run())} />
-    {state.busy ? <Btn title="Cancel operation" onPress={() => gemmaPoc.cancel()} /> : null}
-    <Btn title="Unload model safely" disabled={closing || (!state.loaded && !state.busy)} onPress={() => act(() => gemmaPoc.dispose())} />
+    <Text style={{ color: t.text }}>Contextual evaluation: 12 fixed English/Spanish fixtures; synthetic NOT OK events only. No live driver data. Unload first. Eligible fixtures verify, load, infer and release through the production controller. Omitted statements skip inference and use fixed fallback. Results stay in RAM; copy the selectable JSON before leaving.</Text>
+    <Btn title="Run contextual English + Spanish suite" disabled={disabled || state.loaded || !runner} onPress={() => {
+      if (!runner || evaluationPending.current || closingRef.current || !live.current || blockedRef.current) return;
+      evaluationPending.current = true;
+      setEvaluationBusy(true); setReport(null); setEvaluationError('');
+      void runner.run(value => { if (live.current) setReport(value); })
+        .then(value => { if (live.current && value.status === 'cancelled') setReport(value); })
+        .catch(() => { if (live.current) setEvaluationError('Suite could not start. Unload the idle model and retry in the foreground.'); })
+        .finally(() => { evaluationPending.current = false; if (live.current) setEvaluationBusy(false); });
+    }} />
+    {evaluationError ? <Text style={{ color: t.text }}>{evaluationError}</Text> : null}
+    {report && contextual ? <View style={{ gap: 8 }}>
+      <Text style={{ color: t.text }}>Suite: {report.status}. Grammar acceptance is not proof of bilingual quality or VoiceCheck readiness.</Text>
+      {(['en', 'es'] as const).map(language => {
+        const all = contextual.diagnosticSummary(report.rows, language);
+        const grounded = contextual.diagnosticSummary(report.rows, language, 'grounded');
+        return <Text key={language} style={{ color: t.text }}>{language}: accepted {all.accepted}/{all.attempted} inference attempts; skipped {all.skipped}/{all.cases} cases; returned output {all.completedOutput}; grounded acceptance {grounded.accepted}/{grounded.attempted}. Planned: 6 cases, 3 eligible per language.</Text>;
+      })}
+      <Text style={{ color: t.textSecondary }}>Memory values are whole-process snapshots, never peak native/model memory. Operation timings exclude memory sampling. Initialization excludes file verification; load includes it. Release is a controller-call duration. This suite does not reproduce guidance playback or the five-second presentation window.</Text>
+      <Text selectable style={{ color: t.text }}>{JSON.stringify(report, null, 2)}</Text>
+    </View> : null}
+    {state.busy || evaluationBusy ? <Btn title="Cancel operation" onPress={() => { if (evaluationBusy) runner?.cancel(); else gemmaPoc.cancel(); }} /> : null}
+    <Btn title="Unload model safely" disabled={closing || evaluationBusy || (!state.loaded && !state.busy)} onPress={() => act(() => gemmaPoc.dispose())} />
     <View style={{ gap: 8 }}>
       <Text style={{ color: t.text }}>Loading: {state.loadMs ?? '—'} ms · Inference: {state.inferenceMs ?? '—'} ms</Text>
       <Text selectable style={{ color: t.text }}>Generated response: {state.response || '—'}</Text>
       {state.error ? <Text accessibilityRole="alert" selectable style={{ color: t.text }}>Error: {state.error}</Text> : null}
     </View>
     <Btn title="Unload and return to Settings" disabled={closing} onPress={() => {
-      setClosing(true);
+      closingRef.current = true; setClosing(true); runner?.cancel();
       void gemmaPoc.dispose().then(() => {
         if (!gemmaPoc.state.loaded && !gemmaPoc.state.busy) onClose();
-      }).finally(() => setClosing(false));
+      }).finally(() => { closingRef.current = false; if (live.current) setClosing(false); });
     }} />
   </ScrollView>;
 }

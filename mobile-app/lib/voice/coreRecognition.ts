@@ -1,5 +1,6 @@
 /** In-memory recognition evidence. Text alone is never contact consent. */
 export type CoreRecognition = {
+  reason?: string;
   captureId: string;
   status: 'success' | 'incomplete' | 'timeout' | 'cancelled' | 'error' | 'stale';
   transcript: string;
@@ -14,7 +15,7 @@ export function successfulFinal(result: CoreRecognition, captureId: string): boo
     && result.transcript.trim() === result.finalTranscript.trim();
 }
 export function recognitionEvidence(captureId: string, result: {
-  status: CoreRecognition['status']; transcript: string; finalTranscript?: string;
+  reason?: string; status: CoreRecognition['status']; transcript: string; finalTranscript?: string;
   isFinal: boolean; finalResultReceived?: boolean;
 }, current = true): CoreRecognition {
   return { ...result, captureId, status: current ? result.status : 'stale',

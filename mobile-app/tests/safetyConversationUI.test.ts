@@ -13,12 +13,16 @@ function harness() {
   const compiled=ts.transpileModule(source,{compilerOptions:{module:ts.ModuleKind.CommonJS,jsx:ts.JsxEmit.ReactJSX,target:ts.ScriptTarget.ES2022}}).outputText;
   const exports:any={};
   const deps:Record<string,unknown>={
+    '../lib/voice/responsivenessDiagnostics':{traceVoiceCheckUI:()=>{}},
+    '../lib/i18n/native':{LocalizedText:'Text'},
+    './VoiceCheckListeningIndicator':{VoiceCheckListeningIndicator:'ListeningIndicator'},
     react:{useRef:()=>({current:false}),useState:()=>[false,()=>{}],useEffect:(fn:()=>void)=>fn()},
     'react/jsx-runtime':require('react/jsx-runtime'),
     'react-native':{Platform:{OS:'ios'},KeyboardAvoidingView:'KeyboardAvoidingView',Modal:'Modal',SafeAreaView:'SafeAreaView',Text:'Text',View:'View'},
     '../lib/assistant/safetyConversation':{safetyButtonText,simulationCompletion},
     '../modules/local-foundation-models/conversationPolicy':{contactHandoffMessage},
     '../lib/theme/ThemeProvider':{useTheme:()=>({tokens:light})},
+    './EmergencyDialerDemo': { EmergencyDialerDemo: 'EmergencyDialerDemo' },
     './SafetyTypedResponse':{SafetyTypedResponse:'TypedResponse'},
     './SensiConversationThread':{SensiConversationThread:'Thread'},'./ui':{Btn:'Btn'},
   };
@@ -64,18 +68,28 @@ test('completed unwell workflow exposes Close but no automatic or unapproved con
   buttons[0].props.onPress();assert.equal(dismissed,1);
 });
 
-test('completed simulated consent and refusal display simulation results without call actions', () => {
+test('completed simulated consent offers only a separate demo; refusal offers no handoff', () => {
   const render = harness();
   for (const contactCall of ['accepted_offer', 'declined_offer'] as const) {
     const result = { outcome: 'not_ok', contactCall };
     const tree = render({ drive: { safety: {
-      conversation: { episodeId: 'rehearsal', mode: 'gemma', simulation: true, messages: [], finished: true },
+      conversation: { episodeId: 'rehearsal', mode: 'gemma', simulation: true, messages: [{ id: 'status', role: 'system', text: simulationCompletion(result as any) }], finished: true },
       check: null, last: { episode: { id: 'rehearsal' }, simulation: true, result },
     }, canContinueSafetyConversation: () => false }, onContinue() { throw Error('Unexpected continuation'); } });
     const nodes: any[] = [];
     const visit = (n: any) => { if (!n || typeof n !== 'object') return; if (Array.isArray(n)) { n.forEach(visit); return; } nodes.push(n); visit(n.props?.children); };
     visit(tree);
-    assert.ok(nodes.some(n => n.type === 'Text' && n.props.children === simulationCompletion(result as any)));
+    assert.equal(nodes.filter(n => n.type === 'Text' && Array.isArray(n.props.children) && n.props.children.includes(simulationCompletion(result as any))).length, 1);
+    assert.deepEqual(nodes.find(n => n.type === 'Thread').props.messages, []);
+    assert.equal(nodes.some(n => n.type === 'EmergencyDialerDemo'), contactCall === 'accepted_offer');
     assert.deepEqual(nodes.filter(n => n.type === 'Btn').map(n => n.props.title), ['Close safety check']);
   }
+});
+
+test('live consent never exposes the fictional dialer demo', () => {
+  const render = harness();
+  const tree = render({ drive: { safety: { conversation: { episodeId: 'live', messages: [], finished: true, simulation: false }, check: null,
+    last: { episode: { id: 'live' }, simulation: false, result: { outcome: 'not_ok', contactCall: 'accepted_offer' } } } }, onContinue() {} });
+  const walk = (n: any): any[] => !n || typeof n !== 'object' ? [] : Array.isArray(n) ? n.flatMap(walk) : [n, ...walk(n.props?.children)];
+  assert.equal(walk(tree).some(n => n.type === 'EmergencyDialerDemo'), false);
 });

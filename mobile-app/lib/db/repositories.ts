@@ -235,10 +235,10 @@ export async function getProfile(id: string): Promise<DriverProfile | null> {
 }
 
 /** Updates an existing profile (the form's edit mode). */
-export async function updateProfile(id: string, input: NewProfileInput, revision?: string): Promise<DriverProfile> {
+export async function updateProfile(id: string, input: NewProfileInput, revision?: string, languageOnly = false): Promise<DriverProfile> {
   const db = await getDatabase();
   let saved!: DriverProfile;
-  await db.withExclusiveTransactionAsync(async tx => { saved = await updateProfileRecord(tx, id, input, revision); });
+  await db.withExclusiveTransactionAsync(async tx => { saved = await updateProfileRecord(tx, id, input, revision, languageOnly); });
   return saved;
 }
 

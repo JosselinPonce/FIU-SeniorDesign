@@ -1,4 +1,5 @@
-import { ScrollView, Text } from 'react-native';
+import { LocalizedText as Text } from '../lib/i18n/native';
+import { ScrollView } from 'react-native';
 import type { useDriveSession } from '../lib/hooks/useDriveSession';
 import { CHART_SECONDS } from '../lib/hooks/useDriveSession';
 import { useTheme } from '../lib/theme/ThemeProvider';

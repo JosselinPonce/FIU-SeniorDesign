@@ -1,10 +1,11 @@
+import { LocalizedText as Text } from '../lib/i18n/native';
 import { useTheme } from '../lib/theme/ThemeProvider';
 import { presentationColors, type ThemeTokens } from '../lib/theme/tokens';
 /**
  * Charts drawn with plain Views, so no native charting module is needed.
  */
 import { useEffect, useRef } from 'react';
-import { Animated, Easing, StyleSheet, Text, View } from 'react-native';
+import { Animated, Easing, StyleSheet, View } from 'react-native';
 
 
 import type { Point, RatePoint } from '../lib/hooks/useDriveSession';

@@ -1,3 +1,4 @@
+import { LocalizedAlert as Alert, LocalizedPressable as Pressable, LocalizedText as Text } from '../lib/i18n/native';
 import { SENSI_MODE } from '../lib/assistant/mode';
 import { sensiSetup } from '../lib/onboarding/phone';
 import { SensiStandby } from './SensiStandby';
@@ -8,6 +9,7 @@ import { drivePageAfter, type DrivePage } from '../lib/ui/dashboard';
 import { BrandMark } from './BrandMark';
 import { DraggableSensiLauncher } from './DraggableSensiLauncher';
 import { AppearanceMenu } from './AppearanceMenu';
+import { LanguageMenu } from './LanguageMenu';
 import { DashboardAssistantEntry } from './DashboardAssistantEntry';
 import { InformationHost } from './Information';
 import { useTheme } from '../lib/theme/ThemeProvider';
@@ -18,7 +20,7 @@ import { presentationColors, type ThemeTokens } from '../lib/theme/tokens';
  * switch drivers.
  */
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, AppState, Pressable, StyleSheet, Text, View, SafeAreaView, Platform, StatusBar as NativeStatusBar } from 'react-native';
+import { ActivityIndicator, AppState, StyleSheet, View, SafeAreaView, Platform, StatusBar as NativeStatusBar } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 
 import { useDriveSession } from '../lib/hooks/useDriveSession';
@@ -26,6 +28,7 @@ import * as repo from '../lib/db/repositories';
 import type { DriverProfile } from '../lib/db/repositories';
 import { Btn } from './ui';
 import { DriverPicker } from './DriverPicker';
+import { DriverConfirmation } from './DriverConfirmation';
 import { DriveView, VoiceCheckModal } from './DriveView';
 import { HistoryView } from './HistoryView';
 import { SettingsView } from './SettingsView';
@@ -42,6 +45,7 @@ export default function SmartWheelScreen() {
   const st = makeStyles(tokens);
   const drive = useDriveSession();
   const [profiles, setProfiles] = useState<DriverProfile[] | null>(null);
+  const [pendingDriver, setPendingDriver] = useState<DriverProfile | null>(null);
   const [drivePage, setDrivePage] = useState<DrivePage>('dashboard');
   useEffect(() => { setDrivePage('dashboard'); }, [drive.driver?.id]);
   const [vitalsAnchor, setVitalsAnchor] = useState<{ y: number; height: number } | null>(null);
@@ -49,6 +53,8 @@ export default function SmartWheelScreen() {
     setVitalsAnchor(previous => previous?.y === next.y && previous?.height === next.height ? previous : next);
   }, []);
   const [tab, setTab] = useState<Tab>('drive');
+  const [settingsEntry, setSettingsEntry] = useState<'safety_testing' | null>(null);
+  useEffect(() => { if (tab !== 'settings') setSettingsEntry(null); }, [tab]);
   const [busy, setBusy] = useState(false);
   const [editingProfile, setEditingProfile] = useState<DriverProfile | null>(null);
   const [editOpening, setEditOpening] = useState(false);
@@ -140,7 +146,10 @@ export default function SmartWheelScreen() {
     return (
       <>
         <StatusBar style={themeName === 'dark' ? 'light' : 'dark'} />
-        <Onboarding controller={sensiSetup} review={setupState.ready} onDone={finishIntro} />
+        <Onboarding controller={sensiSetup} review={setupState.ready} onDone={finishIntro} onChooseDriver={() => {
+          if (ongoing) return;
+          void drive.leaveDriver().then(() => { setPendingDriver(null); setReviewIntro(false); }).catch(e => Alert.alert('Could not switch driver', String(e)));
+        }} />
       </>
     );
   }
@@ -158,11 +167,14 @@ export default function SmartWheelScreen() {
     onClose={() => setGemmaOpen(false)} />;
 
   if (!drive.driver) {
+    if (pendingDriver) return <DriverConfirmation profile={pendingDriver} onBack={() => setPendingDriver(null)} onConfirm={() => {
+      drive.selectDriver(pendingDriver); setPendingDriver(null);
+    }} />;
     return (
       <>
         <StatusBar style={themeName === 'dark' ? 'light' : 'dark'} />
         <View style={{ flex: 1, backgroundColor: tokens.background }}>
-        <DriverPicker profiles={profiles} onPick={drive.selectDriver} onCreated={reload} />
+        <DriverPicker profiles={profiles} onPick={setPendingDriver} onCreated={reload} />
         <InformationHost blocked={!!drive.safety.check || !!drive.safety.demo} />
         </View>
       </>
@@ -189,10 +201,11 @@ export default function SmartWheelScreen() {
         <View style={{ flex: 1, minWidth: 0 }}><BrandMark /></View>
         <Pressable onPress={switchDriver} style={[st.switch, { maxWidth: '43%', flexDirection: 'row', alignItems: 'center', gap: 6 }]}
           accessibilityRole="button" accessibilityLabel={`Switch driver. Current driver: ${drive.driver.display_name}`}>
-          <Text style={[st.driver, { flexShrink: 1 }]}>{drive.driver.display_name}</Text>
+          <Text localize={false} style={[st.driver, { flexShrink: 1 }]}>{drive.driver.display_name}</Text>
           <Text accessible={false} style={st.switchText}>⌄</Text>
         </Pressable>
         <AppearanceMenu />
+        <LanguageMenu />
       </View>
 
 
@@ -208,10 +221,11 @@ export default function SmartWheelScreen() {
         {tab === 'history' ? <HistoryView refreshKey={`${drive.session?.id ?? ''}:${drive.session?.status ?? ''}:${drive.fold.state}`} /> : null}
         {tab === 'settings' ? (
           <SettingsView
+            initialPage={settingsEntry}
             drive={drive}
             gemmaDiagnostics={__DEV__ ? <Btn title="Gemma diagnostics" kind="ghost"
-              disabled={drive.hasActiveSession || !!drive.safety.check || !!drive.safety.demo || assistantOpen}
-              onPress={() => { if (!drive.hasActiveSession && !drive.safety.check && !drive.safety.demo) setGemmaOpen(true); }} /> : null}
+              disabled={drive.hasActiveSession || !!drive.safety.check || !!drive.safety.demo || assistantOpen || setupState.busy}
+              onPress={() => { if (!drive.hasActiveSession && !drive.safety.check && !drive.safety.demo && !sensiSetup.state.busy) setGemmaOpen(true); }} /> : null}
             autoOn={autoOn}
             setAutoOn={setAutoOn}
             onWiped={async () => {
@@ -234,7 +248,10 @@ export default function SmartWheelScreen() {
       <SensiSafetyConversation drive={drive} onContinue={() => { /* Event-only Sensi. */ }}
         onStandbyClose={() => setAssistantOpen(false)}
         standby={assistantOpen && sensiDestination(drive.safety) === 'standby'
-          ? <SensiStandby visible drive={drive} mode={SENSI_MODE} onClose={() => setAssistantOpen(false)} /> : null} />
+          ? <SensiStandby visible drive={drive} mode={SENSI_MODE} onClose={() => setAssistantOpen(false)} onTrySafetyCheck={() => {
+            if (drive.hasActiveSession || drive.safety.check || drive.safety.demo) return;
+            setAssistantOpen(false); setSettingsEntry('safety_testing'); setTab('settings');
+          }} /> : null} />
 
       <View style={st.tabs}>
         {(
@@ -268,6 +285,7 @@ const makeStyles = (tokens: ThemeTokens) => {
     center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: C.bg },
     header: {
       flexDirection: 'row',
+      flexWrap: 'wrap',
       alignItems: 'center',
       gap: 8,
       paddingTop: Platform.OS === 'android' ? (NativeStatusBar.currentHeight ?? 0) + 8 : 8,

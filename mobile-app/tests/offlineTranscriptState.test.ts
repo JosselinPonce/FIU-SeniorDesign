@@ -137,13 +137,13 @@ test('native bounded noise calibration and endpoint decisions', { skip: process.
       assert(quiet.endpoint(now: q + 1, speechRecognized: true, deadline: 15) == nil) // stalled tap
       var noisy = OfflineEndpointState(); var n = 0.0
       feed(&noisy, -38.2, 31, &n)
-      assert(noisy.calibration == "stable" && abs(noisy.thresholdDb + 32.2) < 0.001)
+      assert(noisy.calibration == "ambiguous_input" && noisy.thresholdDb == -48 && noisy.noiseFloorDb == -60)
       feed(&noisy, -27, 20, &n); feed(&noisy, -38.2, 67, &n)
-      assert(noisy.endpoint(now: n, speechRecognized: true, deadline: 15) == "audio_silence")
-      assert((noisy.diagnostics(now: n)["aboveThresholdFraction"] as! Double) < 0.6)
+      assert(noisy.endpoint(now: n, speechRecognized: true, deadline: 15) == nil) // Noise conservatively uses the full capture budget.
+      assert((noisy.diagnostics(now: n)["aboveThresholdFraction"] as! Double) > 0.9)
       var robust = OfflineEndpointState(); var r = 0.0
       feed(&robust, -38.2, 15, &r); feed(&robust, -10, 1, &r); feed(&robust, -38.2, 15, &r)
-      assert(abs(robust.thresholdDb + 32.2) < 0.001)
+      assert(robust.thresholdDb == -48 && robust.noiseFloorDb == -60)
       var immediate = OfflineEndpointState(); var i = 0.0
       for _ in 0..<16 { feed(&immediate, -45, 1, &i); feed(&immediate, -30, 1, &i) }
       assert(immediate.calibration == "variable_input" && immediate.thresholdDb == -48)
@@ -159,11 +159,86 @@ test('native bounded noise calibration and endpoint decisions', { skip: process.
       feed(&noisy, -24, 500, &n)
       assert(noisy.noiseFloorDb == floor && noisy.thresholdDb < -32)
       assert(noisy.endpoint(now: n, speechRecognized: true, deadline: 30) == nil)
-      assert(noisy.endpoint(now: 12.5, speechRecognized: true, deadline: 15) == "capture_budget")
+      assert(noisy.endpoint(now: 15, speechRecognized: true, deadline: 15) == "capture_budget")
       assert(noisy.endpoint(now: 12.5, speechRecognized: false, deadline: 15) == nil)
       print("PASS")
     `);
     assert.match(execFileSync('xcrun', ['swift', '-module-cache-path', join(directory, 'cache'), script],
       { encoding: 'utf8', timeout: 60000 }), /PASS/);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('native readiness gate excludes cue audio and starts a full response window after cue completion', { skip: process.platform !== 'darwin' }, () => {
+  const source = readFileSync(new NodeURL('../modules/local-foundation-models/ios/OfflineSpeechDiagnostic.swift', import.meta.url), 'utf8');
+  const gate = source.split('// BEGIN LISTENING GATE:')[1]!.split('// END LISTENING GATE')[0]!.split('\n').slice(1).join('\n');
+  const endpoint = source.split('// BEGIN ENDPOINT STATE:')[1]!.split('// END ENDPOINT STATE')[0]!.split('\n').slice(1).join('\n');
+  const directory = mkdtempSync(join(tmpdir(), 'drivesense-listening-clock-'));
+  try {
+    const script = join(directory, 'clock.swift');
+    writeFileSync(script, `import Foundation
+      ${gate}
+      ${endpoint}
+      var readiness = VoiceListeningGate()
+      assert(readiness.measuresPreparation && !readiness.acceptsSpeech && readiness.deadline == nil)
+      var pcm = OfflineEndpointState()
+      pcm.receive(level: -60, duration: 0.7, now: 10)
+      assert(pcm.ready)
+      assert(readiness.nativeReady())
+      assert(!readiness.nativeReady()) // only one cue per capture
+      assert(!readiness.acceptsSpeech && !readiness.measuresPreparation && readiness.deadline == nil)
+      assert(readiness.cueFinished(now: 10.18, seconds: 6))
+      assert(readiness.acceptsSpeech && readiness.deadline == 16.18)
+      assert(!readiness.cueFinished(now: 11, seconds: 6))
+      assert(readiness.deadline == 16.18) // progress events never restart/shorten the clock
+      pcm.beginListening()
+      assert(!pcm.ready && pcm.elapsed == 0 && pcm.activitySeconds == 0 && pcm.lastActivity == nil && pcm.lastBuffer == nil)
+      readiness.stop()
+      assert(!readiness.acceptsSpeech && !readiness.nativeReady())
+      var cancelled = VoiceListeningGate()
+      assert(cancelled.nativeReady())
+      cancelled.stop()
+      assert(!cancelled.cueFinished(now: 10.18, seconds: 6))
+      assert(!cancelled.acceptsSpeech && cancelled.deadline == nil)
+      print("PASS")
+    `);
+    assert.match(execFileSync('xcrun', ['swift', '-module-cache-path', join(directory, 'cache'), script],
+      { encoding: 'utf8', timeout: 60000 }), /PASS/);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('accepted calibration preserves immediate short speech and cannot endpoint before 600 ms', { skip: process.platform !== 'darwin' }, () => {
+  const source = readFileSync(new NodeURL('../modules/local-foundation-models/ios/OfflineSpeechDiagnostic.swift', import.meta.url), 'utf8');
+  const state = source.split('// BEGIN ENDPOINT STATE:')[1]!.split('// END ENDPOINT STATE')[0]!.split('\n').slice(1).join('\n');
+  const directory = mkdtempSync(join(tmpdir(), 'drivesense-accepted-calibration-'));
+  try {
+    const file = join(directory, 'main.swift');
+    writeFileSync(file, `import Foundation
+${state}
+func frame(_ s: inout OfflineEndpointState, _ level: Double, _ t: inout Double) {
+  t += 0.02; s.receive(level: level, duration: 0.02, now: t)
+}
+for speech in [-35.0, -55.0] {
+  var s = OfflineEndpointState(); s.beginListening(); var t = 0.0
+  for _ in 0..<8 { frame(&s, speech, &t) }
+  s.recognizedSpeech(startSeconds: 0, now: t)
+  assert(!s.ready && s.elapsed < 0.6) // Recognition evidence must not skip calibration duration.
+  assert(s.noiseFloorDb == -60 && s.thresholdDb == -48)
+  assert(s.endpoint(now: t, speechRecognized: true, deadline: 6) == nil)
+  for _ in 0..<23 { frame(&s, -65, &t) }
+  assert(s.ready && s.calibration == "speech_during_calibration" && s.samples.isEmpty)
+  assert(s.endpoint(now: t, speechRecognized: true, deadline: 6) == nil)
+  // Quiet speech below the meter threshold conservatively waits for the capture budget.
+  assert(s.endpoint(now: 6, speechRecognized: true, deadline: 6) == "capture_budget")
+}
+var steady = OfflineEndpointState(); var time = 0.0
+for _ in 0..<31 { frame(&steady, -35, &time) }
+assert(steady.ready && steady.noiseFloorDb == -60 && steady.thresholdDb == -48)
+steady.recognizedSpeech(startSeconds: 0.01, now: time)
+assert(steady.calibration == "speech_during_calibration")
+var silence = OfflineEndpointState(); var silentTime = 0.0
+for _ in 0..<301 { frame(&silence, -65, &silentTime) }
+assert(silence.ready && silence.endpoint(now: silentTime, speechRecognized: false, deadline: 6) == nil)
+print("PASS")`);
+    assert.match(execFileSync('xcrun', ['swift', '-module-cache-path', join(directory, 'cache'), file], { encoding: 'utf8', timeout: 60000 }), /PASS/);
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });

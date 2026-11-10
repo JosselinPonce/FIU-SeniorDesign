@@ -1,37 +1,78 @@
-# Sensi phase 2: event-only Gemma empathy
+# Sensi: bounded context-aware Gemma acknowledgments
 
-Gemma 3 270M Instruct QAT Q4_0 uses the same pinned llama.rn runtime, native SHA-256
-verification, approved model file, and process-wide controller as the diagnostic.
-No runtime, model, download path, Supabase policy, auth flow, contact storage, or
-native API was added for this phase. Provisioning is still an explicit development
-action; a missing/corrupt model produces fixed empathy instead of a download.
+Gemma 3 270M Instruct QAT Q4_0 uses the existing pinned llama.rn runtime, native
+SHA-256 verification, approved artifact and serialized process-wide controller.
+Onboarding startup policy, speech recognition, prewarming, consent and IPA
+configuration are unchanged. Runtime inference never downloads a model.
 
 ## Event flow and ownership
 
 Sensor frames → FlagEngine → SafetyController → VoiceCheck remain authoritative.
-When an existing safety check starts, the optional Gemma request starts in parallel
-with its wellness question. It receives only the fixed `concern_acknowledgment`
-task and a two-string allowlist, never driver speech, symptoms, readings, profile
-data, names, contact numbers, or actions. Initialization verifies the installed
-model; inference has a 1.5-second budget and the overall warm request a five-second
-budget. No response handler awaits either budget or model readiness.
+Inference starts only after deterministic NOT OK interpretation, during mandatory
+safety guidance playback. Only nonurgent cases proceeding to a saved-contact offer
+are eligible. OK, silence, urgent/emergency-services answers, direct contact
+requests and unavailable contacts skip inference. Omitted/unsupported statements
+and buttons also skip native loading and generation. Buttons supply no statement;
+voice supplies only successful final capture-scoped evidence; typed input remains
+explicit manual evidence. No advisory intent classification was added.
 
-After deterministic interpretation of a NOT OK answer, VoiceCheck synchronously
-reads the selection if already ready. Only `I'm sorry to hear that.` and
-`I hear you.` are permitted in English. Spanish uses reviewed fixed empathy.
-Invalid/missing/late output immediately falls back to fixed text. Late results
-cannot add speech, ask questions, resolve incidents, make offers, or authorize
-calls. Urgent instructions precede empathy; ordinary stopping guidance follows
-the short acknowledgment. Contact offers and any saved contact label come from
-deterministic code and the captured authorized profile, never Gemma.
+The immutable request contains event category, fixed NOT OK outcome, VoiceCheck
+language and an eligible whole first-person feeling report. The model prompt uses
+only the extracted, authorized feeling, not the original first-person quotation. Unknown,
+quoted, negated, identifying, action-bearing or instruction-like statements are
+omitted. No measurements, profile, contact names/numbers, history or identifiers
+are included. The accepted English and Spanish report patterns are in
+`lib/assistant/safetyAcknowledgment.ts`.
 
-The optional request cancels on consumption, deadline, check/session/profile
-cancellation, or backgrounding. The shared controller enforces one native operation
-and retains ownership until native completion/stop/release. Busy diagnostics or
-unavailable hardware cause immediate fallback; safety never waits for their cleanup.
-Model resources are released after the selection task, not retained through a drive.
-The development safety thread shows `Acknowledgment: Gemma selection` or
-`deterministic fallback` for physical validation; this is not persisted or consent.
+Mandatory guidance starts immediately and is unchanged. At its completion,
+VoiceCheck consumes the model result synchronously once, with no wait. Valid
+empathy prefixes the existing deterministic contact-offer utterance; no extra
+speech turn is added. The offer/retry wording and all consent rules remain fixed.
+A failed guidance playback cancels unused inference and omits empathy. Missing,
+invalid, unavailable or late results use fixed localized empathy. Cancellation or
+loss of episode ownership prevents publication into later episodes.
+
+Generated speech uses a closed single-sentence empathy grammar with three
+second-person reflection forms in the selected language. The localized prompt
+shows one sentence form without candidate lists, JSON arrays or driver-role text.
+Two-sentence combinations are no longer allowed. The exact-match validator itself
+is unchanged: case-sensitive matching after outer whitespace trimming, at most
+180 characters and 24 whitespace-separated words, with no internal line breaks.
+Wrong language, invented feelings, questions, instructions, medical claims,
+action promises and any extra prose still fail validation. No output is repaired,
+split or stripped of quotation marks to make it acceptable.
+
+Generation remains greedy with a 1.5-second inference deadline and a five-second
+overall availability budget. Context capacity is 1024 tokens and output is capped
+at 64 tokens to accommodate Spanish and the bounded prompt. These are configured
+limits, not measured iPhone performance. Stop/release ownership remains serialized;
+no timeout force-unlocks native resources. Model disposal finishes before the
+provider publishes its result, so its cost is included in the availability window.
+
+## Validation status
+
+`tests/fixtures/safetyAcknowledgment.ts` supplies English and Spanish prompt/output
+fixtures. They are hand-authored mocked outputs, not recorded GGUF completions.
+Automated tests verify context preservation, grounded grammar, failure/timeout,
+late/cancelled output, unchanged guidance and consent, and replacement-episode
+isolation. User-reported Phase 1B physical-iPhone results were 12 completed
+inferences, zero accepted outputs, approximately 349 ms average inference and
+609 ms combined lifecycle, with 12 successful releases. Those are baseline
+measurements supplied by the user, not measurements of this refinement. The new
+prompt has not yet been evaluated on the physical GGUF. Production-quality bilingual generation is
+**not established**; valid Spanish output is supported with deterministic fallback.
+
+See `modules/gemma-poc/PROMPT_REFINEMENT.md` for root-cause evidence and the
+same 12-case diagnostic rerun procedure.
+
+On a physical iPhone, use existing isolated warning simulations with an installed
+model, a configured contact and the selected spoken language. Try each fixture
+statement and button/typed equivalents. Record model versus fallback source,
+cold-load/inference/release timing, validation acceptance and complete spoken text.
+Mandatory guidance must begin before empathy and remain unchanged. Test unavailable
+model/voice, incomplete recognition, background/cancel, profile changes and repeated
+episodes in airplane mode. Simulations must never open the saved-contact dialer or
+persist/learn incidents. Do not bypass simulation guards for model evaluation.
 
 ## Responses and legacy paths
 

@@ -1,3 +1,4 @@
+import { LocalizedAlert as Alert, LocalizedPressable as Pressable, LocalizedText as Text, LocalizedTextInput as TextInput } from '../lib/i18n/native';
 import { InformationButton } from './Information';
 import { useTheme } from '../lib/theme/ThemeProvider';
 import { presentationColors, type ThemeTokens } from '../lib/theme/tokens';
@@ -5,8 +6,9 @@ import { presentationColors, type ThemeTokens } from '../lib/theme/tokens';
  * Choose who is driving, or add a new driver. Selecting a driver is how the
  * app knows whose baseline to compare against (proposal: user profiles).
  */
-import { useEffect, useState } from 'react';
-import { Alert, Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { useEffect, useRef, useState } from 'react';
+import { LanguageMenu } from './LanguageMenu';
+import { Modal, ScrollView, StyleSheet, View } from 'react-native';
 
 import { measurementsFromMetric, enterWeight, enterHeightCm, selectHeight, switchHeightUnit, switchWeightUnit,
   metricMeasurements, measurementLabel, type HeightUnit, type WeightUnit } from '../lib/db/profileMeasurements';
@@ -52,6 +54,14 @@ export function DriverPicker(props: {
   const [conditions, setConditions] = useState<string[]>([]);
   const [medications, setMedications] = useState<string[]>([]);
   const [language, setLanguage] = useState<'en' | 'es'>('en');
+  const languageTouched = useRef(!!props.editProfile);
+  useEffect(() => {
+    let alive = true;
+    void repo.getSetting('voicecheck_default_language').then(value => {
+      if (alive && !languageTouched.current) setLanguage(value === 'es' ? 'es' : 'en');
+    }).catch(() => {});
+    return () => { alive = false; };
+  }, []);
   const toggle = (list: string[], set: (v: string[]) => void, key: string) =>
     set(list.includes(key) ? list.filter((k) => k !== key) : [...list, key]);
   const liveBmi = bmi(measurements.weightKg, measurements.heightCm);
@@ -70,6 +80,7 @@ export function DriverPicker(props: {
 
   /** Long-press a driver: reopen the form with their details. */
   function edit(p: DriverProfile) {
+    languageTouched.current = true;
     setEditing(p);
     const values = profileFormValues(p);
     setForm(values.form);
@@ -136,6 +147,7 @@ export function DriverPicker(props: {
 
   return (
     <ScrollView contentContainerStyle={st.container} automaticallyAdjustKeyboardInsets={true} keyboardDismissMode="interactive" keyboardShouldPersistTaps="handled">
+      <LanguageMenu />
       <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
         <Text style={[st.hello, { flex: 1 }]}>{props.editProfile ? 'Edit Driver Profile' : "Who's driving?"}</Text>
         <InformationButton compact title="Driver profiles" body="Readings are associated with the selected profile and compared with its personalized baseline. Tap a profile to continue. Use Edit or long-press a profile to update its details." />
@@ -152,10 +164,10 @@ export function DriverPicker(props: {
           style={({ pressed }) => [st.driver, { flex: 1 }, pressed && { opacity: 0.7 }]}
         >
           <View style={st.avatar}>
-            <Text style={st.avatarText}>{initials(p.display_name)}</Text>
+            <Text localize={false} style={st.avatarText}>{initials(p.display_name)}</Text>
           </View>
           <View style={{ flex: 1 }}>
-            <Text style={st.name}>{p.display_name}</Text>
+            <Text localize={false} style={st.name}>{p.display_name}</Text>
             <Text style={st.meta}>
               {[
                 p.custom_id,
@@ -293,7 +305,7 @@ export function DriverPicker(props: {
                 ['es', 'Español'],
               ] as ['en' | 'es', string][]
             ).map(([k, label]) => (
-              <Pressable key={k} disabled={busy} onPress={() => setLanguage(k)} style={[st.chip, language === k && st.chipOn]}>
+              <Pressable key={k} disabled={busy} onPress={() => { languageTouched.current = true; setLanguage(k); }} style={[st.chip, language === k && st.chipOn]}>
                 <Text style={[st.chipText, language === k && st.chipTextOn]}>{label}</Text>
               </Pressable>
             ))}

@@ -77,7 +77,7 @@ this screen is restricted to development builds.
 
 ## Limits and recovery
 
-- Initial settings: 512-token context, 64-token batch, 2 CPU threads, 32 output
+- Initial settings: 1024-token context, 64-token batch, 2 CPU threads, 64 output
   tokens, greedy sampling. iOS requests Metal; Android uses CPU. No automatic
   alternative model or cloud fallback exists.
 - Generation deadline: 10 seconds. Initialization deadline: 30 seconds including
@@ -164,3 +164,12 @@ Debug simulator build linked ModelFileHash successfully. A real CryptoKit hash
 test matches Node crypto on a streamed multi-chunk fixture and checks repeated
 hashing, incomplete-file rejection, and cancellation. Android autolinking resolves
 the module; Android native build/device execution remains unverified.
+
+## Contextual acknowledgment evaluation (Debug only)
+
+The existing diagnostic now offers **Run contextual English + Spanish suite**.
+See [CONTEXTUAL_DIAGNOSTIC.md](./CONTEXTUAL_DIAGNOSTIC.md) for physical-iPhone
+steps, exact timing/memory semantics, fallback reasons and acceptance-rate limits.
+It uses fixed synthetic inputs and the unchanged production inference/validation
+path. Rebuild Debug for optional native memory snapshots; no new dependency is
+required. Automated mocks are not actual GGUF evaluation results.

@@ -15,7 +15,8 @@ function controller(answer: string | null) {
   const saved: unknown[] = [];
   const acks: unknown[] = [];
   const states: SafetyState[] = [];
-  const io: VoiceIO = { speak: async () => {}, listen: async (_l, _m, _h, id) => answer == null ? null : recognitionEvidence(id, { status: 'success', transcript: answer, finalTranscript: answer, isFinal: true, finalResultReceived: true }), cancel: () => {} };
+  const preparations: { lang: string; id: string }[] = [];
+  const io: VoiceIO = { prepareRecognition: (lang, id) => { preparations.push({ lang, id }); }, speak: async () => {}, listen: async (_l, _m, _h, id, onPhase) => { onPhase?.('listening'); return answer == null ? null : recognitionEvidence(id, { status: 'success', transcript: answer, finalTranscript: answer, isFinal: true, finalResultReceived: true }); }, cancel: () => {} };
   const c = new SafetyController({
     voiceIO: () => io,
     save: async (r) => void saved.push(r),
@@ -25,13 +26,16 @@ function controller(answer: string | null) {
     newId: () => Math.random().toString(36).slice(2),
   });
   c.configure(profile, null, { high: null, low: null });
-  return { c, saved, acks, states };
+  return { c, saved, acks, states, preparations };
 }
 
 test('demo: fabricated high heart rate → warning flag → emergency → voice check; nothing saved or learned', async () => {
-  const { c, saved, acks, states } = controller("yeah i'm fine");
+  const { c, saved, acks, states, preparations } = controller("yeah i'm fine");
   const r = await c.simulate('high_critical');
   assert.equal(r?.outcome, 'ok');
+  assert.equal(preparations.length, 1);
+  assert.equal(preparations[0].lang, 'en');
+  assert.equal(preparations[0].id, states.find(s => s.check?.captureId)?.check?.captureId);
   assert.ok(states.some((s) => s.tracking !== null), 'warning flag shown');
   assert.ok(states.some((s) => s.check?.phase === 'listening'), 'voice check listened');
   assert.deepEqual([saved.length, acks.length], [0, 0]);
@@ -466,4 +470,36 @@ test('live warning persists NOT OK but rejects partial, timeout, cancelled and s
     assert.equal(f.states.at(-1)?.last?.result.contactCall, 'unconfirmed_offer');
     assert.equal(f.said.filter(s => s.includes('Would you like')).length, 2);
   }
+});
+
+test('UI phases follow capture progress; completed and cancelled question callbacks stay stale', async () => {
+  let state!: SafetyState;
+  const captures: { phase: (value: 'preparing' | 'listening' | 'finalizing') => void; resolve: (value: null) => void }[] = [];
+  let finishPlayback!: () => void;
+  let speaks = 0;
+  const c = new SafetyController({
+    voiceIO: () => ({
+      speak: async () => { if (++speaks === 1) await new Promise<void>(resolve => { finishPlayback = resolve; }); },
+      listen: async (_l, _m, _h, _id, phase) => new Promise<null>(resolve => { captures.push({ phase: phase!, resolve }); }),
+      cancel() {},
+    }),
+    save: async () => {}, saveAck: async () => {}, haptic() {}, onChange: value => { state = value; }, newId: () => 'phase-test',
+  });
+  c.configure(profile, null, { high: null, low: null });
+  const pending = c.rehearse();
+  const tick = () => new Promise<void>(resolve => setImmediate(resolve));
+  await tick(); assert.equal(state.check?.phase, 'speaking'); assert.equal(captures.length, 0);
+  finishPlayback(); await tick();
+  assert.equal(state.check?.phase, 'preparing');
+  captures[0]!.phase('listening'); assert.equal(state.check?.phase, 'listening');
+  captures[0]!.phase('finalizing'); assert.equal(state.check?.phase, 'finalizing');
+  captures[0]!.resolve(null); await tick();
+  assert.equal(captures.length, 2); assert.equal(state.check?.phase, 'preparing');
+  captures[0]!.phase('listening'); assert.equal(state.check?.phase, 'preparing');
+  captures[1]!.phase('listening'); assert.equal(state.check?.phase, 'listening');
+  assert.equal(c.answer('ok'), true);
+  captures[1]!.phase('finalizing'); assert.equal(state.check?.phase, 'listening');
+  await pending;
+  captures[1]!.resolve(null); await tick();
+  assert.equal(state.check, null); assert.equal(state.last?.result.outcome, 'ok');
 });

@@ -23,17 +23,22 @@
  */
 import { understand, understandCallAnswer, mentionsEmergencyServices } from './intent.ts';
 
-import { approvedAcknowledgment } from '../assistant/safetyAcknowledgment.ts';
+import { approvedAcknowledgment, acknowledgmentContext, type AcknowledgmentContext } from '../assistant/safetyAcknowledgment.ts';
+import { responsivenessProbe } from './responsivenessDiagnostics.ts';
 import { successfulFinal, type CoreRecognition } from './coreRecognition.ts';
 
 let nextCheck = 0;
 
 export type Lang = 'en' | 'es';
 
+export type RecognitionPhase = 'preparing' | 'ready' | 'listening' | 'finalizing';
 export type VoiceIO = {
+  /** Register microphone-free preparation for the next prompt; never accepts an answer. */
+  prepareRecognition?(lang: Lang, captureId: string): void;
   speak(text: string, lang: Lang): Promise<void | { status: 'unavailable' }>;
   /** Only scoped successful final evidence is accepted; legacy strings are unconfirmed. */
-  listen(lang: Lang, ms: number, hints: string[], captureId: string): Promise<CoreRecognition | string | null>;
+  listen(lang: Lang, ms: number, hints: string[], captureId: string, onPhase?: (phase: RecognitionPhase) => void): Promise<CoreRecognition | string | null>;
+  responseUnavailable?(): void;
   /** Stops any speech or listening in progress. */
   cancel(): void;
 };
@@ -66,10 +71,10 @@ const TEXT = {
       `${name ? `${name}, ` : ''}${
         r === 'bpm_high' ? 'your heart rate has been unusually high' : r === 'bpm_low' ? 'your heart rate has been unusually low' : 'your oxygen level has been low'
       }. Are you feeling okay? Please say yes, or no.`,
-    again: "Sorry, I didn't catch that. Are you okay? Say yes if you're fine, or no if you need help.",
+    again: "I didn't catch that. Are you feeling okay? Say yes or no.",
     ok: "Okay. I'll keep an eye on things. Drive safely.",
-    notOk: 'Please pull over as soon as it is safe. If you need emergency help, call nine one one.',
-    urgent: 'Pull over as soon as it is safe and call nine one one now.',
+    notOk: 'Please pull over as soon as it is safe. If you need emergency help, call 911.',
+    urgent: 'Pull over as soon as it is safe and call 911 now.',
     none: "I didn't hear an answer. Please pull over when it is safe. This has been recorded as an emergency.",
     hints: ['yes', 'no', "I'm okay", "I'm fine", 'not okay', 'I need help', 'help', 'call 911'],
   },
@@ -78,10 +83,10 @@ const TEXT = {
       `${name ? `${name}, ` : ''}${
         r === 'bpm_high' ? 'tu ritmo cardíaco ha estado inusualmente alto' : r === 'bpm_low' ? 'tu ritmo cardíaco ha estado inusualmente bajo' : 'tu nivel de oxígeno ha estado bajo'
       }. ¿Te sientes bien? Por favor di sí, o no.`,
-    again: 'Perdón, no te entendí. ¿Estás bien? Di sí si estás bien, o no si necesitas ayuda.',
+    again: 'No te entendí. ¿Te sientes bien? Di sí o no.',
     ok: 'Muy bien. Sigo pendiente. Maneja con cuidado.',
-    notOk: 'Por favor detente cuando sea seguro. Si necesitas ayuda de emergencia, llama al nueve uno uno.',
-    urgent: 'Detente en cuanto sea seguro y llama al nueve uno uno ahora.',
+    notOk: 'Por favor detente cuando sea seguro. Si necesitas ayuda de emergencia, llama al 911.',
+    urgent: 'Detente en cuanto sea seguro y llama al 911 ahora.',
     none: 'No escuché respuesta. Por favor detente cuando sea seguro. Esto quedó registrado como una emergencia.',
     hints: ['sí', 'no', 'estoy bien', 'no estoy bien', 'ayuda', 'necesito ayuda', 'llama al 911'],
   },
@@ -109,14 +114,19 @@ export class VoiceCheck {
   private readonly io: VoiceIO;
   private readonly lang: Lang;
   private readonly name: string;
-  private readonly options: { contactAvailable?: boolean; onQuestion?: (q: CheckQuestion, captureId: string) => void; onAnswer?: (answer: AcceptedSafetyAnswer) => void; acknowledgment?: () => string; contactName?: string };
+  private readonly options: { contactAvailable?: boolean; onQuestion?: (q: CheckQuestion, captureId: string) => void; onAnswer?: (answer: AcceptedSafetyAnswer) => void; cancelAcknowledgment?: () => void; startAcknowledgment?: (context: AcknowledgmentContext) => void; acknowledgment?: (context: AcknowledgmentContext) => string; contactName?: string };
 
   constructor(io: VoiceIO, lang: Lang, name: string,
-    options: { contactAvailable?: boolean; onQuestion?: (q: CheckQuestion, captureId: string) => void; onAnswer?: (answer: AcceptedSafetyAnswer) => void; acknowledgment?: () => string; contactName?: string } = {}) {
+    options: { contactAvailable?: boolean; onQuestion?: (q: CheckQuestion, captureId: string) => void; onAnswer?: (answer: AcceptedSafetyAnswer) => void; cancelAcknowledgment?: () => void; startAcknowledgment?: (context: AcknowledgmentContext) => void; acknowledgment?: (context: AcknowledgmentContext) => string; contactName?: string } = {}) {
     this.io = io;
     this.lang = lang;
     this.name = name;
     this.options = options;
+  }
+
+  /** Presentation callbacks lose ownership as soon as a manual answer wins. */
+  isAwaitingResponse(captureId: string): boolean {
+    return !this.cancelled && this.captureId === captureId && this.buttonAnswer !== null;
   }
 
   private submit(answer: ManualAnswer, scope?: AnswerScope): boolean {
@@ -158,12 +168,15 @@ export class VoiceCheck {
       this.buttonAnswer = (answer) => resolve(answer);
     });
     this.options.onQuestion?.(question, captureId);
+    const trace = responsivenessProbe('warning', 'VoiceCheck decision');
+    trace('question opened', { captureId, question, locale: this.lang });
     let settled = false;
     let fallbackTimer: ReturnType<typeof setTimeout> | undefined;
     try {
       const answer = await Promise.race([
         (async () => {
           if (this.cancelled || settled) return { text: null, final: false, captureId, evidence: undefined };
+          this.io.prepareRecognition?.(this.lang, captureId);
           let playbackFailed = false;
           try { playbackFailed = (await this.io.speak(prompt, this.lang))?.status === 'unavailable'; }
           catch { playbackFailed = true; }
@@ -179,19 +192,33 @@ export class VoiceCheck {
           let evidence: CoreRecognition | string | null;
           try { evidence = await this.io.listen(this.lang, LISTEN_MS, hints, captureId); }
           catch {
+            trace('listen rejected', { captureId, question, settled, cancelled: this.cancelled });
             if (!settled && !this.cancelled) {
               this.io.cancel();
+              this.io.responseUnavailable?.();
               await new Promise<void>(resolve => { fallbackTimer = setTimeout(resolve, LISTEN_MS); });
             }
             evidence = null;
           }
+          trace('result received', { captureId, question, settled, cancelled: this.cancelled, captureMatches: this.captureId === captureId,
+            status: typeof evidence === 'object' && evidence ? evidence.status : 'missing',
+            usable: typeof evidence === 'object' && evidence ? successfulFinal(evidence, captureId) : false });
           if (settled || this.cancelled || this.captureId !== captureId) return { text: null, final: false, captureId, evidence: undefined };
           if (typeof evidence === 'string' || evidence === null) return { text: null, final: false, captureId, evidence: undefined };
+          if (evidence.status === 'error' || evidence.status === 'incomplete') {
+            // A failed recognizer is not evidence of silence. Keep this question
+            // answerable after native cleanup, without accepting partial text.
+            trace('unavailable requested', { captureId, question, status: evidence.status });
+            this.io.responseUnavailable?.();
+            await new Promise<void>(resolve => { fallbackTimer = setTimeout(resolve, LISTEN_MS); });
+            if (settled || this.cancelled) return { text: null, final: false, captureId, evidence: undefined };
+          }
           const usable = successfulFinal(evidence, captureId);
           return { text: usable ? evidence.transcript : null, final: usable && successfulFinal(evidence, captureId), captureId, evidence };
         })(),
         button,
       ]);
+      trace('answer selected', { captureId, question, channel: 'button' in answer ? 'button' : 'typed' in answer ? 'typed' : answer.final ? 'voice' : 'none', cancelled: this.cancelled });
       if ('button' in answer || 'typed' in answer) this.io.cancel();
       if (this.cancelled || ('button' in answer && answer.button === 'cancel')) throw new Error('Check cancelled');
       // Observation only, after the winning response. Never feeds back into interpretation.
@@ -204,6 +231,7 @@ export class VoiceCheck {
       if ('typed' in answer) return { text: answer.typed, final: true, captureId, evidence: undefined, typed: true as const };
       return answer;
     } finally {
+      trace('question closed', { captureId, question, cancelled: this.cancelled });
       settled = true;
       clearTimeout(fallbackTimer);
       this.buttonAnswer = null;
@@ -212,13 +240,16 @@ export class VoiceCheck {
 
   private async announce(text: string) {
     if (this.cancelled) throw new Error('Check cancelled');
-    try { await this.io.speak(text, this.lang); } catch { /* Visible safety copy remains available. */ }
+    let played = false;
+    try { played = (await this.io.speak(text, this.lang))?.status !== 'unavailable'; } catch { /* Visible safety copy remains available. */ }
     if (this.cancelled) throw new Error('Check cancelled');
+    return played;
   }
 
   async run(reason: Reason): Promise<CheckResult> {
     const t = TEXT[this.lang];
     let result: CheckResult | null = null;
+    let statement: string | null = null;
     for (const [index, prompt] of [t.ask(this.name, reason), t.again].entries()) {
       const heard = await this.ask(prompt, 'wellness', [...t.hints]);
       if ('button' in heard) {
@@ -227,12 +258,14 @@ export class VoiceCheck {
       } else {
         this.emergencyServices ||= mentionsEmergencyServices(heard.text);
         const u = understand(heard.text);
+        responsivenessProbe('warning', 'VoiceCheck interpretation')('wellness interpreted', { captureId: heard.captureId, question: 'wellness', outcome: u.intent, hasText: !!heard.text });
         if (u.intent === 'ok' || u.intent === 'not_ok') {
           result = { outcome: u.intent, urgent: u.urgent, channel: 'typed' in heard ? 'typed' : 'voice', attempts: index + 1,
             confidence: u.confidence, contactCall: u.contactCallRequested && heard.final ? 'explicit_request' : 'not_requested' };
         }
       }
       if (result) {
+        if ('text' in heard && heard.final) statement = heard.text;
         if (result.contactCall === 'explicit_request' && 'text' in heard) this.consent = { captureId: heard.captureId, decision: 'explicit_request', ...('typed' in heard ? { typed: true as const } : { evidence: heard.evidence }) };
         break;
       }
@@ -247,10 +280,24 @@ export class VoiceCheck {
       await this.announce(t.ok);
       return result;
     }
-    let acknowledgment: string | undefined;
-    try { acknowledgment = this.options.acknowledgment?.(); } catch { /* Deterministic fallback. */ }
-    const empathy = this.options.acknowledgment ? approvedAcknowledgment(acknowledgment, this.lang) : '';
-    await this.announce(result.urgent ? `${t.urgent}${empathy ? ' ' + empathy : ''}` : `${empathy ? empathy + ' ' : ''}${t.notOk}`);
+    const context = acknowledgmentContext(reason, this.lang, statement);
+    const canAcknowledge = !result.urgent && !this.emergencyServices && result.contactCall !== 'explicit_request'
+      && !!this.options.contactAvailable && !!this.options.acknowledgment;
+    if (canAcknowledge) {
+      try { this.options.startAcknowledgment?.(context); } catch { /* Fixed fallback. */ }
+    }
+    // Mandatory guidance starts immediately. Inference is never awaited, and
+    // urgent/direct-call branches do not add an empathy playback before handoff.
+    const guidancePlayed = await this.announce(result.urgent ? t.urgent : t.notOk);
+    if (canAcknowledge && !guidancePlayed) {
+      try { this.options.cancelAcknowledgment?.(); } catch { /* Presentation cleanup cannot alter safety. */ }
+    }
+    let empathy = '';
+    if (canAcknowledge && guidancePlayed) {
+      let acknowledgment: string | undefined;
+      try { acknowledgment = this.options.acknowledgment?.(context); } catch { /* Fixed fallback. */ }
+      empathy = approvedAcknowledgment(acknowledgment, this.lang, context);
+    }
     if (this.cancelled) throw new Error('Check cancelled');
     if (this.emergencyServices) return { ...result, contactCall: 'emergency_services' };
     if (!this.options.contactAvailable) return { ...result, contactCall: 'contact_unavailable' };
@@ -260,11 +307,11 @@ export class VoiceCheck {
     const label = contactName && contactName.length <= 60 && /^[\p{L}\p{M} .'’-]+$/u.test(contactName) ? contactName : null;
     const offer = this.lang === 'en'
       ? label ? `Would you like me to call ${label}?` : 'Would you like me to call your emergency contact?'
-      : '¿Quieres que llame a tu contacto de emergencia?';
+      : label ? `¿Quieres que llame a ${label}?` : '¿Quieres que llame a tu contacto de emergencia?';
     const retry = this.lang === 'en'
       ? `I didn't catch that. ${offer}`
-      : 'No te entendí. ¿Quieres que llame a tu contacto de emergencia?';
-    for (const prompt of [offer, retry]) {
+      : `No te entendí. ${offer}`;
+    for (const prompt of [empathy ? `${empathy} ${offer}` : offer, retry]) {
       let heard: Awaited<ReturnType<VoiceCheck['ask']>>;
       try {
         heard = await this.ask(prompt, 'contact_offer', ['yes please', 'go ahead', 'no thanks', 'do not call', 'sí', 'no']);

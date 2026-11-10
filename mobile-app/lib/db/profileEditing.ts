@@ -40,7 +40,7 @@ export interface ProfileDatabase {
 }
 
 /** Called inside an exclusive SQLite transaction. Never rewrites history or calibration. */
-export async function updateProfileRecord(db: ProfileDatabase, id: string, raw: NewProfileInput, revision?: string): Promise<DriverProfile> {
+export async function updateProfileRecord(db: ProfileDatabase, id: string, raw: NewProfileInput, revision?: string, languageOnly = false): Promise<DriverProfile> {
   const input = validateProfile(raw);
   const old = await db.getFirstAsync<DriverProfile>('SELECT * FROM driver_profiles WHERE id = ?', [id]);
   if (!old) throw new Error('This driver no longer exists.');
@@ -48,7 +48,8 @@ export async function updateProfileRecord(db: ProfileDatabase, id: string, raw: 
   const active = await db.getFirstAsync<{ id: string }>("SELECT id FROM drive_sessions WHERE profile_id = ? AND status = 'active' LIMIT 1", [id]);
   if (active) throw new Error('End and save the active drive before editing this profile.');
   const at = new Date(Math.max(Date.now(), (Date.parse(old.updated_at) || 0) + 1)).toISOString();
-  await db.runAsync(`UPDATE driver_profiles SET custom_id = ?, display_name = ?, weight_kg = ?, age = ?, height_cm = ?, gender = ?,
+  if (languageOnly) await db.runAsync('UPDATE driver_profiles SET language = ?, updated_at = ? WHERE id = ?', [input.language ?? 'en', at, id]);
+  else await db.runAsync(`UPDATE driver_profiles SET custom_id = ?, display_name = ?, weight_kg = ?, age = ?, height_cm = ?, gender = ?,
     conditions = ?, medications = ?, language = ?, emergency_name = ?, emergency_phone = ?, updated_at = ? WHERE id = ?`,
     [input.custom_id ?? null, input.display_name, input.weight_kg ?? null, input.age ?? null, input.height_cm ?? null,
       input.gender ?? null, JSON.stringify(input.conditions ?? []), JSON.stringify(input.medications ?? []), input.language ?? 'en',

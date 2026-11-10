@@ -1,4 +1,5 @@
-import { StyleSheet, Text, View } from 'react-native';
+import { LocalizedText as Text } from '../lib/i18n/native';
+import { StyleSheet, View } from 'react-native';
 import { useTheme } from '../lib/theme/ThemeProvider';
 import type { Point } from '../lib/hooks/useDriveSession';
 import { vitalRangePresentation, type WarningBounds } from '../lib/ui/dashboard';

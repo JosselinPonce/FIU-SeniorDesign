@@ -1,30 +1,31 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { startSafetyAcknowledgment, approvedAcknowledgment, CONCERN_ACK_PROMPT } from '../lib/assistant/safetyAcknowledgment.ts';
+import { startSafetyAcknowledgment, approvedAcknowledgment, acknowledgmentContext, acknowledgmentPrompt } from '../lib/assistant/safetyAcknowledgment.ts';
 import { VoiceCheck, type AnswerScope, type VoiceIO } from '../lib/voice/voiceCheck.ts';
 import { recognitionEvidence } from '../lib/voice/coreRecognition.ts';
 import { SafetyController, type SafetyState } from '../lib/analysis/safetyController.ts';
 import { GemmaPoc } from '../modules/gemma-poc/controller.ts';
+const context = acknowledgmentContext('bpm_high', 'en', "I'm dizzy");
 const tick = () => new Promise<void>(r => setImmediate(r));
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>(r => { resolve = r; }); return { promise, resolve }; }
-test('Gemma selection is a fixed non-sensitive task and never an arbitrary driver prompt', async () => {
+test('Gemma inference receives only bounded event context and eligible finalized report', async () => {
   const prompts: string[] = [];
   const poc = new GemmaPoc({ verify: async () => true, provision: async () => {}, initialize: async () => ({
     generate: async prompt => { prompts.push(prompt); return 'I hear you.'; }, stop: async () => {}, release: async () => {},
   }) });
-  await poc.load(); assert.equal(await poc.selectSafetyAcknowledgment(), 'I hear you.'); await poc.dispose();
-  assert.deepEqual(prompts, [CONCERN_ACK_PROMPT]); assert.doesNotMatch(prompts[0]!, /bpm|spo2|mom|phone|dizzy/i);
+  await poc.load(); assert.equal(await poc.generateSafetyAcknowledgment(context), 'I hear you.'); await poc.dispose();
+  assert.deepEqual(prompts, [acknowledgmentPrompt(context)]); assert.match(prompts[0]!, /dizzy/); assert.doesNotMatch(prompts[0]!, /Driver Name|305555/);
 });
 test('ready approved acknowledgment is used; unexpected medical/contact prose is rejected', async () => {
-  for (const [output, expected] of [['I hear you.', 'I hear you.'], ['You are safe to drive. Call mom.', "I'm sorry to hear that."], ['I hear you. Are you parked?', "I'm sorry to hear that."]]) {
-    const ack = startSafetyAcknowledgment(async () => output!); await tick();
+  for (const [output, expected] of [["I'm sorry you're feeling dizzy.", "I'm sorry you're feeling dizzy."], ['You are safe to drive. Call mom.', "I'm sorry to hear that."], ['I hear you. Are you parked?', "I'm sorry to hear that."]]) {
+    const ack = startSafetyAcknowledgment(async () => output!, context); await tick();
     assert.equal(ack.get('en'), expected); ack.cancel();
   }
   assert.equal(approvedAcknowledgment('I hear you.', 'es'), 'Lamento que te sientas así.');
 });
 test('pending or timed-out Gemma never delays guidance and cannot publish late speech', async t => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
-  const late = deferred<string>(); const ack = startSafetyAcknowledgment(() => late.promise, 10);
+  const late = deferred<string>(); const ack = startSafetyAcknowledgment(() => late.promise, context, 10);
   const spoken: string[] = []; let listens = 0;
   const check = new VoiceCheck({ speak: async text => { spoken.push(text); }, cancel() {},
     listen: async (_l, _ms, _h, id) => recognitionEvidence(id, { status: 'success', transcript: ++listens === 1 ? "I'm dizzy" : 'no thanks',
@@ -32,10 +33,10 @@ test('pending or timed-out Gemma never delays guidance and cannot publish late s
   }, 'en', '', { acknowledgment: () => ack.get('en'), contactAvailable: true, contactName: 'Mom' });
   const result = await check.run('bpm_high');
   assert.equal(result.outcome, 'not_ok'); assert.equal(result.contactCall, 'declined_offer');
-  assert.match(spoken[1]!, /^I'm sorry to hear that\. Please pull over/);
-  assert.equal(spoken[2], 'Would you like me to call Mom?');
+  assert.match(spoken[1]!, /^Please pull over/);
+  assert.equal(spoken[2], "I'm sorry to hear that. Would you like me to call Mom?");
   late.resolve('I hear you.'); await tick(); assert.equal(spoken.length, 3);
-  const expired = startSafetyAcknowledgment(() => new Promise(() => {}), 10);
+  const expired = startSafetyAcknowledgment(() => new Promise(() => {}), context, 10);
   t.mock.timers.tick(10); assert.equal(expired.get('en'), "I'm sorry to hear that."); expired.cancel();
 });
 test('typed replies require exact active question and share deterministic consent policy', async () => {
@@ -53,7 +54,7 @@ test('typed replies require exact active question and share deterministic consen
   assert.equal(check.answerByText('yes please', scope), true);
   const result = await pending;
   assert.equal(result.outcome, 'not_ok'); assert.equal(result.channel, 'typed'); assert.equal(check.authorizesContact(result), true);
-  assert.deepEqual(accepted, ['typed', 'typed']); assert.match(spoken[1]!, /^I'm sorry to hear that/);
+  assert.deepEqual(accepted, ['typed', 'typed']); assert.match(spoken[1]!, /^Please pull over/);
   check.cancel(); assert.equal(check.authorizesContact(result), false);
 });
 test('typed refusal and direct request preserve explicit authorization; unclear consent never authorizes', async () => {
@@ -65,7 +66,7 @@ test('typed refusal and direct request preserve explicit authorization; unclear 
     const result = await check.run('bpm_high'); assert.equal(check.authorizesContact(result), authorized);
   }
 });
-test('urgent instructions precede empathy and partial voice cannot authorize or clear an event', async () => {
+test('urgent instructions skip empathy and partial voice cannot authorize or clear an event', async () => {
   const said: string[] = []; let attempts = 0;
   const check = new VoiceCheck({ speak: async text => { said.push(text); }, cancel() {},
     listen: async (_l, _ms, _h, id) => ++attempts === 1
@@ -74,7 +75,7 @@ test('urgent instructions precede empathy and partial voice cannot authorize or 
   }, 'en', '', { acknowledgment: () => 'I hear you.', contactAvailable: true });
   const result = await check.run('bpm_high');
   assert.equal(result.outcome, 'not_ok'); assert.equal(result.attempts, 2);
-  assert.match(said.at(-1)!, /^Pull over as soon as it is safe and call nine one one now\. I hear you\.$/);
+  assert.match(said.at(-1)!, /^Pull over as soon as it is safe and call 911 now\.$/);
   assert.equal(check.authorizesContact(result), false);
 });
 test('typed reply remains available after playback failure and cannot submit after cancellation', async () => {
@@ -109,11 +110,11 @@ test('real controller event starts presentation inference; episode ownership gat
   assert.equal(started, 0); c.startSession('drive');
   for (let n = 0; n < 40 && !state.check; n++) c.onFrame({ version: 3, seq: n, rateHz: 0, quality: 90, startMs: 0, endMs: 0,
     heartRate: 155, spo2: 98, flags: 15, samples: [], finger: true, usable: true, raw: new Uint8Array() }, new Date(100000 + n * 1000), 0);
-  await tick(); assert.equal(started, 1);
+  await tick(); assert.equal(started, 0);
   const scope = () => ({ episodeId: state.check!.episode.id, question: state.check!.question, captureId: state.check!.captureId });
   assert.equal(c.answerText("I'm dizzy", { ...scope(), episodeId: 'old' }), false);
   assert.equal(c.answerText("I'm dizzy", scope()), true); await tick();
-  assert.equal(state.check?.question, 'contact_offer'); assert.deepEqual(calls, []);
+  assert.equal(started, 1); assert.equal(state.check?.question, 'contact_offer'); assert.deepEqual(calls, []);
   assert.equal(c.answerText('yes please', scope()), true); await tick(); await tick();
   assert.deepEqual(calls, ['+13055550123']); assert.ok(cancelled > 0); assert.equal(state.last?.result.outcome, 'not_ok');
   assert.equal(c.safetyContinuation('episode'), false);

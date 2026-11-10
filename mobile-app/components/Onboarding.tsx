@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react';
-import { AppState, Image, Linking, Modal, Pressable, SafeAreaView, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { LocalizedPressable as Pressable, LocalizedText as Text } from '../lib/i18n/native';
+import { useEffect, useRef, useState } from 'react';
+import { AppState, Image, Linking, Modal, SafeAreaView, ScrollView, StyleSheet, View } from 'react-native';
 import { useTheme } from '../lib/theme/ThemeProvider';
 import type { SensiSetup } from '../lib/onboarding/setup';
 import { GEMMA_TERMS_URL, GEMMA_POLICY_URL } from '../lib/onboarding/setup';
@@ -10,15 +11,41 @@ import { BrandMark } from './BrandMark';
 import { DashboardAssistantEntry } from './DashboardAssistantEntry';
 import { VoicePicker } from './VoicePicker';
 import { Btn } from './ui';
+import { LanguageMenu } from './LanguageMenu';
+import * as repo from '../lib/db/repositories';
 
 const TITLES = ['Welcome to DriveSense', 'How DriveSense Works', 'Safety and Privacy', 'Meet Sensi', 'Gemma License and Download', 'Setup Complete'];
-export function Onboarding({ onDone, controller, review = false }: { onDone(): void; controller: SensiSetup; review?: boolean }) {
+export function Onboarding({ onDone, onChooseDriver, controller, review = false }: { onDone(): void; onChooseDriver?(): void; controller: SensiSetup; review?: boolean }) {
   const { tokens: t } = useTheme();
   const [state, setState] = useState(controller.state);
   const [reviewPage, setReviewPage] = useState(0);
   const [legal, setLegal] = useState<'terms' | 'policy' | null>(null);
   const [linkError, setLinkError] = useState('');
   const [voice, setVoice] = useState<'unknown' | 'granted' | 'denied'>('unknown');
+  const [education, setEducation] = useState(0);
+  const [voiceLanguage, setVoiceLanguage] = useState<'en' | 'es'>('en');
+  const educationTouched = useRef(false);
+  const voiceLanguageTouched = useRef(false);
+  const preferenceWrites = useRef(Promise.resolve<unknown>(undefined));
+  function savePreference(key: string, value: string) {
+    const pending = preferenceWrites.current.then(() => repo.setSetting(key, value));
+    preferenceWrites.current = pending.catch(() => setLinkError('Could not save setup progress.'));
+  }
+  useEffect(() => {
+    let alive = true;
+    void Promise.all([repo.getSetting('setup_education_step'), repo.getSetting('voicecheck_default_language')]).then(([step, language]) => {
+      if (alive) {
+        if (!educationTouched.current && !review) setEducation(step === '1' ? 1 : step === '2' ? 2 : 0);
+        if (!voiceLanguageTouched.current) setVoiceLanguage(language === 'es' ? 'es' : 'en');
+      }
+    }).catch(() => {});
+    return () => { alive = false; };
+  }, []);
+  function educationPage(next: number) {
+    educationTouched.current = true;
+    setEducation(next);
+    if (!review) savePreference('setup_education_step', String(next));
+  }
   useEffect(() => {
     const unsubscribe = controller.subscribe(setState);
     const app = AppState.addEventListener('change', next => { if (next !== 'active' && controller.state.busy) controller.cancel(); });
@@ -43,11 +70,12 @@ export function Onboarding({ onDone, controller, review = false }: { onDone(): v
   const nextDisabled = state.busy || (!review && ((page === 2 && !state.notices) || (page === 4 && !state.modelReady)));
   return <SafeAreaView style={{ flex: 1, backgroundColor: t.background }}>
     <View style={{ paddingHorizontal: 24, paddingVertical: 12, gap: 10 }}>
+      <LanguageMenu />
       <Text style={{ color: t.textSecondary }}>DriveSense setup · {page + 1} of 6{review ? ' · Review' : ''}</Text>
       <View accessible={false} style={{ flexDirection: 'row', gap: 6 }}>{TITLES.map((title, i) => <View key={title} style={{ height: 4, flex: 1, borderRadius: 2, backgroundColor: i <= page ? t.accent : t.border }} />)}</View>
     </View>
     <ScrollView key={page} contentContainerStyle={{ padding: 24, paddingTop: 12, gap: 18, flexGrow: 1 }}>
-      <Text accessibilityRole="header" style={{ color: t.text, fontSize: 29, lineHeight: 36, fontWeight: '800' }}>{TITLES[page]}</Text>
+      <Text accessibilityRole="header" style={{ color: t.text, fontSize: 29, lineHeight: 36, fontWeight: '800' }}>{page === 1 && education > 0 ? education === 1 ? 'Monitoring That’s Personal to You' : 'Understanding Your Safety Alerts' : TITLES[page]}</Text>
       {page === 0 ? <>
         <View style={{ alignSelf: 'center', width: '100%', maxWidth: 390, paddingVertical: 20 }}>
           <View style={{ alignItems: 'center', marginBottom: 20 }}><BrandLogo /></View>
@@ -56,7 +84,7 @@ export function Onboarding({ onDone, controller, review = false }: { onDone(): v
         <Text style={text}>DriveSense monitors steering-wheel sensor readings and offers driver-safety assistance through Sensi.</Text>
         {point('Safety assistance, with you in control', 'Connect your steering-wheel sensors and keep DriveSense open. Sensi checks how you feel when readings remain concerning.')}
       </> : null}
-      {page === 1 ? <>
+      {page === 1 && education === 0 ? <>
         {point('1 · Measure', 'Steering-wheel sensors collect heart rate and blood oxygen (SpO₂) measurements.')}
         {point('2 · Connect', 'The Raspberry Pi communicates sensor data to this mobile application.')}
         {point('3 · Evaluate', 'DriveSense checks accepted readings for persistent, concerning changes.')}
@@ -64,6 +92,11 @@ export function Onboarding({ onDone, controller, review = false }: { onDone(): v
         <Text style={text}>Start Drive controls trip recording. It is not required for safety monitoring. A configured driver, connected sensors and fresh valid readings are required.</Text>
         <Text style={text}>Keep DriveSense open on a supported screen. Background and locked-phone VoiceCheck are not supported.</Text>
       </> : null}
+      {page === 1 && education === 1 ? <>
+        <Text style={text}>Your profile sets the initial ranges. Valid readings from finished drives build a personal reference after at least 60 heart-rate readings. Heart rate and available SpO₂ are summarized using recent drives (28 days, extending to the last 10 drives when needed). Poor-quality readings and periods around NOT OK or unanswered events are excluded.</Text>
+        <Text style={text}>The reference refreshes after saved drives. Optional reference-device calibration corrects heart rate only; oxygen is compared, never corrected. Calibration is not required to start monitoring.</Text>
+      </> : null}
+      {page === 1 && education === 2 ? <Text style={text}>Persistent heart-rate or oxygen changes start a confirmation window: 15 seconds for warnings, 8 seconds for critical conditions. Only a confirmed event starts VoiceCheck. Answer by voice, typing or buttons. Contact assistance requires explicit consent; critical readings never automatically call emergency services. This is a monitoring prototype, not a medical diagnosis.</Text> : null}
       {page === 2 ? <>
         {point('A prototype, not a diagnosis', 'DriveSense is a prototype driver-safety system, not a medical device or diagnostic service. Measurements may be inaccurate or temporarily unavailable.')}
         {point('Road safety comes first', 'Prioritize the road. Pull over somewhere safe before interacting with the screen.')}
@@ -84,7 +117,15 @@ export function Onboarding({ onDone, controller, review = false }: { onDone(): v
         {!review ? <Btn title={voice === 'granted' ? 'Voice permission allowed' : voice === 'denied' ? 'Retry voice permission' : 'Allow voice responses (optional)'}
           disabled={voice === 'granted'} onPress={() => { void prepareVoice().then(result => setVoice(result.granted ? 'granted' : 'denied')); }} /> : null}
         {voice === 'denied' ? <Text style={text}>Voice access is unavailable. Typed and button responses remain available; permission can be changed in system Settings.</Text> : null}
-        <VoicePicker lang="en" driverName="" />
+        <Text style={heading}>VoiceCheck language</Text>
+        <Text style={text}>Choose the default spoken language for new driver profiles. Existing drivers keep their saved VoiceCheck language; edit their profile to change it. App language is independent.</Text>
+        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>{(['en', 'es'] as const).map(language => <Btn key={language}
+          title={`${voiceLanguage === language ? '✓ ' : ''}${language === 'es' ? 'Español' : 'English'}`} kind="ghost" onPress={() => {
+            setVoiceLanguage(language);
+            voiceLanguageTouched.current = true;
+            savePreference('voicecheck_default_language', language);
+          }} />)}</View>
+        <VoicePicker lang={voiceLanguage} driverName="" />
       </> : null}
       {page === 4 ? <>
         <Text style={text}>Gemma 3 270M Instruct · QAT Q4_0 GGUF · approximately 241 MB. Download once, then use offline. Existing verified installations are reused.</Text>
@@ -106,7 +147,7 @@ export function Onboarding({ onDone, controller, review = false }: { onDone(): v
           <Text style={[text, { fontSize: 13 }]}>Keep the app open during setup. An interrupted partial transfer is discarded safely; a retry uses the same storage location. A valid existing model is checked before any download.</Text>
           <Btn title={state.modelReady ? 'Sensi is ready' : state.error ? 'Retry setup' : 'Accept terms and install Sensi'} disabled={state.busy || state.modelReady || !state.terms || !state.notices} onPress={() => { void controller.prepare(); }} />
           {state.busy ? <Btn title="Cancel setup operation" kind="ghost" onPress={() => controller.cancel()} /> : null}
-        </> : <Text style={text}>Setup was completed. Model availability is checked at application launch; safety interactions retain fixed fallback acknowledgments if inference becomes unavailable.</Text>}
+        </> : <Text style={text}>Setup was completed. Gemma is checked before use. Fixed safety responses remain available if the model cannot run.</Text>}
       </> : null}
       {page === 5 ? <>
         {point(review ? 'Setup previously completed' : 'Sensi’s offline model is ready', review
@@ -114,12 +155,18 @@ export function Onboarding({ onDone, controller, review = false }: { onDone(): v
           : 'The approved model passed integrity verification and initialized successfully on this device. Setup did not start a safety conversation.')}
         <Text style={text}>Continue to select an existing driver or create your driver profile. Existing profiles and recordings are preserved.</Text>
       </> : null}
+      {review ? <>
+        <Btn title="Return to application" kind="ghost" onPress={onDone} />
+        {onChooseDriver ? <Btn title="Choose or create a driver" kind="ghost" onPress={onChooseDriver} /> : null}
+      </> : null}
       {state.error && !review ? <Text accessibilityRole="alert" selectable style={{ color: t.danger, fontSize: 16, lineHeight: 24 }}>{state.error}</Text> : null}
+      {linkError && !legal ? <Text accessibilityRole="alert" style={text}>{linkError}</Text> : null}
     </ScrollView>
     <View style={{ flexDirection: 'row', gap: 12, padding: 20, paddingTop: 12, borderTopWidth: StyleSheet.hairlineWidth, borderColor: t.border }}>
-      {page > 0 ? <Btn title="Back" kind="ghost" disabled={state.busy} onPress={() => go(page - 1)} style={{ flex: 1 }} /> : null}
+      {page > 0 ? <Btn title="Back" kind="ghost" disabled={state.busy} onPress={() => { if (page === 1 && education > 0) educationPage(education - 1); else go(page - 1); }} style={{ flex: 1 }} /> : null}
       <Btn title={page === 5 ? 'Continue to DriveSense' : 'Next'} disabled={nextDisabled} style={{ flex: 2 }} onPress={() => {
-        if (page < 5) go(page + 1);
+        if (page === 1 && education < 2) educationPage(education + 1);
+        else if (page < 5) go(page + 1);
         else if (review) onDone();
         else void controller.complete().then(done => { if (done) onDone(); });
       }} />
@@ -133,6 +180,7 @@ export function Onboarding({ onDone, controller, review = false }: { onDone(): v
           }}>Open official Google source</Text>
           {linkError ? <Text accessibilityRole="alert" style={text}>{linkError}</Text> : null}
           <Text selectable style={text}>{legal === 'policy' ? GEMMA_POLICY_TEXT : GEMMA_TERMS_TEXT}</Text>
+          <Text style={text}>Official legal text is shown in its original language.</Text>
         </ScrollView>
         <View style={{ padding: 20 }}><Btn title="Return to setup" onPress={() => setLegal(null)} /></View>
       </SafeAreaView>

@@ -23,8 +23,10 @@ function harness(development: boolean, active = false, theme = light) {
     setStorageMode: (mode: string) => calls.push(['storage', mode]), autoConnect: () => calls.push('connect'),
     stopConnecting: () => calls.push('disconnect'), setAllowDirect: (v: boolean) => calls.push(['direct',v]) };
   const deps: Record<string, any> = {
+    '../lib/i18n/native': { LocalizedText: 'Text', LocalizedPressable: 'Pressable', LocalizedAlert: { alert: forbidden } },
+    './LanguageMenu': { LanguageMenu: 'LanguageMenu' },
     react: { useState: (initial: any) => { const id = index++; if (!state.has(id)) state.set(id, initial); return [state.get(id), (v: any) => state.set(id, typeof v === 'function' ? v(state.get(id)) : v)]; },
-      useEffect: (fn: () => void) => fn() },
+      useRef: (value: any) => ({ current: value }), useEffect: (fn: () => void) => fn() },
     'react/jsx-runtime': require('react/jsx-runtime'),
     'react-native': { ...host, Alert: { alert: forbidden }, BackHandler: { addEventListener: (_: string, fn: () => boolean) => { back = fn; return { remove() {} }; } }, StyleSheet: { create: (s: any) => s } },
     '../lib/theme/ThemeProvider': { useTheme: () => ({ tokens: theme, colors: presentationColors(theme), preference: 'light', setPreference: (v: string) => calls.push(['appearance',v]) }) },
@@ -38,7 +40,7 @@ function harness(development: boolean, active = false, theme = light) {
     '../lib/assistant/phoneConnectedReadiness': { PHONE_CONNECTED_READINESS: { verified: false } },
     '../lib/assistant/connectedPilotPolicy': { CONNECTED_PILOT_STATUS: 'pilot' },
   };
-  for (const n of ['Information','DemoAuthPanel','VoicePicker','CalibrationCard','ThresholdHistory','ResponsivenessDiagnostics','SensiVoicePlaybackDiagnostic']) {
+  for (const n of ['GemmaModelSettings','SpeechCapabilityStatus','EmergencyDialerDemo','Information','DemoAuthPanel','VoicePicker','CalibrationCard','ThresholdHistory','ResponsivenessDiagnostics','SensiVoicePlaybackDiagnostic']) {
     deps['./'+n] = { [n === 'Information' ? 'InformationButton' : n]: n };
   }
   const compiled = ts.transpileModule(readFileSync(new NodeURL('../components/SettingsView.tsx', import.meta.url), 'utf8'), {
@@ -72,7 +74,7 @@ test('category controls retain profile/storage/connection callbacks without a pr
   function open(title: string) { f.render().find(n => n.props?.accessibilityLabel === title).props.onPress(); return f.render(); }
   nodes = open('Driver Profile'); nodes.find(n => n.props?.title === 'Edit Driver Profile').props.onPress(); f.back();
   nodes = open('Data & Privacy'); nodes.find(n => n.type === 'Pressable' && n.key === 'full').props.onPress(); f.back();
-  nodes = open('Sensi Assistant'); assert.equal(nodes.some(n => n.type === 'Pressable' && n.key === 'connected'), false); assert.ok(nodes.some(n => n.type === 'SectionTitle' && n.props.children === 'Sensi · Gemma on-device')); f.back();
+  nodes = open('Sensi Assistant'); assert.equal(nodes.some(n => n.type === 'Pressable' && n.key === 'connected'), false); assert.ok(nodes.some(n => n.type === 'SectionTitle' && n.props.children === 'Sensi Assistant')); f.back();
   nodes = open('Connections'); nodes.find(n => n.type === 'Row' && n.props.label === 'Auto-connect to the Pi').props.value.props.onValueChange(false);
   assert.deepEqual(f.calls, ['edit',['storage','full'],'disconnect',['auto',false]]);
 });
@@ -84,7 +86,7 @@ test('advanced preserves development gates and simulator availability; active-dr
     const nodes = f.render();
     assert.equal(nodes.some(n => n.type === 'SensiVoicePlaybackDiagnostic'), development);
     assert.equal(nodes.some(n => n.type === 'ResponsivenessDiagnostics'), development);
-    assert.ok(nodes.some(n => n.props?.title === 'Low oxygen'));
+    assert.equal(nodes.some(n => n.props?.title === 'Low oxygen'), false);
     nodes.find(n => n.props?.accessibilityLabel === 'Back to Settings').props.onPress();
     assert.ok(f.render().some(n => n.props?.accessibilityLabel === 'Driver Profile'));
   }
@@ -119,4 +121,40 @@ for (const theme of [light, dark]) test(`${theme === light ? 'Light' : 'Dark'} C
   assert.equal(f.render().find(n => n.type === 'Switch').props.value, true);
   f.render().find(n => n.type === 'Switch').props.onValueChange(false);
   assert.deepEqual(f.calls, ['disconnect', ['auto', false], ['direct', true], ['direct', false]]);
+});
+
+test('Safety Testing is nested under Health & Safety; simulator has a single settings location', () => {
+  const f = harness(true);
+  f.render().find(n => n.props?.accessibilityLabel === 'Health & Safety').props.onPress();
+  f.render().find(n => n.props?.title === 'Safety Testing').props.onPress();
+  const nodes = f.render();
+  assert.ok(nodes.some(n => n.type === 'SectionTitle' && n.props.children === 'Safety Testing'));
+  assert.equal(nodes.filter(n => n.props?.title === 'Low oxygen').length, 1);
+  assert.equal(nodes.filter(n => n.type === 'EmergencyDialerDemo').length, 1);
+  f.back();
+  assert.ok(f.render().some(n => n.props?.title === 'Safety Testing'));
+});
+test('onboarding replay retains existing callback and language selection never opens profile editor', async () => {
+  const f = harness(true);
+  f.render().find(n => n.props?.accessibilityLabel === 'Data & Privacy').props.onPress();
+  f.render().find(n => n.props?.title === 'Review Introduction & Setup').props.onPress();
+  assert.deepEqual(f.calls, ['intro']);
+  f.back(); f.render().find(n => n.props?.accessibilityLabel === 'Sensi Assistant').props.onPress();
+  const languages: string[] = [];
+  (f.props.drive as any).updateVoiceCheckLanguage = async (language: string) => { languages.push(language); };
+  const nodes = f.render();
+  assert.equal(nodes.some(n => n.props?.title === 'VoiceCheck language'), false);
+  await nodes.find(n => n.props?.title === 'Español').props.onPress();
+  assert.deepEqual(languages, ['es']); assert.deepEqual(f.calls, ['intro']);
+});
+
+
+test('Release exposes model maintenance and selected-language capability outside Debug diagnostics', () => {
+  for (const active of [false, true]) {
+    const f = harness(false, active); f.render().find(n => n.props?.accessibilityLabel === 'Sensi Assistant').props.onPress();
+    const nodes = f.render();
+    assert.equal(nodes.find(n => n.type === 'GemmaModelSettings').props.blocked, active);
+    assert.equal(nodes.find(n => n.type === 'SpeechCapabilityStatus').props.language, 'en');
+    assert.equal(nodes.some(n => n.type === 'SensiVoicePlaybackDiagnostic'), false);
+  }
 });

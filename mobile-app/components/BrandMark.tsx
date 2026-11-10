@@ -1,4 +1,5 @@
-import { Image, Text, View, type ImageSourcePropType } from 'react-native';
+import { Image, View, type ImageSourcePropType } from 'react-native';
+import { LocalizedText as Text } from '../lib/i18n/native';
 import { useTheme } from '../lib/theme/ThemeProvider';
 
 /** Asset integration point: supply ONLY the approved steering-wheel/heart-ECG image.

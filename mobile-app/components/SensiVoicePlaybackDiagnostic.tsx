@@ -48,7 +48,7 @@ function PlaybackPanel(props: { blocked: boolean; onClose(): void }) {
       useMicrophone: () => microphoneTest.current,
       listen: async (id, progress) => {
         const subscription = subscribeOfflineSpeechProgress(event => {
-          if (event.requestId === id) progress(event.phase, event.transcript);
+          if (event.requestId === id) progress(event.phase === 'ready' ? 'preparing' : event.phase, event.transcript);
         });
         try { return await listenOffline('en-US', id, 15000); }
         finally { subscription.remove(); }

@@ -14,6 +14,8 @@ type Deps = {
  * the UI's bounded cleanup wait expires. Never permit a second writer then. */
 export class ModelProvisioner {
   private owned = false;
+  /** Includes deferred native cleanup after the bounded UI wait expires. */
+  get busy(): boolean { return this.owned; }
   constructor(privateDeps: Deps, limits = PROVISION_LIMITS) { this.deps = privateDeps; this.limits = limits; }
   private deps: Deps;
   private limits: typeof PROVISION_LIMITS;
