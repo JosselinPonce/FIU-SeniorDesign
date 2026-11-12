@@ -1,3 +1,5 @@
+import type { SemanticContext, SemanticTask } from '../assistant/safetySemantic.ts';
+import { RealContactDemoPermit } from '../voice/realContactDemo.ts';
 import { responsivenessProbe, traceVoiceCheckPublication } from '../voice/responsivenessDiagnostics.ts';
 import { approvedAcknowledgment, type SafetyAcknowledgment, type AcknowledgmentContext } from '../assistant/safetyAcknowledgment.ts';
 import { simulationCompletion, canOfferSafetyContinuation, type SafetyConversation } from '../assistant/safetyConversation.ts';
@@ -54,6 +56,7 @@ export function contactPhone(raw: string | null | undefined): { phone: string | 
 export type CheckPhase = 'speaking' | 'preparing' | 'ready' | 'listening' | 'finalizing' | 'response_unavailable';
 
 export type SafetyState = {
+  pendingDemoContact?: { confirmationId: string; episodeId: string; phone: string; name: string | null } | null;
   monitoring: MonitoringStatus;
   conversation: SafetyConversation | null;
   prior: ProfilePrior | null;
@@ -95,9 +98,12 @@ type Deps = {
   /** Immediate foreground/screen check, independent of React effect delivery. */
   interactionCurrent?: () => boolean;
   assistantMode?: () => AssistantMode;
+  startSemantic?: (context: SemanticContext) => SemanticTask;
   startAcknowledgment?: (context: AcknowledgmentContext) => SafetyAcknowledgment;
   /** Opens the phone interface only; resolution does not mean a connected call. */
   handoffContact?: (phone: string, origin: PhoneHandoffOrigin) => Promise<unknown>;
+  demoSystemConfirmation?: boolean;
+  handoffDemoContact?: (phone: string, authorizeOnce: () => boolean) => Promise<unknown>;
   voiceIO: () => VoiceIO;
   /** Called when a voice check ends, so other audio returns to full volume. */
   releaseAudio?: () => void;
@@ -128,6 +134,33 @@ export class SafetyController {
   private generation = 0;
   private checking = false;
   private simulationOwner: object | null = null;
+  private realDemoIntent: { owner: object; generation: number; profileId: string; revision: string; phone: string; name: string | null } | null = null;
+  private demoPermit: RealContactDemoPermit | null = null;
+  private demoConfirmationSequence = 0;
+  private demoConfirmTimer: ReturnType<typeof setTimeout> | undefined;
+
+  cancelRealContactDemo() {
+    this.realDemoIntent = null;
+    this.demoPermit?.revoke(); this.demoPermit = null;
+    clearTimeout(this.demoConfirmTimer);
+    if (this.state.pendingDemoContact) this.set({ pendingDemoContact: null });
+  }
+  async confirmRealContactDemo(confirmationId: string): Promise<'requested' | 'cancelled' | 'failed'> {
+    const pending = this.state.pendingDemoContact, permit = this.demoPermit;
+    if (!pending || pending.confirmationId !== confirmationId || !permit || this.checking || !this.deps.handoffDemoContact) return 'cancelled';
+    // Consume UI availability before asynchronous platform work; reentrant cancellation can still revoke the permit.
+    this.set({ pendingDemoContact: null });
+    try {
+      await this.deps.handoffDemoContact(pending.phone, () => permit.claim());
+      if (this.state.last?.episode.id === pending.episodeId && this.demoPermit === permit) this.set({ last: { ...this.state.last, handoff: 'opened' } });
+      return 'requested';
+    }
+    catch {
+      if (this.state.last?.episode.id === pending.episodeId && this.demoPermit === permit) this.set({ last: { ...this.state.last, handoff: 'open_failed' } });
+      return 'failed';
+    }
+    finally { if (this.demoPermit === permit) this.cancelRealContactDemo(); }
+  }
   private continuation: { episodeId: string; current: () => boolean } | null = null;
   private lang: Lang = 'en';
   private name = '';
@@ -155,6 +188,7 @@ export class SafetyController {
   /** Recomputes the driver's thresholds from their profile, baseline and
    *  any "I'm OK" adjustments. */
   configure(p: DriverProfile, baseline: Baseline | null, ack: Ack = this.state.ack, reason = 'drive') {
+    if (this.profile && (this.profile.id !== p.id || this.profile.updated_at !== p.updated_at || this.profile.emergency_phone !== p.emergency_phone)) this.cancelRealContactDemo();
     if (this.profile?.id !== p.id) {
       this.cancelCheck(); this.engine = null; this.continuity.reset();
       this.lastValidAt = null; this.rhythm = new RhythmMonitor();
@@ -228,10 +262,16 @@ export class SafetyController {
    * raises the warning flag and confirms the emergency -- then runs the real
    * voice check. Nothing is saved, uploaded, or learned from.
    */
-  async simulate(scenario: DemoScenario): Promise<CheckResult | null> {
+  async simulate(scenario: DemoScenario, realContact = false): Promise<CheckResult | null> {
     const th = this.state.th;
     if (!th || this.state.check || this.state.demo) return null;
+    this.cancelRealContactDemo();
+    const contact = contactPhone(this.profile?.emergency_phone);
+    if (realContact && (!this.profile || this.sessionId || !contact.phone || !this.deps.handoffDemoContact
+        || !(this.deps.interactionCurrent?.() ?? true))) return null;
     const owner = this.simulationOwner = {};
+    if (realContact && this.profile && contact.phone) this.realDemoIntent = { owner, generation: this.generation,
+      profileId: this.profile.id, revision: this.profile.updated_at, phone: contact.phone, name: this.profile.emergency_name ?? null };
     const generation = this.generation;
     const value =
       scenario === 'high_critical' ? th.highCrit + 9
@@ -278,6 +318,11 @@ export class SafetyController {
     }
     const result = await this.runCheck(emergency, 'demo');
     if (this.simulationOwner === owner) { this.simulationOwner = null; this.set({ demo: null }); }
+    this.realDemoIntent = null;
+    const pending = this.state.pendingDemoContact;
+    if (this.deps.demoSystemConfirmation && pending && result?.contactCall === 'accepted_offer') {
+      await this.confirmRealContactDemo(pending.confirmationId);
+    }
     return result;
   }
 
@@ -295,6 +340,7 @@ export class SafetyController {
   }
 
   cancelCheck() {
+    this.cancelRealContactDemo();
     this.generation += 1;
     this.simulationOwner = null;
     this.continuation = null;
@@ -317,12 +363,12 @@ export class SafetyController {
 
   /** Recording identity is optional and never owns an in-flight safety episode.
    * runCheck captures the recording at episode activation for storage only. */
-  setRecordingSession(sessionId: string | null) { this.sessionId = sessionId; }
+  setRecordingSession(sessionId: string | null) { if (sessionId) this.cancelRealContactDemo(); this.sessionId = sessionId; }
 
   setMonitoringContext(connected: boolean, foreground: boolean, supported: boolean) {
     const available = connected && foreground && supported;
     // Simulations can own audio even with no sensor connection.
-    if ((!foreground || !supported) && (this.checking || this.state.demo)) this.cancelCheck();
+    if ((!foreground || !supported) && (this.checking || this.state.demo || this.state.pendingDemoContact || this.demoPermit)) this.cancelCheck();
     if (this.monitoringAvailable !== available) {
       this.cancelCheck(); this.engine?.resetContinuity(); this.continuity.reset();
       this.lastValidAt = null;
@@ -370,7 +416,7 @@ export class SafetyController {
   }
 
   dismissSafetyConversation(episodeId: string) {
-    if (!this.checking && this.state.conversation?.episodeId === episodeId) { this.continuation = null; this.set({ conversation: null }); }
+    if (!this.checking && this.state.conversation?.episodeId === episodeId) { this.cancelRealContactDemo(); this.continuation = null; this.set({ conversation: null }); }
   }
 
   /** Read-only contact capability for offers; never returns a number or grants consent. */
@@ -465,6 +511,7 @@ export class SafetyController {
         return;
       case 'warning':
       case 'escalated':
+        this.cancelRealContactDemo();
         void this.persist(ep);
         this.set({ tracking: { ...ep } });
         return;
@@ -473,6 +520,7 @@ export class SafetyController {
         this.set({ tracking: null });
         return;
       case 'emergency':
+        this.cancelRealContactDemo();
         void this.persist(ep);
         if (this.checking) return;
         // A real event owns the UI immediately. A suspended simulator must not
@@ -486,6 +534,7 @@ export class SafetyController {
 
   /** Settings → "Try the voice check": the real dialogue, simulated phone handoff, nothing recorded. */
   async rehearse(): Promise<CheckResult> {
+    this.cancelRealContactDemo();
     const ep: Episode = {
       id: 'rehearsal', kind: 'bpm_high', level: 'warning', stage: 'emergency', startedAt: Date.now(),
       value: 0, threshold: 0, confirmedAt: Date.now(), outcome: null, resolvedAt: null,
@@ -507,7 +556,7 @@ export class SafetyController {
     const current = () => generation === this.generation && profileId === this.profile?.id
       && (this.deps.interactionCurrent?.() ?? true);
     const selected = this.deps.assistantMode?.() ?? 'core';
-    const dialogue: SafetyConversation = { episodeId: ep.id, mode: selected, messages: [], finished: false, simulation: mode !== 'live' };
+    const dialogue: SafetyConversation = { episodeId: ep.id, mode: selected, messages: [], finished: false, simulation: mode !== 'live', language: this.lang, realContactDemo: mode === 'demo' && !!this.realDemoIntent };
     const publishDialogue = () => {
       try {
         if (current() && selected !== 'core') this.set({ conversation: { ...dialogue, messages: dialogue.messages.map(message => ({ ...message })) } });
@@ -524,10 +573,13 @@ export class SafetyController {
     const base = this.deps.voiceIO();
     // Report what the voice check is doing so the screen can show it.
     const io: VoiceIO = {
+      pause: () => base.pause?.() ?? Promise.resolve(),
       prepareRecognition: (lang, id) => { if (current()) base.prepareRecognition?.(lang, id); },
       speak: async (text, lang) => {
         if (current()) this.set({ check: { episode: ep, phase: 'speaking', question, captureId } });
         const operation = { interrupted: false }; activeSpeech = operation;
+        const sentenceTrace = typeof __DEV__ !== 'undefined' && __DEV__ ? responsivenessProbe('warning', 'Sensi sentence playback') : () => {};
+        if (typeof __DEV__ !== 'undefined' && __DEV__) sentenceTrace('started', { captureId, question, locale: lang });
         const message = { id: `${ep.id}-${++messageSequence}`, role: 'assistant' as const, text, playback: 'playing' as 'playing' | 'completed' | 'failed' | 'interrupted' };
         dialogue.messages.push(message); publishDialogue();
         try {
@@ -547,6 +599,7 @@ export class SafetyController {
             if (current() && !operation.interrupted && message.playback === 'completed')
               this.set({ check: { episode: ep, phase: 'preparing', question, captureId } });
           }
+          if (typeof __DEV__ !== 'undefined' && __DEV__) sentenceTrace('settled', { captureId, question, status: message.playback, locale: lang });
           publishDialogue();
         }
       },
@@ -570,6 +623,7 @@ export class SafetyController {
       cancel: () => { recognitionEpoch++; if (activeSpeech) activeSpeech.interrupted = true; base.cancel(); },
     };
     const voice = new VoiceCheck(io, this.lang, this.name, {
+      startSemantic: context => { if (!current() || selected === 'core' || !this.deps.startSemantic) return { get: () => null, cancel() {} }; return this.deps.startSemantic(context); },
       contactAvailable: contact.phone !== null,
       onQuestion: (q, id) => { question = q; captureId = id; },
       contactName: selected !== 'core' ? profile?.emergency_name ?? undefined : undefined,
@@ -583,6 +637,7 @@ export class SafetyController {
         if (!current()) return approvedAcknowledgment(null, this.lang, context);
         const text = acknowledgment?.get(this.lang) ?? approvedAcknowledgment(null, this.lang);
         dialogue.acknowledgmentSource = acknowledgment?.source ?? 'fallback';
+        if (typeof __DEV__ !== 'undefined' && __DEV__) responsivenessProbe('warning', 'Sensi acknowledgment selection')('selected', { captureId, question, source: dialogue.acknowledgmentSource, fallbackText: dialogue.acknowledgmentSource === 'fallback', locale: this.lang });
         publishDialogue();
         return text;
       },
@@ -632,7 +687,19 @@ export class SafetyController {
         // onChange may synchronously revoke monitoring. Recheck before the platform action.
         if (!current() || !voice.authorizesContact(result) || !profileId || (mode === 'live' && !this.monitoringAvailable)) handoff = 'cancelled';
         else if (!contact.phone) handoff = contact.error ?? 'missing_contact';
-        else if (mode !== 'live') handoff = 'simulated';
+        else if (mode !== 'live') {
+          handoff = 'simulated';
+          const intent = this.realDemoIntent;
+          if (mode === 'demo' && result.contactCall === 'accepted_offer' && intent && this.simulationOwner === intent.owner && intent.generation === this.generation
+              && intent.profileId === profileId && intent.phone === contact.phone && profile?.updated_at === intent.revision) {
+            const stillCurrent = () => generation === this.generation && this.profile?.id === intent.profileId
+              && this.profile.updated_at === intent.revision && contactPhone(this.profile.emergency_phone).phone === intent.phone
+              && !this.sessionId && !this.state.check && !this.state.demo && (this.deps.interactionCurrent?.() ?? true);
+            this.demoPermit = new RealContactDemoPermit(stillCurrent, Date.now() + 30_000);
+            this.demoConfirmTimer = setTimeout(() => this.cancelRealContactDemo(), 30_000);
+            this.set({ pendingDemoContact: { confirmationId: `real-demo-${++this.demoConfirmationSequence}`, episodeId: ep.id, phone: intent.phone, name: intent.name } });
+          }
+        }
         else {
           try {
             if (!this.deps.handoffContact) throw new Error('Phone interface unavailable');
@@ -646,7 +713,7 @@ export class SafetyController {
       if (current() && handoff) this.set({ last: { ...last, handoff } });
       if (current()) {
         if (mode === 'live' && canOfferSafetyContinuation(result) && !voice.emergencyServicesExcluded && !handoff) this.continuation = { episodeId: ep.id, current };
-        if (mode !== 'live') dialogue.messages.push({ id: `${ep.id}-${++messageSequence}`, role: 'system', text: simulationCompletion(result) });
+        if (mode !== 'live') dialogue.messages.push({ id: `${ep.id}-${++messageSequence}`, role: 'system', text: simulationCompletion(result, !!this.state.pendingDemoContact) });
         dialogue.finished = true; publishDialogue();
       }
       return result;

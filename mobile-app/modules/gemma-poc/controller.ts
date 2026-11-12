@@ -1,3 +1,4 @@
+import { semanticPrompt, type SemanticContext } from '../../lib/assistant/safetySemantic.ts';
 import { TEST_PROMPT, GEMMA_ARTIFACT } from './artifact.ts';
 import { acknowledgmentPrompt, canGenerateAcknowledgment, type AcknowledgmentContext } from '../../lib/assistant/safetyAcknowledgment.ts';
 import type { ProvisionProgress } from './provisioning.ts';
@@ -121,6 +122,17 @@ export class GemmaPoc {
         const text = await this.context.generate(acknowledgmentPrompt(context));
         if (!signal.aborted) selected = text;
       } finally { this.set({ inferenceMs: Date.now() - started }); }
+    }, 1500);
+    return selected;
+  }
+  async generateSafetySemantic(context: SemanticContext): Promise<string> {
+    const prompt = semanticPrompt(context);
+    let selected = '';
+    await this.operation('Generating safety semantics', async signal => {
+      if (!this.context || this.invalidated) throw Error('Model unavailable or cleanup required.');
+      const started = Date.now();
+      try { const text = await this.context.generate(prompt); if (!signal.aborted) selected = text; }
+      finally { this.set({ inferenceMs: Date.now() - started }); }
     }, 1500);
     return selected;
   }

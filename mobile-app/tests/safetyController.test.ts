@@ -206,7 +206,7 @@ for (const channel of ['typed', 'button'] as const) for (const accepted of [true
       assert.equal(last.result.outcome, 'not_ok');
       if (simulation) {
         assert.equal(last.handoff, accepted ? 'simulated' : undefined);
-        assert.match(simulationCompletion(last.result), accepted ? /In a real emergency.*would open/ : /declined.*No phone interface/);
+        assert.match(simulationCompletion(last.result), accepted ? /Noncalling simulation complete.*No phone interface/ : /declined.*No phone interface/);
         assert.deepEqual(f.saved, []);
       }
     }

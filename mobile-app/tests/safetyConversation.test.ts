@@ -36,8 +36,8 @@ for(const mode of ['local','connected'] as const){
   test(`${mode}: deterministic safety dialogue is mirrored without model access; standalone continuation is disabled`,async()=>{
     const f=fixture(mode,['yes']);f.trigger();await f.settle();
     const d=f.last().conversation!;assert.equal(d.mode,mode);assert.equal(d.finished,true);
-    assert.deepEqual(d.messages.map(m=>m.role),['assistant','driver','assistant']);
-    assert.match(d.messages[0]!.text,/Are you feeling okay/);assert.equal(d.messages[1]!.text,'yes');
+    assert.deepEqual(d.messages.map(m=>m.role),['assistant','assistant','assistant','driver','assistant','assistant','assistant']);
+    assert.match(d.messages[0]!.text,/your heart rate/);assert.equal(d.messages[3]!.text,'yes');
     assert.equal(d.messages[0]!.playback,'completed');
     assert.equal(f.c.safetyContinuation(d.episodeId),false);assert.equal(f.c.consumeSafetyContinuation(d.episodeId),false);
     assert.equal(f.c.consumeSafetyContinuation(d.episodeId),false);assert.equal(f.calls.length,0);
@@ -131,7 +131,7 @@ test('thrown initial playback failure retains episode and visible prompt until a
   f.trigger(); await f.settle();
   const episodeId = f.last().check!.episode.id;
   assert.equal(f.last().conversation?.episodeId, episodeId);
-  assert.match(f.last().check!.fallbackText!, /Are you feeling okay/);
+  assert.match(f.last().check!.fallbackText!, /your heart rate/);
   assert.equal(f.last().last, null);
   f.c.answer('not_ok'); await f.settle();
   assert.equal(f.last().check?.question, 'contact_offer');

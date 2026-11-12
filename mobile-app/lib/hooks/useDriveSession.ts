@@ -1,7 +1,7 @@
 import type { AnswerScope } from '../voice/voiceCheck';
-import { phoneSafetyAcknowledgment } from '../../modules/gemma-poc/phone';
+import { phoneSafetyAcknowledgment, phoneSafetySemantic } from '../../modules/gemma-poc/phone';
 import { SENSI_MODE } from '../assistant/mode';
-import { openAuthorizedPhoneInterface } from '../voice/phoneHandoff';
+import { openConfirmedDemoPhoneInterface, hasSystemPhoneConfirmation, openAuthorizedPhoneInterface } from '../voice/phoneHandoff';
 /**
  * Application state for one driver's drive.
  *
@@ -10,7 +10,7 @@ import { openAuthorizedPhoneInterface } from '../voice/phoneHandoff';
  * reactive surface is a handful of values on a few screens.
  */
 import { useCallback, useEffect, useMemo, useReducer, useRef } from 'react';
-import { AppState, Linking } from 'react-native';
+import { AppState, Linking, Platform } from 'react-native';
 import type { CheckAnswer } from '../voice/voiceCheck';
 import * as Haptics from 'expo-haptics';
 
@@ -274,6 +274,7 @@ export function useDriveSession() {
         interactionCurrent: () => AppState.currentState === 'active' && supportedScreen.current,
         assistantMode: () => SENSI_MODE,
         startAcknowledgment: phoneSafetyAcknowledgment,
+        startSemantic: phoneSafetySemantic,
         voiceIO: phoneSensiVoiceIO,
         handoffContact: (phone, origin) => {
           // Last platform-boundary check, including transitions ahead of React effects.
@@ -281,6 +282,11 @@ export function useDriveSession() {
             && supportedScreen.current && connected.current && Date.now() - lastRx.current < 3000,
           url => Linking.openURL(url));
         },
+        // Native tel: on iOS 10.3+ requires Apple's user confirmation before dialing.
+        demoSystemConfirmation: hasSystemPhoneConfirmation(Platform.OS, Platform.Version),
+        handoffDemoContact: (phone, authorizeOnce) => openConfirmedDemoPhoneInterface(phone, authorizeOnce,
+          () => Platform.OS === 'ios' && AppState.currentState === 'active' && supportedScreen.current && !sessionRef.current && !startingSession.current,
+          url => Linking.openURL(url)),
         releaseAudio,
         save: async row => {
           await repo.saveAlert(row);
@@ -718,6 +724,8 @@ export function useDriveSession() {
     respondAlertText,
     continueSafetyConversation: useCallback((episodeId: string) => safety.consumeSafetyContinuation(episodeId), [safety]),
     canContinueSafetyConversation: useCallback((episodeId: string) => safety.safetyContinuation(episodeId), [safety]),
+    confirmRealContactDemo: useCallback((episodeId: string) => safety.confirmRealContactDemo(episodeId), [safety]),
+    cancelRealContactDemo: useCallback(() => safety.cancelRealContactDemo(), [safety]),
     dismissSafetyConversation: useCallback((episodeId: string) => safety.dismissSafetyConversation(episodeId), [safety]),
     assistantContactAvailability: useCallback(() => safety.assistantContactAvailability(), [safety]),
     assistantOwnership: useCallback(() => safety.assistantOwnership(), [safety]),
@@ -726,9 +734,9 @@ export function useDriveSession() {
     rehearseVoice,
     /** Demo: fabricated readings through the real engine + voice check. Nothing saved. */
     simulate: useCallback(
-      async (scenario: DemoScenario) => {
+      async (scenario: DemoScenario, realContact = false) => {
         if (!state.voice?.granted) dispatch({ type: 'voice', voice: await prepareVoice() });
-        return safety.simulate(scenario);
+        return safety.simulate(scenario, realContact);
       },
       [safety, state.voice],
     ),

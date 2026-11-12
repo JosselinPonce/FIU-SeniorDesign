@@ -16,12 +16,16 @@ export function DashboardAssistantEntry(props: {
       style={({ pressed }) => ({ width: 58, height: 58, borderRadius: 29, alignItems: 'center', justifyContent: 'center',
         backgroundColor: disabled ? tokens.disabledSurface : tokens.primary, opacity: pressed ? .85 : 1,
         shadowColor: tokens.shadow, shadowOpacity: .15, shadowRadius: 6, shadowOffset: { width: 0, height: 3 }, elevation: 3 })}>
-      {/* A simple steering-wheel control glyph, separate from the official app logo. */}
-      <View accessible={false} style={{ width: 29, height: 29, borderRadius: 15, borderWidth: 2.5, borderColor: disabled ? tokens.disabledText : tokens.onPrimary, alignItems: 'center', justifyContent: 'center' }}>
-        <View style={{ position: 'absolute', width: 23, height: 3, top: 11, backgroundColor: disabled ? tokens.disabledText : tokens.onPrimary }} />
-        <View style={{ position: 'absolute', width: 3, height: 12, bottom: 0, backgroundColor: disabled ? tokens.disabledText : tokens.onPrimary }} />
-        <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: disabled ? tokens.disabledText : tokens.onPrimary }} />
-      </View>
+      <SensiGlyph color={disabled ? tokens.disabledText : tokens.onPrimary} />
     </Pressable>
   );
+}
+
+/** Existing Sensi steering-wheel identity, shared by its launcher and introduction. */
+export function SensiGlyph({ color }: { color: string }) {
+  return <View accessible={false} style={{ width: 29, height: 29, borderRadius: 15, borderWidth: 2.5, borderColor: color, alignItems: 'center', justifyContent: 'center' }}>
+    <View style={{ position: 'absolute', width: 23, height: 3, top: 11, backgroundColor: color }} />
+    <View style={{ position: 'absolute', width: 3, height: 12, bottom: 0, backgroundColor: color }} />
+    <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: color }} />
+  </View>;
 }

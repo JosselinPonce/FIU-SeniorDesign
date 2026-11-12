@@ -1,3 +1,5 @@
+import { ScreenHeader, ScreenHeading } from './ScreenHeader';
+import { displayBmi } from '../lib/ui/profileSummary';
 import { LocalizedAlert as Alert, LocalizedPressable as Pressable, LocalizedText as Text, LocalizedTextInput as TextInput } from '../lib/i18n/native';
 import { InformationButton } from './Information';
 import { useTheme } from '../lib/theme/ThemeProvider';
@@ -8,7 +10,7 @@ import { presentationColors, type ThemeTokens } from '../lib/theme/tokens';
  */
 import { useEffect, useRef, useState } from 'react';
 import { LanguageMenu } from './LanguageMenu';
-import { Modal, ScrollView, StyleSheet, View } from 'react-native';
+import { SafeAreaView, Modal, ScrollView, StyleSheet, View } from 'react-native';
 
 import { measurementsFromMetric, enterWeight, enterHeightCm, selectHeight, switchHeightUnit, switchWeightUnit,
   metricMeasurements, measurementLabel, type HeightUnit, type WeightUnit } from '../lib/db/profileMeasurements';
@@ -16,7 +18,7 @@ import { profileFormValues } from '../lib/db/profileEditing';
 import * as repo from '../lib/db/repositories';
 import { deleteDriverEverywhere } from '../lib/db/deletion';
 import type { DriverProfile, Gender } from '../lib/db/repositories';
-import { CONDITIONS, MEDICATIONS, bmi, bmiCategory } from '../lib/analysis/profileModel';
+import { CONDITIONS, MEDICATIONS, bmiCategory } from '../lib/analysis/profileModel';
 import { Btn, Card, SectionTitle } from './ui';
 
 const GENDERS: { key: Gender; label: string }[] = [
@@ -64,7 +66,7 @@ export function DriverPicker(props: {
   }, []);
   const toggle = (list: string[], set: (v: string[]) => void, key: string) =>
     set(list.includes(key) ? list.filter((k) => k !== key) : [...list, key]);
-  const liveBmi = bmi(measurements.weightKg, measurements.heightCm);
+  const liveBmi = measurements.heightError || measurements.weightError ? null : displayBmi(measurements.weightKg, measurements.heightCm);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -104,7 +106,7 @@ export function DriverPicker(props: {
       setBusy(true);
       const save = props.onSaveProfile ?? (editing ? (input: repo.NewProfileInput) => repo.updateProfile(editing.id, input, editing.updated_at) : repo.createProfile);
       await save({
-        custom_id: form.custom_id,
+        custom_id: editing?.custom_id ?? props.editProfile?.custom_id ?? null,
         display_name: form.display_name,
         ...metricMeasurements(measurements),
         age: optionalNumber(form.age, 'Age'),
@@ -146,12 +148,13 @@ export function DriverPicker(props: {
   );
 
   return (
+    <SafeAreaView style={{ flex: 1, backgroundColor: tokens.background }}>
+    <ScreenHeader title={adding ? editing || props.editProfile ? 'Edit Driver Profile' : 'New driver' : "Who's driving?"}
+      onBack={adding && (props.profiles.length > 0 || props.onCancelEdit) ? () => { if (props.onCancelEdit) props.onCancelEdit(); else { setAdding(false); setEditing(null); } } : undefined}
+      right={<LanguageMenu />} />
     <ScrollView contentContainerStyle={st.container} automaticallyAdjustKeyboardInsets={true} keyboardDismissMode="interactive" keyboardShouldPersistTaps="handled">
-      <LanguageMenu />
-      <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-        <Text style={[st.hello, { flex: 1 }]}>{props.editProfile ? 'Edit Driver Profile' : "Who's driving?"}</Text>
-        <InformationButton compact title="Driver profiles" body="Readings are associated with the selected profile and compared with its personalized baseline. Tap a profile to continue. Use Edit or long-press a profile to update its details." />
-      </View>
+      <ScreenHeading title={adding ? editing || props.editProfile ? 'Edit Driver Profile' : 'New driver' : "Who's driving?"}
+        accessory={<InformationButton compact title="Driver profiles" body="Readings belong to the confirmed driver. Edit profile details before monitoring." />} />
       <Text style={st.lead}>{props.editProfile ? 'Changes apply to this driver. Existing drives, calibration and learned baselines are preserved.' : 'Select a profile to continue.'}</Text>
 
       {(props.editProfile ? [] : props.profiles).map((p) => (
@@ -164,15 +167,14 @@ export function DriverPicker(props: {
           style={({ pressed }) => [st.driver, { flex: 1 }, pressed && { opacity: 0.7 }]}
         >
           <View style={st.avatar}>
-            <Text localize={false} style={st.avatarText}>{initials(p.display_name)}</Text>
+            <Text accessible={false} maxFontSizeMultiplier={1.2} localize={false} style={st.avatarText}>{initials(p.display_name)}</Text>
           </View>
-          <View style={{ flex: 1 }}>
+          <View style={{ flex: 1, minWidth: 0 }}>
             <Text localize={false} style={st.name}>{p.display_name}</Text>
             <Text style={st.meta}>
               {[
-                p.custom_id,
                 p.age ? `${p.age} y` : null,
-                bmi(p.weight_kg, p.height_cm) ? `BMI ${bmi(p.weight_kg, p.height_cm)}` : null,
+                displayBmi(p.weight_kg, p.height_cm) != null ? `BMI ${displayBmi(p.weight_kg, p.height_cm)}` : 'BMI unavailable',
                 repo.parseList(p.conditions).length ? `${repo.parseList(p.conditions).length} condition(s)` : null,
                 p.language === 'es' ? 'Español' : null,
               ]
@@ -180,7 +182,7 @@ export function DriverPicker(props: {
                 .join(' · ') || 'No details'}
             </Text>
           </View>
-          <Text style={st.chev}>›</Text>
+          <Text accessible={false} maxFontSizeMultiplier={1.2} style={st.chev}>›</Text>
         </Pressable>
         <Pressable accessibilityRole="button" accessibilityLabel={`Edit ${p.display_name}'s profile`}
           onPress={() => edit(p)} style={st.editAction}>
@@ -196,9 +198,7 @@ export function DriverPicker(props: {
         </Pressable>
       ) : (
         <Card>
-          <SectionTitle>{editing ? `Edit ${editing.display_name}` : 'New driver'}</SectionTitle>
           {input('display_name', 'Name *')}
-          {input('custom_id', 'Subject ID (e.g. SUBJ-001)')}
           {input('age', 'Age', true)}
           <Text style={st.label}>Height (optional)</Text>
           <View style={st.genders}>{(['ft/in', 'cm'] as HeightUnit[]).map(unit =>
@@ -249,11 +249,11 @@ export function DriverPicker(props: {
               <Btn title="Cancel" kind="ghost" onPress={() => setHeightSelector(null)} />
             </Card></View>
           </Modal>
-          {liveBmi ? (
+          {liveBmi != null ? (
             <Text style={st.hint}>
               BMI {liveBmi} · {bmiCategory(liveBmi)} (calculated from height and weight)
             </Text>
-          ) : null}
+          ) : <Text style={st.hint}>BMI unavailable — review height and weight.</Text>}
           <View style={st.genders}>
             {GENDERS.map((g) => (
               <Pressable
@@ -363,6 +363,7 @@ export function DriverPicker(props: {
         </Card>
       )}
     </ScrollView>
+    </SafeAreaView>
   );
 }
 
@@ -371,25 +372,23 @@ const makeStyles = (tokens: ThemeTokens) => {
   return StyleSheet.create({
     selectorBackdrop: { flex: 1, backgroundColor: tokens.overlay, justifyContent: 'center', padding: 20 },
     selectorCard: { maxHeight: '70%' },
-    container: { padding: 20, paddingTop: 70, gap: 12, backgroundColor: C.bg, flexGrow: 1 },
-    profileRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-    editAction: { minWidth: 52, minHeight: 44, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 8 },
+    container: { padding: 16, paddingTop: 10, gap: 10, backgroundColor: C.bg, flexGrow: 1 },
+    profileRow: { flexDirection: 'row', alignItems: 'center', backgroundColor: C.card,
+      borderRadius: 16, borderWidth: 1, borderColor: C.line,
+      shadowColor: tokens.shadow, shadowOpacity: 0.06, shadowRadius: 10, shadowOffset: { width: 0, height: 3 }, elevation: 2 },
+    editAction: { minWidth: 52, minHeight: 44, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 10,
+      marginRight: 10, borderRadius: 10, backgroundColor: tokens.surfaceMuted },
     hello: { fontSize: 26, fontWeight: '800', color: C.ink },
-    lead: { fontSize: 15, color: C.sub, marginBottom: 6, lineHeight: 21 },
+    lead: { fontSize: 15, color: C.sub, lineHeight: 21 },
     driver: {
       flexDirection: 'row',
       alignItems: 'center',
-      gap: 14,
-      backgroundColor: C.card,
-      padding: 14,
-      borderRadius: 18,
-      shadowColor: tokens.shadow,
-      shadowOpacity: 0.06,
-      shadowRadius: 10,
-      shadowOffset: { width: 0, height: 3 },
-      elevation: 2,
+      gap: 10,
+      padding: 12,
+      minWidth: 0,
+      minHeight: 72,
     },
-    avatar: { width: 48, height: 48, borderRadius: 24, backgroundColor: C.brandSoft, alignItems: 'center', justifyContent: 'center' },
+    avatar: { width: 44, height: 44, flexShrink: 0, borderRadius: 22, backgroundColor: C.brandSoft, alignItems: 'center', justifyContent: 'center' },
     avatarText: { color: C.brand, fontWeight: '800', fontSize: 17 },
     name: { fontSize: 18, fontWeight: '700', color: C.ink },
     meta: { fontSize: 13, color: C.sub, marginTop: 2 },

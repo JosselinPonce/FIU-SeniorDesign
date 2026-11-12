@@ -1,3 +1,9 @@
+import { getSetting, setSetting } from '../lib/db/repositories';
+import { readRealContactPreference, saveRealContactPreference } from '../lib/voice/realContactPreference';
+import { displayBmi, maskedContactPhone } from '../lib/ui/profileSummary';
+import { RealContactDemoConfirmation } from './RealContactDemoConfirmation';
+import { contactPhone } from '../lib/analysis/safetyController';
+import { ScreenHeader, ScreenHeading } from './ScreenHeader';
 import { LocalizedAlert as Alert, LocalizedPressable as Pressable, LocalizedText as Text } from '../lib/i18n/native';
 import { simulationCompletion } from '../lib/assistant/safetyConversation';
 import { settingsSwitchColors } from '../lib/ui/settingsSwitch';
@@ -11,18 +17,17 @@ import { presentationColors, type ThemeTokens } from '../lib/theme/tokens';
  */
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { SETTINGS_CATEGORIES, settingsTitle, type SettingsPage } from '../lib/ui/settingsNavigation';
-import { BackHandler, ScrollView, StyleSheet, Switch, View } from 'react-native';
+import { AppState, BackHandler, ScrollView, StyleSheet, Switch, View } from 'react-native';
 
 import type { useDriveSession } from '../lib/hooks/useDriveSession';
 import type { StorageMode } from '../lib/db/repositories';
 import { pendingCount, syncToSupabase } from '../lib/db/sync';
 import { wipeEverything } from '../lib/db/deletion';
-import { Btn, Card, Row, SectionTitle, fmtClock, fmtDuration } from './ui';
+import { Btn, Card, Pill, Row, SectionTitle, fmtClock, fmtDuration } from './ui';
 import { VoicePicker } from './VoicePicker';
 import { CalibrationCard } from './CalibrationCard';
 import { ThresholdHistory } from './ThresholdHistory';
 import { ResponsivenessDiagnostics } from './ResponsivenessDiagnostics';
-import { EmergencyDialerDemo } from './EmergencyDialerDemo';
 import { LanguageMenu } from './LanguageMenu';
 import { GemmaModelSettings } from './GemmaModelSettings';
 import { SpeechCapabilityStatus } from './SpeechCapabilityStatus';
@@ -57,7 +62,7 @@ export function SettingsView(props: {
   setAutoOn: (v: boolean) => void;
   onWiped: () => Promise<void>;
   onShowIntro: () => void;
-  onEditProfile: () => void;
+  onEditProfile: (returnPage?: SettingsPage) => void;
 }) {
   const { colors: C, tokens } = useTheme();
   const st = makeStyles(tokens);
@@ -65,10 +70,15 @@ export function SettingsView(props: {
   const [page, setPage] = useState<SettingsPage>(props.initialPage ?? null);
   const scroll = useRef<ScrollView>(null);
   const focusedDemo = useRef(false);
+  const positions = useRef<Record<string, number>>({});
+  const history = useRef<SettingsPage[]>([]);
+  const navigate = (next: SettingsPage) => { history.current.push(page); setPage(next); };
+  const goBack = () => setPage(history.current.length ? history.current.pop()! : page === 'safety_testing' || page === 'thresholds' ? 'safety' : page === 'developer' ? 'advanced' : null);
+  useEffect(() => { if (props.initialPage) setPage(props.initialPage); }, [props.initialPage]);
   useEffect(() => {
     const back = BackHandler.addEventListener('hardwareBackPress', () => {
       if (page === null) return false;
-      setPage(page === 'safety_testing' ? 'safety' : null); return true;
+      goBack(); return true;
     });
     return () => back.remove();
   }, [page]);
@@ -79,6 +89,34 @@ export function SettingsView(props: {
   const [syncing, setSyncing] = useState(false);
   const [rehearsal, setRehearsal] = useState<string | null>(null);
   const [demoResult, setDemoResult] = useState<string | null>(null);
+  const [realContact, setRealContact] = useState(false);
+  const [preferenceReady, setPreferenceReady] = useState(false);
+  const [preferenceBusy, setPreferenceBusy] = useState(false);
+  const [preferenceError, setPreferenceError] = useState('');
+  const preferenceWriting = useRef(false);
+  const preferenceLive = useRef(false);
+  useEffect(() => {
+    preferenceLive.current = true;
+    void readRealContactPreference(getSetting).then(value => { if (preferenceLive.current) setRealContact(value); })
+      .catch(() => { if (preferenceLive.current) setPreferenceError('Could not restore the demonstration preference. Calling remains off.'); })
+      .finally(() => { if (preferenceLive.current) setPreferenceReady(true); });
+    return () => { preferenceLive.current = false; };
+  }, []);
+  async function changeRealContact(value: boolean) {
+    if (!preferenceReady || preferenceWriting.current) return;
+    preferenceWriting.current = true; setPreferenceBusy(true); setPreferenceError('');
+    if (!value) { d.cancelRealContactDemo?.(); }
+    try {
+      await saveRealContactPreference(setSetting, value);
+      if (preferenceLive.current) setRealContact(value);
+    } catch { if (preferenceLive.current) setPreferenceError('Could not save the demonstration preference. Please try again.'); }
+    finally { preferenceWriting.current = false; if (preferenceLive.current) setPreferenceBusy(false); }
+  }
+  const savedContact = contactPhone(d.driver?.emergency_phone);
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', state => { if (state !== 'active') { d.cancelRealContactDemo?.(); } });
+    return () => { subscription.remove(); d.cancelRealContactDemo?.(); };
+  }, [page]);
   const describe = (r: { outcome: string; urgent: boolean; channel: string } | null) =>
     !r
       ? 'The readings never confirmed an emergency.'
@@ -105,30 +143,28 @@ export function SettingsView(props: {
   }
 
   return (
-    <ScrollView ref={scroll} key={page ?? 'landing'} contentContainerStyle={st.container}>
+    <View style={{ flex: 1 }}>
+      <ScreenHeader title={settingsTitle(page)} onBack={page === null ? undefined : goBack} backLabel="Back" />
+    <ScrollView ref={scroll} key={page ?? 'landing'} contentContainerStyle={st.container}
+      contentOffset={{ x: 0, y: positions.current[page ?? 'landing'] ?? 0 }} scrollEventThrottle={100}
+      onScroll={event => { positions.current[page ?? 'landing'] = event.nativeEvent.contentOffset.y; }}>
+      <ScreenHeading title={settingsTitle(page)} />
       {page === null ? <>
-        <SectionTitle>Settings</SectionTitle>
         <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}><Text style={st.modeTitle}>App language</Text><LanguageMenu /></View>
         {SETTINGS_CATEGORIES.map(category => <Pressable key={category.key} accessibilityRole="button"
-          accessibilityLabel={category.title} onPress={() => setPage(category.key)} style={st.category}>
+          accessibilityLabel={category.title} onPress={() => navigate(category.key)} style={st.category}>
           <View style={{ flex: 1, gap: 4 }}><Text style={st.modeTitle}>{category.title}</Text><Text style={st.note}>{category.description}</Text></View>
           <Text accessible={false} style={st.modeTitle}>›</Text>
         </Pressable>)}
-        <Pressable accessibilityRole="button" accessibilityLabel="Advanced Settings" onPress={() => setPage('advanced')} style={st.category}>
-          <View style={{ flex: 1, gap: 4 }}><Text style={st.modeTitle}>Advanced Settings</Text><Text style={st.note}>Diagnostics and demonstration tools</Text></View><Text accessible={false} style={st.modeTitle}>›</Text>
+        <Pressable accessibilityRole="button" accessibilityLabel="Advanced Settings" onPress={() => navigate('advanced')} style={st.category}>
+          <View style={{ flex: 1, gap: 4 }}><Text style={st.modeTitle}>Advanced Settings</Text><Text style={st.note}>More settings and support</Text></View><Text accessible={false} style={st.modeTitle}>›</Text>
         </Pressable>
-      </> : <>
-        <Pressable accessibilityRole="button" accessibilityLabel={page === 'safety_testing' ? 'Back to Health & Safety' : 'Back to Settings'} onPress={() => setPage(page === 'safety_testing' ? 'safety' : null)} style={st.secondary}>
-          <Text style={st.modeTitle}>{page === 'safety_testing' ? '‹ Health & Safety' : '‹ Settings'}</Text>
-        </Pressable>
-        <SectionTitle>{settingsTitle(page)}</SectionTitle>
-      </>}
+      </> : null}
       {page === 'profile' ? <>
       <Card>
-        <SectionTitle>Driver profile</SectionTitle>
         <Text localize={false} style={st.note}>{d.driver?.display_name}</Text>
-        <Text style={st.note}>{d.driver?.emergency_phone ? `Emergency contact: ${d.driver.emergency_name || 'Saved contact'} · ${d.driver.emergency_phone}` : 'No emergency contact configured. Saved-contact phone handoff is unavailable.'}</Text>
-        <Btn title="Edit Driver Profile" onPress={props.onEditProfile} />
+        <Text style={st.note}>{d.driver?.emergency_phone ? `Emergency contact: ${d.driver.emergency_name || 'Saved contact'} · ${maskedContactPhone(d.driver.emergency_phone)}` : 'No emergency contact configured. Saved-contact phone handoff is unavailable.'}</Text>
+        <Btn title="Edit Driver Profile" onPress={() => props.onEditProfile(page)} />
         <InformationButton title="Profile storage" body="Profiles are saved on this phone. Cloud updates retry when online; emergency contacts stay on this phone." />
         {d.hasActiveSession ? <Text style={st.note}>End and save the current drive before editing.</Text> : null}
       </Card>
@@ -136,7 +172,6 @@ export function SettingsView(props: {
       {page === 'assistant' ? <>
       <GemmaModelSettings blocked={d.hasActiveSession || !!sf.check || !!sf.demo || sf.monitoring === 'active'} />
       <Card>
-        <SectionTitle>Sensi Assistant</SectionTitle>
         <Text style={st.note}>Sensi checks how you feel after confirmed sensor events. You can answer by voice, typing or buttons. Calling your saved contact requires your explicit agreement.</Text>
         <Text style={st.modeTitle}>VoiceCheck Language</Text>
         <View accessibilityRole="radiogroup" style={{ flexDirection: 'row', gap: 12 }}>
@@ -168,7 +203,15 @@ export function SettingsView(props: {
       </Card>
       </> : null}
       {page === 'safety' ? <>
-      <Btn title="Safety Testing" kind="ghost" onPress={() => setPage('safety_testing')} />
+      <Btn title="Safety Testing" onPress={() => navigate('safety_testing')} />
+      <Card><SectionTitle>Safety checks</SectionTitle>
+        <Text style={st.note}>Warnings use your driver's current thresholds. Voice, typing and buttons remain available.</Text>
+        <Text style={st.note}>Oxygen is an estimate. A normal-looking value is not proof of normal oxygen.</Text>
+        <Btn title="Threshold details" kind="ghost" onPress={() => navigate('thresholds')} />
+      </Card>
+      <CalibrationCard drive={d} />
+      </> : null}
+      {page === 'thresholds' ? <>
       <Card>
         <SectionTitle>Safety checks</SectionTitle>
         {sf.th && sf.prior ? (
@@ -194,7 +237,7 @@ export function SettingsView(props: {
                 <Btn title="Reset these adjustments" kind="ghost" onPress={() => void d.resetAck()} />
               </>
             ) : null}
-            <InformationButton title="Personalized thresholds" body={`How the profile sets this: ${sf.prior.explain.join(' · ')}.`} />
+            <InformationButton title="Personalized thresholds" body={`How the profile sets this: ${sf.prior.explain.filter(line => !line.startsWith('BMI ') || displayBmi(d.driver?.weight_kg ?? null, d.driver?.height_cm ?? null) !== null).join(' · ')}.`} />
             <InformationButton title="How safety checks work" body={'A warning is watched for 15 s (8 s if critical). Only if readings stay out of range does the phone ask "Are you feeling OK?" out loud. Sources: NEWS2 (Royal College of Physicians 2017), Avram et al. 2019 real-world heart-rate norms, alarm-delay studies (Görges 2009). Oxygen is an estimate: pulse oximeters can read several points high on darker skin (Sjoding et al. 2020), so a normal-looking value is not proof of normal oxygen.'} />
             <Text style={st.note}>Oxygen is an estimate. A normal-looking value is not proof of normal oxygen.</Text>
           </>
@@ -242,8 +285,6 @@ export function SettingsView(props: {
           }</Text>
         ) : null}
       </Card>
-
-      <CalibrationCard drive={d} />
 
       </> : null}
       {page === 'data' ? <>
@@ -374,13 +415,25 @@ export function SettingsView(props: {
       </Card>
       </> : null}
       {page === 'advanced' ? <>
+      <Card><SectionTitle>More settings</SectionTitle>
+        <Btn title="Voice & Language" kind="ghost" onPress={() => navigate('assistant')} />
+        <Btn title="Monitoring information" kind="ghost" onPress={() => navigate('safety')} />
+        <Btn title="Emergency assistance" kind="ghost" onPress={() => navigate('profile')} />
+        <Btn title="Device & Connectivity" kind="ghost" onPress={() => navigate('connections')} />
+        <Btn title="Data & Privacy" kind="ghost" onPress={() => navigate('data')} />
+      </Card>
+      {__DEV__ ? <Card><SectionTitle>Developer Tools</SectionTitle>
+        <Text style={st.note}>Recognition, model and audio diagnostics. Debug builds only.</Text>
+        <Btn title="Open Developer Tools" kind="ghost" onPress={() => navigate('developer')} />
+      </Card> : null}
+      </> : null}
+      {page === 'developer' && __DEV__ ? <>
       {__DEV__ ? props.gemmaDiagnostics : null}
       {__DEV__ && SensiVoicePlaybackDiagnostic ? <SensiVoicePlaybackDiagnostic blocked={!!sf.check || !!sf.demo} /> : null}
       {__DEV__ ? <ResponsivenessDiagnostics blocked={d.hasActiveSession || !!sf.check || !!sf.demo} /> : null}
 
       </> : null}
       {page === 'safety_testing' ? <>
-      <EmergencyDialerDemo blocked={d.hasActiveSession || !!sf.check || !!sf.demo} />
       <View onLayout={event => {
         if (props.initialPage === 'safety_testing' && !focusedDemo.current) {
           focusedDemo.current = true;
@@ -388,45 +441,56 @@ export function SettingsView(props: {
         }
       }}>
       <Card>
-        <SectionTitle>Demo — trigger a warning</SectionTitle>
-        <Text style={st.note}>
-          Plays fabricated readings through the real warning engine with this driver's thresholds, 4× faster than real time: a
-          few normal seconds, then abnormal ones until the warning flag is raised, confirmed, and the voice check asks if you're
-          OK. Nothing is saved, uploaded, or learned from.
-        </Text>
+        <SectionTitle>Simulate a Warning</SectionTitle>
+        <Text style={st.note}>Park before testing. Choose a scenario below.</Text>
+        <Row label="Enable real-contact demonstration" value={<Switch {...settingsSwitchColors(tokens)}
+          value={realContact} disabled={!preferenceReady || preferenceBusy || d.hasActiveSession || !!sf.check || !!sf.demo || (!savedContact.phone && !realContact)}
+          onValueChange={changeRealContact} />} />
+        <Text accessibilityLiveRegion="polite" style={st.note}>{realContact ? 'Real-contact run: consent to the contact offer is required. iOS asks before dialing.' : 'Noncalling run: no saved-contact phone interface will open.'}</Text>
+        <Text style={st.note}>Off by default. Stays enabled until you turn it off. Consent to Sensi’s contact offer can open the iOS phone confirmation.</Text>
+        {!savedContact.phone ? <><Text style={st.note}>Save a valid emergency contact to enable this demonstration.</Text>
+          <Btn title="Edit Driver Profile" kind="ghost" disabled={d.hasActiveSession || !!sf.check || !!sf.demo} onPress={() => props.onEditProfile(page)} /></> : null}
+        {realContact && savedContact.phone ? <Text localize={false} style={st.note}>{d.driver?.emergency_name || '—'} · {maskedContactPhone(savedContact.phone)}</Text> : null}
+        {preferenceError ? <Text accessibilityRole="alert" style={st.note}>{preferenceError}</Text> : null}
+        <Text style={st.note}>Fabricated readings use current thresholds. Nothing is saved, uploaded or learned.</Text>
+        <InformationButton title="Simulation details" body="Plays fabricated readings through the real warning engine with this driver's thresholds, 4× faster than real time: a few normal seconds, then abnormal ones until the warning flag is raised, confirmed, and the voice check asks if you're OK. Nothing is saved, uploaded, or learned from." />
         {(
           [
-            ['high_critical', 'Very high heart rate (critical)'],
-            ['high_warning', 'High heart rate (warning, 15-s check)'],
+            ['high_critical', 'Very high heart rate'],
+            ['high_warning', 'High heart rate'],
             ['low', 'Very low heart rate'],
             ['spo2', 'Low oxygen'],
           ] as const
         ).map(([key, label]) => (
+          <View key={key} style={{ padding: 12, borderRadius: 14, borderWidth: 1, borderColor: tokens.border, gap: 8 }}>
+          <Pill tone={key === 'high_warning' ? 'warn' : 'bad'}>{key === 'high_warning' ? 'Warning' : 'Critical'}</Pill>
           <Btn
-            key={key}
             title={label}
             kind="ghost"
-            disabled={!sf.th || sf.demo !== null || sf.check !== null}
+            disabled={!preferenceReady || preferenceBusy || (realContact && !savedContact.phone) || d.hasActiveSession || !sf.th || sf.demo !== null || sf.check !== null}
             onPress={async () => {
               setDemoResult(null);
-              const result = await d.simulate(key);
-              setDemoResult(describe(result) + (result ? ' ' + simulationCompletion(result) : ''));
+              const enabled = realContact;
+              const result = await d.simulate(key, enabled);
+              setDemoResult(describe(result));
             }}
           />
+          </View>
         ))}
         {sf.demo ? (
           <Text style={[st.note, { color: C.warn }]}>
-            Second {sf.demo.second}: {sf.demo.value}
-            {sf.demo.scenario === 'spo2' ? '%' : ' BPM'} · {sf.demo.step}
+            Simulated warning in progress…
           </Text>
         ) : null}
         {demoResult ? <Text style={st.note}>{demoResult}</Text> : null}
       </Card>
       </View>
+      {!sf.conversation ? <RealContactDemoConfirmation drive={d} /> : null}
 
       </> : null}
-      <Text style={st.disclaimer}>Prototype — not a medical device. Alerts use prototype thresholds. Only real checks can open the saved contact's phone interface with your explicit agreement. Settings rehearsals and simulated vitals demos never do.</Text>
+      <Text style={st.disclaimer}>Prototype — not a medical device. Oxygen is an estimate. Ordinary simulations never open your saved contact. A real-contact demonstration requires an enabled preference, fresh consent to the contact offer and iOS confirmation.</Text>
     </ScrollView>
+    </View>
   );
 }
 

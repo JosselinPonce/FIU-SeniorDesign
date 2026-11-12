@@ -1,3 +1,4 @@
+import type { SettingsPage } from '../lib/ui/settingsNavigation';
 import { LocalizedAlert as Alert, LocalizedPressable as Pressable, LocalizedText as Text } from '../lib/i18n/native';
 import { SENSI_MODE } from '../lib/assistant/mode';
 import { sensiSetup } from '../lib/onboarding/phone';
@@ -46,6 +47,7 @@ export default function SmartWheelScreen() {
   const drive = useDriveSession();
   const [profiles, setProfiles] = useState<DriverProfile[] | null>(null);
   const [pendingDriver, setPendingDriver] = useState<DriverProfile | null>(null);
+  const [pendingEdit, setPendingEdit] = useState(false);
   const [drivePage, setDrivePage] = useState<DrivePage>('dashboard');
   useEffect(() => { setDrivePage('dashboard'); }, [drive.driver?.id]);
   const [vitalsAnchor, setVitalsAnchor] = useState<{ y: number; height: number } | null>(null);
@@ -53,7 +55,8 @@ export default function SmartWheelScreen() {
     setVitalsAnchor(previous => previous?.y === next.y && previous?.height === next.height ? previous : next);
   }, []);
   const [tab, setTab] = useState<Tab>('drive');
-  const [settingsEntry, setSettingsEntry] = useState<'safety_testing' | null>(null);
+  const [settingsEntry, setSettingsEntry] = useState<SettingsPage>(null);
+  const [settingsRequest, setSettingsRequest] = useState(0);
   useEffect(() => { if (tab !== 'settings') setSettingsEntry(null); }, [tab]);
   const [busy, setBusy] = useState(false);
   const [editingProfile, setEditingProfile] = useState<DriverProfile | null>(null);
@@ -164,10 +167,15 @@ export default function SmartWheelScreen() {
 
   if (__DEV__ && gemmaOpen && GemmaDiagnostic && !drive.hasActiveSession && !drive.safety.check && !drive.safety.demo) return <GemmaDiagnostic
     blocked={drive.hasActiveSession || !!drive.safety.check || !!drive.safety.demo}
-    onClose={() => setGemmaOpen(false)} />;
+    onClose={() => { setSettingsEntry('developer'); setSettingsRequest(value => value + 1); setGemmaOpen(false); }} />;
 
   if (!drive.driver) {
-    if (pendingDriver) return <DriverConfirmation profile={pendingDriver} onBack={() => setPendingDriver(null)} onConfirm={() => {
+    if (pendingDriver && pendingEdit) return <DriverPicker profiles={[pendingDriver]} editProfile={pendingDriver}
+      onPick={() => {}} onCreated={reload} onCancelEdit={() => setPendingEdit(false)} onSaveProfile={async input => {
+        await repo.updateProfile(pendingDriver.id, input, pendingDriver.updated_at);
+        const updated = await repo.getProfile(pendingDriver.id); await reload(); setPendingDriver(updated); setPendingEdit(false);
+      }} />;
+    if (pendingDriver) return <DriverConfirmation profile={pendingDriver} onEdit={() => setPendingEdit(true)} onBack={() => setPendingDriver(null)} onConfirm={() => {
       drive.selectDriver(pendingDriver); setPendingDriver(null);
     }} />;
     return (
@@ -220,7 +228,7 @@ export default function SmartWheelScreen() {
           </View> : null}
         {tab === 'history' ? <HistoryView refreshKey={`${drive.session?.id ?? ''}:${drive.session?.status ?? ''}:${drive.fold.state}`} /> : null}
         {tab === 'settings' ? (
-          <SettingsView
+          <SettingsView key={`settings-${settingsRequest}`}
             initialPage={settingsEntry}
             drive={drive}
             gemmaDiagnostics={__DEV__ ? <Btn title="Gemma diagnostics" kind="ghost"
@@ -234,7 +242,7 @@ export default function SmartWheelScreen() {
               setAssistantOpen(false);
               setTab('drive');
             }}
-            onEditProfile={() => { void openProfileEditor(); }}
+            onEditProfile={returnPage => { setSettingsEntry(returnPage ?? 'profile'); void openProfileEditor(); }}
             onShowIntro={() => {
               if (ongoing) { Alert.alert('Safety monitoring active', 'Finish the current recording or safety check and pause the sensor connection before reviewing setup.'); return; }
               setReviewIntro(true);
@@ -250,7 +258,7 @@ export default function SmartWheelScreen() {
         standby={assistantOpen && sensiDestination(drive.safety) === 'standby'
           ? <SensiStandby visible drive={drive} mode={SENSI_MODE} onClose={() => setAssistantOpen(false)} onTrySafetyCheck={() => {
             if (drive.hasActiveSession || drive.safety.check || drive.safety.demo) return;
-            setAssistantOpen(false); setSettingsEntry('safety_testing'); setTab('settings');
+            setAssistantOpen(false); setSettingsEntry('safety_testing'); setSettingsRequest(value => value + 1); setTab('settings');
           }} /> : null} />
 
       <View style={st.tabs}>

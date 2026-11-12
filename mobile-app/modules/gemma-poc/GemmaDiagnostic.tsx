@@ -1,5 +1,6 @@
+import { ScreenHeader } from '../../components/ScreenHeader';
 import { useEffect, useRef, useState } from 'react';
-import { AppState, BackHandler, Platform, ScrollView, Text, View } from 'react-native';
+import { AppState, BackHandler, Platform, SafeAreaView, ScrollView, Text, View } from 'react-native';
 import { Btn } from '../../components/ui';
 import { useTheme } from '../../lib/theme/ThemeProvider';
 import { GEMMA_ARTIFACT, TEST_PROMPT } from './artifact';
@@ -34,7 +35,15 @@ export function GemmaDiagnostic({ blocked, onClose }: { blocked: boolean; onClos
   if (!__DEV__) return null;
   const disabled = blocked || closing || state.busy || evaluationBusy;
   const act = (action: () => Promise<void>) => { void action().catch(() => {}); };
-  return <ScrollView contentContainerStyle={{ padding: 20, gap: 12 }} style={{ backgroundColor: t.background }}>
+  return <SafeAreaView style={{ flex: 1, backgroundColor: t.background }}>
+    <ScreenHeader title="Gemma diagnostics" onBack={() => {
+      if (closingRef.current) return;
+      closingRef.current = true; setClosing(true); runner?.cancel();
+      void gemmaPoc.dispose().then(() => {
+        if (!gemmaPoc.state.loaded && !gemmaPoc.state.busy) onClose();
+      }).finally(() => { closingRef.current = false; if (live.current) setClosing(false); });
+    }} />
+    <ScrollView contentContainerStyle={{ padding: 20, gap: 12 }} style={{ backgroundColor: t.background }}>
     <Text accessibilityRole="header" style={{ color: t.text, fontSize: 22 }}>Gemma · isolated development test</Text>
     <Text style={{ color: t.textSecondary }}>No microphone, TTS, sensor decisions, or phone actions. Generated output is diagnostic only. Download only after accepting the Gemma terms at ai.google.dev/gemma/terms.</Text>
     {blocked ? <Text style={{ color: t.text }}>Unavailable during a drive or safety check. Cleanup has been requested.</Text> : null}
@@ -77,11 +86,6 @@ export function GemmaDiagnostic({ blocked, onClose }: { blocked: boolean; onClos
       <Text selectable style={{ color: t.text }}>Generated response: {state.response || '—'}</Text>
       {state.error ? <Text accessibilityRole="alert" selectable style={{ color: t.text }}>Error: {state.error}</Text> : null}
     </View>
-    <Btn title="Unload and return to Settings" disabled={closing} onPress={() => {
-      closingRef.current = true; setClosing(true); runner?.cancel();
-      void gemmaPoc.dispose().then(() => {
-        if (!gemmaPoc.state.loaded && !gemmaPoc.state.busy) onClose();
-      }).finally(() => { closingRef.current = false; if (live.current) setClosing(false); });
-    }} />
-  </ScrollView>;
+
+  </ScrollView></SafeAreaView>;
 }

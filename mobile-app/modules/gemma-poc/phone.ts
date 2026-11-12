@@ -1,3 +1,5 @@
+import { responsivenessProbe } from '../../lib/voice/responsivenessDiagnostics';
+import { startSemantic, type SemanticContext } from '../../lib/assistant/safetySemantic';
 import { Platform, AppState } from 'react-native';
 import { File } from 'expo-file-system';
 import * as FS from 'expo-file-system/legacy';
@@ -128,8 +130,10 @@ export async function withGemmaMaintenance(action: () => Promise<void>): Promise
   try { await action(); } finally { maintenanceOwned = false; }
 }
 /** Event-only warm request. Never provisions or downloads a model. */
-export function phoneSafetyAcknowledgment(context: AcknowledgmentContext) {
-  return startSafetyAcknowledgment(async signal => {
+async function eventGemma(signal: AbortSignal, language: 'en' | 'es', generate: () => Promise<string>) {
+  const trace = typeof __DEV__ !== 'undefined' && __DEV__ ? responsivenessProbe('warning', 'Gemma event model lifecycle') : () => {};
+  {
+    if (typeof __DEV__ !== 'undefined' && __DEV__) trace('model entry', { usable: gemmaPoc.state.loaded, locale: language });
     if (maintenanceOwned || safetyGemmaOwned || provisioner.busy || gemmaPoc.state.busy || gemmaPoc.cleanupRequired || AppState.currentState !== 'active') throw new Error('Gemma is busy or app is inactive.');
     safetyGemmaOwned = true;
     let current = true;
@@ -141,8 +145,10 @@ export function phoneSafetyAcknowledgment(context: AcknowledgmentContext) {
     try {
       if (signal.aborted || !current) return '';
       if (!gemmaPoc.state.loaded) await gemmaPoc.load();
+      if (typeof __DEV__ !== 'undefined' && __DEV__) trace('model readiness', { usable: gemmaPoc.state.loaded, cancelled: signal.aborted || !current });
       if (signal.aborted || !current || !gemmaPoc.state.loaded) return '';
-      const text = await gemmaPoc.generateSafetyAcknowledgment(context);
+      const text = await generate();
+      if (typeof __DEV__ !== 'undefined' && __DEV__) trace('inference returned', { nativeMs: gemmaPoc.state.inferenceMs ?? undefined });
       return signal.aborted || !current ? '' : text;
     } finally {
       signal.removeEventListener('abort', cancel);
@@ -153,5 +159,12 @@ export function phoneSafetyAcknowledgment(context: AcknowledgmentContext) {
           throw new Error('Model cleanup did not complete; using fixed acknowledgment.');
       } finally { safetyGemmaOwned = false; }
     }
-  }, context);
+  }
+}
+export function phoneSafetyAcknowledgment(context: AcknowledgmentContext) {
+  return startSafetyAcknowledgment(signal => eventGemma(signal, context.language, () => gemmaPoc.generateSafetyAcknowledgment(context)), context);
+}
+export function phoneSafetySemantic(context: SemanticContext) {
+  const safe = Object.freeze({ ...context });
+  return startSemantic(signal => eventGemma(signal, safe.language, () => gemmaPoc.generateSafetySemantic(safe)), safe);
 }

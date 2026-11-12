@@ -12,8 +12,9 @@ import { REHEARSAL_SAFETY_REVISION } from '../lib/voice/phoneHandoff.ts';
 import { ASSISTANT_MODES } from './retired-ai/lib/assistant/mode.ts';
 import { sensiSignInEnabled } from '../lib/assistant/pilotSignIn.ts';
 import { simulationCompletion } from '../lib/assistant/safetyConversation.ts';
+import * as preference from '../lib/voice/realContactPreference.ts';
 const require = createRequire(import.meta.url);
-function harness(development: boolean, active = false, theme = light) {
+function harness(development: boolean, active = false, theme = light, settings = new Map<string, string>()) {
   const state = new Map<number, any>(); let index = 0; let back: (() => boolean) | undefined;
   const calls: unknown[] = [];
   const host = Object.fromEntries(['Pressable','ScrollView','Switch','Text','View'].map(n => [n,n]));
@@ -23,18 +24,24 @@ function harness(development: boolean, active = false, theme = light) {
     setStorageMode: (mode: string) => calls.push(['storage', mode]), autoConnect: () => calls.push('connect'),
     stopConnecting: () => calls.push('disconnect'), setAllowDirect: (v: boolean) => calls.push(['direct',v]) };
   const deps: Record<string, any> = {
+    './ScreenHeader': { ScreenHeader: 'ScreenHeader', ScreenHeading: 'ScreenHeading' },
+    '../lib/ui/profileSummary': { driverInitials: (name: string) => name[0], displayBmi: () => null, maskedContactPhone: () => "•••• 0124" },
+    '../lib/analysis/safetyController': { contactPhone: (phone?: string) => ({phone: phone || null}) },
+    './RealContactDemoConfirmation': { RealContactDemoConfirmation: 'RealContactDemoConfirmation' },
     '../lib/i18n/native': { LocalizedText: 'Text', LocalizedPressable: 'Pressable', LocalizedAlert: { alert: forbidden } },
     './LanguageMenu': { LanguageMenu: 'LanguageMenu' },
     react: { useState: (initial: any) => { const id = index++; if (!state.has(id)) state.set(id, initial); return [state.get(id), (v: any) => state.set(id, typeof v === 'function' ? v(state.get(id)) : v)]; },
       useRef: (value: any) => ({ current: value }), useEffect: (fn: () => void) => fn() },
     'react/jsx-runtime': require('react/jsx-runtime'),
-    'react-native': { ...host, Alert: { alert: forbidden }, BackHandler: { addEventListener: (_: string, fn: () => boolean) => { back = fn; return { remove() {} }; } }, StyleSheet: { create: (s: any) => s } },
+    'react-native': { ...host, AppState: { addEventListener: () => ({ remove() {} }) }, Alert: { alert: forbidden }, BackHandler: { addEventListener: (_: string, fn: () => boolean) => { back = fn; return { remove() {} }; } }, StyleSheet: { create: (s: any) => s } },
     '../lib/theme/ThemeProvider': { useTheme: () => ({ tokens: theme, colors: presentationColors(theme), preference: 'light', setPreference: (v: string) => calls.push(['appearance',v]) }) },
     '../lib/ui/settingsSwitch': { settingsSwitchColors },
     '../lib/voice/phoneHandoff': { REHEARSAL_SAFETY_REVISION },
     '../lib/theme/tokens': { presentationColors }, '../lib/ui/settingsNavigation': { SETTINGS_CATEGORIES, settingsTitle },
+    '../lib/db/repositories': { getSetting: async (key: string) => settings.get(key) ?? null, setSetting: async (key: string, value: string) => { settings.set(key, value); } },
+    '../lib/voice/realContactPreference': preference,
     '../lib/db/sync': { pendingCount: forbidden, syncToSupabase: forbidden }, '../lib/db/deletion': { wipeEverything: forbidden },
-    './ui': Object.fromEntries(['Btn','Card','Row','SectionTitle'].map(n => [n,n])),
+    './ui': Object.fromEntries(['Btn','Card','Pill','Row','SectionTitle'].map(n => [n,n])),
     '../lib/assistant/mode': { ASSISTANT_MODES }, '../lib/assistant/pilotSignIn': { sensiSignInEnabled },
     '../lib/assistant/safetyConversation': { simulationCompletion },
     '../lib/assistant/phoneConnectedReadiness': { PHONE_CONNECTED_READINESS: { verified: false } },
@@ -61,7 +68,7 @@ test('landing has five categories and secondary Advanced; category and hardware 
   const f = harness(true);
   for (const category of SETTINGS_CATEGORIES) {
     const landing = f.render(); landing.find(n => n.props?.accessibilityLabel === category.title).props.onPress();
-    const detail = f.render(); assert.ok(detail.find(n => n.type === 'SectionTitle' && n.props.children === category.title));
+    const detail = f.render(); assert.ok(detail.find(n => n.type === 'ScreenHeader' && n.props.title === category.title));
     assert.equal(f.back(), true);
   }
   assert.equal(f.back(), true); // callback from the last detail render
@@ -74,7 +81,7 @@ test('category controls retain profile/storage/connection callbacks without a pr
   function open(title: string) { f.render().find(n => n.props?.accessibilityLabel === title).props.onPress(); return f.render(); }
   nodes = open('Driver Profile'); nodes.find(n => n.props?.title === 'Edit Driver Profile').props.onPress(); f.back();
   nodes = open('Data & Privacy'); nodes.find(n => n.type === 'Pressable' && n.key === 'full').props.onPress(); f.back();
-  nodes = open('Sensi Assistant'); assert.equal(nodes.some(n => n.type === 'Pressable' && n.key === 'connected'), false); assert.ok(nodes.some(n => n.type === 'SectionTitle' && n.props.children === 'Sensi Assistant')); f.back();
+  nodes = open('Sensi Assistant'); assert.equal(nodes.some(n => n.type === 'Pressable' && n.key === 'connected'), false); assert.ok(nodes.some(n => n.type === 'ScreenHeading' && n.props.title === 'Sensi Assistant')); f.back();
   nodes = open('Connections'); nodes.find(n => n.type === 'Row' && n.props.label === 'Auto-connect to the Pi').props.value.props.onValueChange(false);
   assert.deepEqual(f.calls, ['edit',['storage','full'],'disconnect',['auto',false]]);
 });
@@ -83,11 +90,15 @@ test('advanced preserves development gates and simulator availability; active-dr
     const f = harness(development);
     const landing = f.render(); assert.equal(landing.some(n => n.type === 'DemoAuthPanel'), false);
     landing.find(n => n.props?.accessibilityLabel === 'Advanced Settings').props.onPress();
-    const nodes = f.render();
+    let nodes = f.render();
+    assert.equal(nodes.some(n => n.type === 'SensiVoicePlaybackDiagnostic'), false);
+    assert.equal(nodes.some(n => n.props?.title === 'Open Developer Tools'), development);
+    if (development) { nodes.find(n => n.props?.title === 'Open Developer Tools').props.onPress(); nodes = f.render(); }
     assert.equal(nodes.some(n => n.type === 'SensiVoicePlaybackDiagnostic'), development);
     assert.equal(nodes.some(n => n.type === 'ResponsivenessDiagnostics'), development);
     assert.equal(nodes.some(n => n.props?.title === 'Low oxygen'), false);
-    nodes.find(n => n.props?.accessibilityLabel === 'Back to Settings').props.onPress();
+    nodes.find(n => n.type === 'ScreenHeader').props.onBack();
+    if (development) { nodes = f.render(); nodes.find(n => n.type === 'ScreenHeader').props.onBack(); }
     assert.ok(f.render().some(n => n.props?.accessibilityLabel === 'Driver Profile'));
   }
   const f = harness(false,true); f.render().find(n => n.props?.accessibilityLabel === 'Data & Privacy').props.onPress();
@@ -126,11 +137,13 @@ for (const theme of [light, dark]) test(`${theme === light ? 'Light' : 'Dark'} C
 test('Safety Testing is nested under Health & Safety; simulator has a single settings location', () => {
   const f = harness(true);
   f.render().find(n => n.props?.accessibilityLabel === 'Health & Safety').props.onPress();
-  f.render().find(n => n.props?.title === 'Safety Testing').props.onPress();
+  const health = f.render();
+  assert.ok(health.findIndex(n => n.props?.title === 'Safety Testing') < health.findIndex(n => n.type === 'SectionTitle' && n.props.children === 'Safety checks'));
+  health.find(n => n.props?.title === 'Safety Testing').props.onPress();
   const nodes = f.render();
-  assert.ok(nodes.some(n => n.type === 'SectionTitle' && n.props.children === 'Safety Testing'));
+  assert.ok(nodes.some(n => n.type === 'ScreenHeader' && n.props.title === 'Safety Testing'));
   assert.equal(nodes.filter(n => n.props?.title === 'Low oxygen').length, 1);
-  assert.equal(nodes.filter(n => n.type === 'EmergencyDialerDemo').length, 1);
+  assert.equal(nodes.filter(n => n.type === 'EmergencyDialerDemo').length, 0);
   f.back();
   assert.ok(f.render().some(n => n.props?.title === 'Safety Testing'));
 });
@@ -157,4 +170,27 @@ test('Release exposes model maintenance and selected-language capability outside
     assert.equal(nodes.find(n => n.type === 'SpeechCapabilityStatus').props.language, 'en');
     assert.equal(nodes.some(n => n.type === 'SensiVoicePlaybackDiagnostic'), false);
   }
+});
+
+test('local demonstration preference restores on reopening and survives simulation runs without persisting a permit', async () => {
+  const settings = new Map<string, string>();
+  const tick = () => new Promise<void>(r => setImmediate(r));
+  const open = async () => {
+    const f = harness(true, false, light, settings);
+    (f.props.drive as any).driver.emergency_phone = '+12025550124';
+    (f.props.drive as any).safety.th = {};
+    (f.props.drive as any).simulate = async (_scenario: string, enabled: boolean) => { f.calls.push(['simulate', enabled]); return { outcome: 'ok', urgent: false, channel: 'voice' }; };
+    f.render().find(n => n.props?.accessibilityLabel === 'Health & Safety').props.onPress();
+    f.render().find(n => n.props?.title === 'Safety Testing').props.onPress();
+    await tick(); return f;
+  };
+  const control = (f: ReturnType<typeof harness>) => f.render().find(n => n.type === 'Row' && n.props.label === 'Enable real-contact demonstration').props.value;
+  const f = await open(); assert.equal(control(f).props.value, false);
+  await control(f).props.onValueChange(true); await tick(); assert.equal(control(f).props.value, true);
+  await f.render().find(n => n.props?.title === 'Very high heart rate').props.onPress(); await tick();
+  assert.equal(control(f).props.value, true); assert.ok(f.calls.some(v => Array.isArray(v) && v[0] === 'simulate' && v[1] === true));
+  const reopened = await open(); assert.equal(control(reopened).props.value, true);
+  assert.deepEqual([...settings], [[preference.REAL_CONTACT_DEMO_SETTING, '1']]);
+  await control(reopened).props.onValueChange(false); await tick(); assert.equal(control(reopened).props.value, false);
+  assert.equal(settings.get(preference.REAL_CONTACT_DEMO_SETTING), '0');
 });

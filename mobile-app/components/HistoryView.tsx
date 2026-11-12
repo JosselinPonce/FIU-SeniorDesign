@@ -1,3 +1,4 @@
+import { ScreenHeader, ScreenHeading } from './ScreenHeader';
 import { LocalizedAlert as Alert, LocalizedPressable as Pressable, LocalizedText as Text } from '../lib/i18n/native';
 import { useTheme } from '../lib/theme/ThemeProvider';
 import { presentationColors, type ThemeTokens } from '../lib/theme/tokens';
@@ -6,7 +7,7 @@ import { presentationColors, type ThemeTokens } from '../lib/theme/tokens';
  * for full-waveform drives -- "Unfold waveform", which opens the folded
  * archive after checking its SHA-256.
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, RefreshControl, ScrollView, StyleSheet, View } from 'react-native';
 
 import * as repo from '../lib/db/repositories';
@@ -73,11 +74,10 @@ function Detail(props: { session: SessionSummary; onBack: () => void }) {
   const mid = archive ? Math.max(0, Math.floor(archive.ir.length / 2) - rate * 5) : 0;
 
   return (
+    <View style={{ flex: 1 }}><ScreenHeader title="Drive details" onBack={props.onBack} backLabel="All drives" />
     <ScrollView contentContainerStyle={st.container}>
-      <Pressable onPress={props.onBack} accessibilityRole="button">
-        <Text style={st.back}>‹ All drives</Text>
-      </Pressable>
-      <Text style={st.title}>{s.driver_name}</Text>
+      <ScreenHeading title="Drive details" />
+      <Text localize={false} style={{ color: tokens.text, fontSize: 18, fontWeight: '600' }}>{s.driver_name}</Text>
       <Text style={st.sub}>
         {when(s.started_at)} · {duration !== null ? fmtDuration(duration * 1000) : 'in progress'}
       </Text>
@@ -183,7 +183,7 @@ function Detail(props: { session: SessionSummary; onBack: () => void }) {
           }
         />
       ) : null}
-    </ScrollView>
+    </ScrollView></View>
   );
 }
 
@@ -199,6 +199,7 @@ function Big(props: { label: string; value: string; color: string }) {
 }
 
 export function HistoryView(props: { refreshKey: string }) {
+  const listOffset = useRef(0);
   const { colors: C, tokens } = useTheme();
   const st = makeStyles(tokens);
   const [sessions, setSessions] = useState<SessionSummary[] | null>(null);
@@ -221,7 +222,8 @@ export function HistoryView(props: { refreshKey: string }) {
       />
     );
   return (
-    <ScrollView
+    <ScrollView contentOffset={{ x: 0, y: listOffset.current }} scrollEventThrottle={100}
+      onScroll={event => { listOffset.current = event.nativeEvent.contentOffset.y; }}
       contentContainerStyle={st.container}
       refreshControl={
         <RefreshControl

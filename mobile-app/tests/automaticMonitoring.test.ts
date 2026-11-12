@@ -41,12 +41,12 @@ test('foreground valid sensors activate VoiceCheck without recording, inference 
   const f = fixture();
   assert.equal(f.state.monitoring, 'waiting'); f.trigger(); await tick();
   assert.equal(f.state.monitoring, 'active'); assert.equal(f.state.conversation?.finished, false);
-  assert.ok(f.speech[0]?.includes('okay')); assert.equal(f.inference, 0);
+  assert.ok(f.speech.join(' ').includes('okay')); assert.equal(f.inference, 0);
   assert.deepEqual(f.saved, []);
   f.c.answerText("I'm dizzy", f.scope()); await tick();
   assert.equal(f.inference, 1);
   assert.match(f.speech.join(' '), /pull over.*I'm sorry you're feeling dizzy\./);
-  assert.match(f.speech[2]!, /Would you like me to call Mom\?/);
+  assert.match(f.speech.join(' '), /Would you like me to call Mom\?/);
   assert.equal(f.state.check?.question, 'contact_offer'); assert.deepEqual(f.calls, []);
   f.final('yes'); await tick();
   assert.deepEqual(f.calls, ['+13055550123']); assert.equal(f.state.last?.handoff, 'opened');

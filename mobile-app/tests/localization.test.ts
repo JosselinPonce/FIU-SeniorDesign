@@ -52,6 +52,11 @@ test('localized display primitives preserve raw user content, input values, call
   const exports: any = {};
   const calls: any[] = [];
   const deps: Record<string, any> = {
+    'expo/node_modules/@expo/vector-icons/Feather': { default: 'FeatherIcon' },
+    './ScreenHeader': { ScreenHeader: 'ScreenHeader', ScreenHeading: 'ScreenHeading' },
+    '../lib/ui/profileSummary': { driverInitials: (name: string) => name[0], maskedContactPhone: (phone: string) => `••• ••• ${phone.slice(-4)}` },
+    '../lib/analysis/safetyController': { contactPhone: (phone?: string) => ({phone: phone || null}) },
+    './RealContactDemoConfirmation': { RealContactDemoConfirmation: 'RealContactDemoConfirmation' },
     react: { forwardRef: (render: any) => (props: any) => render(props, 'forwarded-ref') },
     'react/jsx-runtime': require('react/jsx-runtime'),
     'react-native': { Text: 'Text', TextInput: 'Input', Pressable: 'Pressable', Alert: { alert: (...args: any[]) => calls.push(args) } },
@@ -94,10 +99,13 @@ test('driver confirmation is explicit, preserves identity/voice language, and ca
   const source = readFileSync(new NodeURL('../components/DriverConfirmation.tsx', import.meta.url), 'utf8');
   const exports: any = {};
   const deps: Record<string, any> = {
+    'expo/node_modules/@expo/vector-icons/Feather': { default: 'FeatherIcon' },
+    './ScreenHeader': { ScreenHeader: 'ScreenHeader', ScreenHeading: 'ScreenHeading' },
+    '../lib/ui/profileSummary': { driverInitials: (name: string) => name[0], maskedContactPhone: (phone: string) => `••• ••• ${phone.slice(-4)}` },
     react: { useRef: (value: any) => ({ current: value }) }, 'react/jsx-runtime': require('react/jsx-runtime'),
     'react-native': { SafeAreaView: 'SafeAreaView', ScrollView: 'ScrollView', View: 'View' },
-    '../lib/i18n/native': { LocalizedText: 'Text' }, '../lib/theme/ThemeProvider': { useTheme: () => ({ tokens: {} }) },
-    './LanguageMenu': { LanguageMenu: 'LanguageMenu' }, './ui': { Btn: 'Btn' },
+    '../lib/i18n/native': { LocalizedText: 'Text', LocalizedPressable: 'Pressable' }, '../lib/theme/ThemeProvider': { useTheme: () => ({ tokens: {} }) },
+    './LanguageMenu': { LanguageMenu: 'LanguageMenu' }, './ui': { Btn: 'Btn', Card: 'Card' },
   };
   new Function('require', 'exports', ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX } }).outputText)(
     (name: string) => { assert.ok(name in deps, name); return deps[name]; }, exports);
@@ -110,7 +118,7 @@ test('driver confirmation is explicit, preserves identity/voice language, and ca
   assert.equal(selected, 0);
   assert.ok(nodes.some(node => node.type === 'Text' && node.props.localize === false && node.props.children === 'Settings'));
   assert.ok(nodes.some(node => node.type === 'Text' && node.props.children === 'Español'));
-  const confirm = nodes.find(node => node.type === 'Btn' && node.props.title === 'Use this driver'); confirm.props.onPress(); confirm.props.onPress();
+  const confirm = nodes.find(node => node.type === 'Btn' && node.props.title === 'Confirm & Continue'); confirm.props.onPress(); confirm.props.onPress();
   assert.equal(selected, 1);
-  nodes.find(node => node.type === 'Btn' && node.props.title === 'Back').props.onPress(); assert.equal(backed, 1);
+  nodes.find(node => node.type === 'ScreenHeader').props.onBack(); assert.equal(backed, 1);
 });

@@ -30,7 +30,7 @@ test('Spanish contact prompts use the validated configured name and preserve det
     const result = await new VoiceCheck(f.io, 'es', 'Luis', { contactAvailable: true, contactName }).run('bpm_high');
     assert.equal(result.contactCall, 'accepted_offer');
     const suitable = ['Aunt María', 'Dr. Rivera'].includes(contactName);
-    assert.ok(f.said.some(text => text === (suitable ? `¿Quieres que llame a ${contactName}?` : '¿Quieres que llame a tu contacto de emergencia?')));
+    assert.ok(f.said.some(text => text.endsWith(suitable ? `¿Quieres que llame a ${contactName}?` : '¿Quieres que llame a tu contacto de emergencia?')));
   }
 });
 
@@ -39,37 +39,37 @@ test('"yeah I\'m fine" on the first try → ok, reassured', async () => {
   const r = await new VoiceCheck(f.io, 'en', 'Luis').run('bpm_high');
   assert.equal(r.outcome, 'ok');
   assert.equal(r.attempts, 1);
-  assert.match(f.said[0]!, /^Luis, your heart rate has been unusually high\. Are you feeling okay\?/);
-  assert.match(f.said[1]!, /keep an eye/);
+  assert.match(f.said.join(' '), /^Luis, your heart rate has been unusually high\. Are you feeling okay\?/);
+  assert.match(f.said.join(' '), /keep an eye/);
 });
 
 test('unclear, then "no I feel dizzy" → not_ok after a second, simpler question', async () => {
   const f = fake(['what', 'no i feel dizzy']);
   const r = await new VoiceCheck(f.io, 'en', '').run('bpm_low');
   assert.deepEqual([r.outcome, r.attempts, r.urgent], ['not_ok', 2, false]);
-  assert.match(f.said[1]!, /didn't catch that/);
-  assert.match(f.said[2]!, /pull over/);
+  assert.match(f.said.join(' '), /didn't catch that/);
+  assert.match(f.said.join(' '), /pull over/);
 });
 
 test('silence twice → no_response (treated as an emergency by the caller)', async () => {
   const f = fake([null, null]);
   const r = await new VoiceCheck(f.io, 'en', 'Joss').run('spo2_low');
   assert.equal(r.outcome, 'no_response');
-  assert.match(f.said[f.said.length - 1]!, /recorded as an emergency/);
+  assert.match(f.said.join(' '), /No answer was confirmed.*pull over.*call 911/);
 });
 
 test('"help, call 911" → urgent', async () => {
   const f = fake(['help call 911']);
   const r = await new VoiceCheck(f.io, 'en', '').run('bpm_high');
   assert.deepEqual([r.outcome, r.urgent], ['not_ok', true]);
-  assert.match(f.said[1]!, /call 911 now/);
+  assert.match(f.said.join(' '), /call 911 now/);
 });
 
 test('Spanish: "sí, estoy bien" → ok, spoken in Spanish', async () => {
   const f = fake(['sí estoy bien']);
   const r = await new VoiceCheck(f.io, 'es', 'Joss').run('bpm_high');
   assert.equal(r.outcome, 'ok');
-  assert.match(f.said[0]!, /¿Te sientes bien\?/);
+  assert.match(f.said.join(' '), /¿Te sientes bien\?/);
 });
 
 test('a button press wins immediately, even mid-listen', async () => {
@@ -96,7 +96,7 @@ test('call offer accepts natural consent and keeps the wellness outcome', async 
   const result = await new VoiceCheck(f.io, 'en', '', { contactAvailable: true }).run('bpm_high');
   assert.equal(result.outcome, 'not_ok');
   assert.equal(result.contactCall, 'accepted_offer');
-  assert.ok(f.said.includes('Would you like me to call your emergency contact?'));
+  assert.ok(f.said.some(text => text.endsWith('Would you like me to call your emergency contact?')));
 });
 
 test('negative offer response does not authorize handoff', async () => {
@@ -230,7 +230,7 @@ for (const response of ['button', 'typed', 'none', 'cancel'] as const) {
     await new Promise<void>(resolve => setImmediate(resolve));
     assert.equal(unavailable, 1);
     t.mock.timers.tick(5999);
-    assert.equal(spoken.length, 1);
+    assert.equal(spoken.length, 3);
     if (response === 'button') {
       assert.equal(check.answerByButton('ok', scope), true);
       assert.equal(check.answerByButton('not_ok', scope), false);
@@ -238,7 +238,7 @@ for (const response of ['button', 'typed', 'none', 'cancel'] as const) {
     else if (response === 'cancel') check.cancel();
     else {
       t.mock.timers.tick(1); await new Promise<void>(resolve => setImmediate(resolve));
-      assert.equal(spoken.length, 2);
+      assert.equal(spoken.length, 6);
       t.mock.timers.tick(6000);
     }
     if (cancelled) await cancelled;
@@ -249,8 +249,9 @@ for (const response of ['button', 'typed', 'none', 'cancel'] as const) {
 test('recognition waits for playback completion', async () => {
   let done!: () => void;
   let listens = 0;
+  const playback = new Promise<void>(resolve => { done = resolve; });
   const check = new VoiceCheck({
-    speak: async () => { if (!listens) await new Promise<void>(resolve => { done = resolve; }); },
+    speak: async () => { if (!listens) await playback; },
     listen: async (_l, _m, _h, id) => { listens++; return recognitionEvidence(id, {
       status: 'success', transcript: 'yes', finalTranscript: 'yes', isFinal: true, finalResultReceived: true,
     }); }, cancel() {},
@@ -265,9 +266,10 @@ for (const language of ['en', 'es'] as const) test(`${language}: capture prepara
   const events: string[] = [];
   let finishPrompt!: () => void;
   let capture = '';
+  const playback = new Promise<void>(resolve => { finishPrompt = resolve; });
   const io: VoiceIO = {
     prepareRecognition: (lang, id) => { assert.equal(lang, language); capture = id; events.push('prepare'); },
-    speak: async () => { if (!events.includes('listen')) { events.push('speak'); await new Promise<void>(resolve => { finishPrompt = resolve; }); } },
+    speak: async () => { if (!events.includes('listen')) { events.push('speak'); await playback; } },
     listen: async (_lang, ms, _hints, id) => {
       assert.equal(id, capture); assert.equal(ms, 6000); events.push('listen');
       return recognitionEvidence(id, { status: 'success', transcript: language === 'es' ? 'sí' : 'yes', finalTranscript: language === 'es' ? 'sí' : 'yes', isFinal: true, finalResultReceived: true });
@@ -277,7 +279,7 @@ for (const language of ['en', 'es'] as const) test(`${language}: capture prepara
   await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(events, ['prepare', 'speak']);
   finishPrompt(); await pending;
-  assert.deepEqual(events, ['prepare', 'speak', 'listen']);
+  assert.deepEqual(events, ['prepare', 'speak', 'speak', 'speak', 'listen']);
 });
 test('cancellation during prewarmed TTS cancels the capture and cannot activate late listening', async () => {
   let finish!: () => void, cancelled = 0, listens = 0;

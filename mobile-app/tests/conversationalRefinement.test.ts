@@ -6,7 +6,7 @@ import { URL as NodeURL } from 'node:url';
 import ts from 'typescript';
 import { VoiceCheck } from '../lib/voice/voiceCheck.ts';
 import { recognitionEvidence } from '../lib/voice/coreRecognition.ts';
-import { startSafetyAcknowledgment } from '../lib/assistant/safetyAcknowledgment.ts';
+import { acknowledgmentContext, startSafetyAcknowledgment } from '../lib/assistant/safetyAcknowledgment.ts';
 import { safetyButtonText } from '../lib/assistant/safetyConversation.ts';
 import { nearThreadBottom, playbackLabel } from '../lib/assistant/threadPresentation.ts';
 import { translateText } from '../lib/i18n/translate.ts';
@@ -18,30 +18,33 @@ const output = { en: "I'm sorry you're feeling dizzy.", es: 'Lamento que te sien
 const statement = { en: "I'm dizzy", es: 'Me siento mareada' };
 for (const lang of ['en', 'es'] as const) {
   for (const mode of ['ready', 'late', 'invalid', 'unavailable'] as const) {
-    test(`${lang}: concise acknowledgment/offer preserves guidance-first order and consent (${mode}, mocked model)`, async () => {
+    test(`${lang}: concise acknowledgment/offer preserves immediate coordinated guidance and consent (${mode}, mocked model)`, async () => {
       const said: string[] = [];
       const playing = deferred<void>(), generation = deferred<string>();
       let ack!: ReturnType<typeof startSafetyAcknowledgment>, listens = 0, starts = 0;
-      const check = new VoiceCheck({ cancel() {}, speak: async text => { said.push(text); if (said.length === 2) await playing.promise; },
+      if (mode === 'ready') {
+        ack = startSafetyAcknowledgment(async () => output[lang], acknowledgmentContext('bpm_high', lang, statement[lang])); await tick();
+      }
+      const check = new VoiceCheck({ cancel() {}, speak: async text => { said.push(text); if (/^(?:Please pull over|Por favor detente)/.test(text)) await playing.promise; },
         listen: async (_l, _m, _h, id) => { const text = ++listens === 1 ? statement[lang] : lang === 'en' ? 'no thanks' : 'no';
           return recognitionEvidence(id, { status: 'success', transcript: text, finalTranscript: text, isFinal: true, finalResultReceived: true }); },
       }, lang, 'Driver', { contactAvailable: true, contactName: lang === 'en' ? 'Mom' : 'mamá',
-        startAcknowledgment: context => { starts++; ack = startSafetyAcknowledgment(async () => {
+        startAcknowledgment: context => { starts++; if (mode === 'ready') return; ack = startSafetyAcknowledgment(async () => {
           if (mode === 'unavailable') throw Error('model unavailable');
           if (mode === 'late') return generation.promise;
           return mode === 'invalid' ? 'I called your contact.' : output[lang];
         }, context); }, acknowledgment: () => ack.get(lang), cancelAcknowledgment: () => ack.cancel(),
       });
       const pending = check.run('bpm_high'); await tick();
-      assert.equal(starts, 1); assert.equal(said.length, 2);
-      assert.equal(said[1], guidance[lang]); assert.equal(check.authorizesContact({ outcome: 'not_ok', urgent: false, channel: 'voice', attempts: 1, confidence: null, contactCall: 'accepted_offer' }), false);
+      assert.equal(starts, 1); assert.equal(said.length, 4);
+      assert.equal(said[3], guidance[lang].split(/(?<=\.) /)[0]); assert.equal(check.authorizesContact({ outcome: 'not_ok', urgent: false, channel: 'voice', attempts: 1, confidence: null, contactCall: 'accepted_offer' }), false);
       playing.resolve(); const result = await pending;
-      assert.equal(said.length, 3, 'no extra empathy-only speech turn');
+      assert.equal(said.length, 7, 'one utterance per planned sentence');
       const fallback = lang === 'en' ? "I'm sorry to hear that." : 'Lamento que te sientas así.';
-      assert.equal(said[2], `${mode === 'ready' ? output[lang] : fallback} ${lang === 'en' ? 'Would you like me to call Mom?' : '¿Quieres que llame a mamá?'}`);
+      assert.deepEqual(said.slice(3), [...guidance[lang].split(/(?<=\.) /), mode === 'ready' ? output[lang] : fallback, lang === 'en' ? 'Would you like me to call Mom?' : '¿Quieres que llame a mamá?']);
       assert.equal(result.outcome, 'not_ok'); assert.equal(result.contactCall, 'declined_offer');
       assert.equal(check.authorizesContact(result), false);
-      generation.resolve(output[lang]); await tick(); assert.equal(said.length, 3, 'late output never adds another turn');
+      generation.resolve(output[lang]); await tick(); assert.equal(said.length, 7, 'late output never adds another turn');
       ack.cancel();
     });
   }
@@ -53,19 +56,19 @@ for (const lang of ['en', 'es'] as const) {
         return recognitionEvidence(id, { status: 'success', transcript: text, finalTranscript: text, isFinal: true, finalResultReceived: true }); },
     }, lang, 'Driver');
     const result = await check.run('bpm_high');
-    assert.equal(said[1], lang === 'en' ? "I didn't catch that. Are you feeling okay? Say yes or no." : 'No te entendí. ¿Te sientes bien? Di sí o no.');
-    assert.ok(said[1].split(/\s+/).length <= 14); assert.ok(!said[1].includes('Driver'));
+    assert.equal(said.slice(3,6).join(' '), lang === 'en' ? "I didn't catch that. Are you feeling okay? Say yes or no." : 'No te entendí. ¿Te sientes bien? Di sí o no.');
+    assert.ok(said.slice(3,6).join(' ').split(/\s+/).length <= 14); assert.ok(!said.slice(3,6).join(' ').includes('Driver'));
     assert.equal(result.outcome, 'ok'); assert.equal(result.channel, 'voice'); assert.equal(result.contactCall, 'not_requested');
   });
-  test(`${lang}: cancellation during separate guidance prevents the combined contact turn`, async () => {
+  test(`${lang}: cancellation during coordinated playback prevents capture and consent`, async () => {
     const playing = deferred<void>(); const said: string[] = [];
     let check!: VoiceCheck;
-    check = new VoiceCheck({ cancel() {}, speak: async text => { said.push(text); if (said.length === 2) await playing.promise; },
+    check = new VoiceCheck({ cancel() {}, speak: async text => { said.push(text); if (/^(?:Please pull over|Por favor detente)/.test(text)) await playing.promise; },
       listen: async (_l, _m, _h, id) => recognitionEvidence(id, { status: 'success', transcript: statement[lang], finalTranscript: statement[lang], isFinal: true, finalResultReceived: true }),
     }, lang, '', { contactAvailable: true, acknowledgment: () => output[lang] });
     const pending = check.run('spo2_low'); const rejected = assert.rejects(pending, /cancelled/);
-    await tick(); assert.equal(said[1], guidance[lang]); check.cancel(); playing.resolve(); await rejected;
-    assert.equal(said.length, 2); assert.equal(check.cancelledResult?.contactCall, 'cancelled');
+    await tick(); assert.equal(said[3], guidance[lang].split(/(?<=\.) /)[0]); check.cancel(); playing.resolve(); await rejected;
+    assert.equal(said.length, 4); assert.equal(check.cancelledResult?.contactCall, 'cancelled');
   });
 }
 
@@ -102,4 +105,16 @@ test('compact safety thread retains separate guidance and contact bubbles plus f
   assert.ok(labels(false).includes('Playback completed'), 'default/diagnostic thread behavior is preserved');
   for (const status of ['failed', 'interrupted', 'pending', 'playing'] as const) assert.equal(playbackLabel(status, true), playbackLabel(status));
   assert.equal(JSON.stringify(messages), before);
+});
+
+test('urgent contact offer preserves immediate standalone urgent guidance without repeating it', async () => {
+  const said: string[] = []; let listens = 0;
+  const check = new VoiceCheck({ cancel() {}, speak: async text => { said.push(text); },
+    listen: async (_l, _m, _h, id) => { const text = ++listens === 1 ? "I have chest pain" : 'no';
+      return recognitionEvidence(id, { status: 'success', transcript: text, finalTranscript: text, isFinal: true, finalResultReceived: true }); },
+  }, 'en', '', { contactAvailable: true });
+  const result = await check.run('bpm_high');
+  assert.equal(result.urgent, true); assert.equal(result.contactCall, 'declined_offer');
+  assert.equal(said.filter(text => text.includes('call 911 now')).length, 1);
+  assert.equal(said.at(-1), 'Would you like me to call your emergency contact?');
 });

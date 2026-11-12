@@ -27,3 +27,10 @@ export function LanguageProvider({ children }: { children: ReactNode }) {
   return loaded ? <Context.Provider value={value}>{children}</Context.Provider> : null;
 }
 export const useAppLanguage = () => useContext(Context);
+
+/** Temporary presentation scope. Never writes preferences or changes global alerts. */
+export function VoiceCheckLanguageScope({ language, children }: { language: AppLanguage; children: ReactNode }) {
+  const parent = useAppLanguage();
+  const value = useMemo(() => ({ ...parent, language, t: (source: string) => translateText(source, language) }), [parent, language]);
+  return <Context.Provider value={value}>{children}</Context.Provider>;
+}

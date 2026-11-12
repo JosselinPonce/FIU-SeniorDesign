@@ -221,6 +221,11 @@ function createPhoneVoiceIO(strictSelectedVoice: boolean): VoiceIO {
   }
 
   return {
+    async pause() {
+      const epoch = cancelEpoch;
+      await new Promise<void>(resolve => setTimeout(resolve, 120));
+      if (epoch !== cancelEpoch) throw new Error('Voice check cancelled');
+    },
     prepareRecognition(lang, captureId) {
       if (Platform.OS !== 'ios') return;
       if (prepared) throw new Error('A recognition preparation is already registered.');

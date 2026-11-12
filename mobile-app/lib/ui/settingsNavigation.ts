@@ -5,7 +5,7 @@ export const SETTINGS_CATEGORIES = [
   { key: 'data', title: 'Data & Privacy', description: 'Recording, cloud uploads and deletion' },
   { key: 'connections', title: 'Connections', description: 'Pi, Bluetooth and link health' },
 ] as const;
-export type SettingsPage = typeof SETTINGS_CATEGORIES[number]['key'] | 'advanced' | 'safety_testing' | null;
+export type SettingsPage = typeof SETTINGS_CATEGORIES[number]['key'] | 'advanced' | 'safety_testing' | 'developer' | 'thresholds' | null;
 export function settingsTitle(page: SettingsPage): string {
-  return page === 'safety_testing' ? 'Safety Testing' : page === 'advanced' ? 'Advanced Settings' : SETTINGS_CATEGORIES.find(item => item.key === page)?.title ?? 'Settings';
+  return page === 'developer' ? 'Developer Tools' : page === 'thresholds' ? 'Threshold details' : page === 'safety_testing' ? 'Safety Testing' : page === 'advanced' ? 'Advanced Settings' : SETTINGS_CATEGORIES.find(item => item.key === page)?.title ?? 'Settings';
 }

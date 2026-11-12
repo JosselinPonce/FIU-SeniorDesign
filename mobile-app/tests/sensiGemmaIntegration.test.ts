@@ -33,9 +33,9 @@ test('pending or timed-out Gemma never delays guidance and cannot publish late s
   }, 'en', '', { acknowledgment: () => ack.get('en'), contactAvailable: true, contactName: 'Mom' });
   const result = await check.run('bpm_high');
   assert.equal(result.outcome, 'not_ok'); assert.equal(result.contactCall, 'declined_offer');
-  assert.match(spoken[1]!, /^Please pull over/);
-  assert.equal(spoken[2], "I'm sorry to hear that. Would you like me to call Mom?");
-  late.resolve('I hear you.'); await tick(); assert.equal(spoken.length, 3);
+  assert.match(spoken.join(' '), /Please pull over/);
+  assert.deepEqual(spoken.slice(3), ["Please pull over as soon as it is safe.", "If you need emergency help, call 911.", "I'm sorry to hear that.", "Would you like me to call Mom?"]);
+  late.resolve('I hear you.'); await tick(); assert.equal(spoken.length, 7);
   const expired = startSafetyAcknowledgment(() => new Promise(() => {}), context, 10);
   t.mock.timers.tick(10); assert.equal(expired.get('en'), "I'm sorry to hear that."); expired.cancel();
 });
@@ -54,7 +54,7 @@ test('typed replies require exact active question and share deterministic consen
   assert.equal(check.answerByText('yes please', scope), true);
   const result = await pending;
   assert.equal(result.outcome, 'not_ok'); assert.equal(result.channel, 'typed'); assert.equal(check.authorizesContact(result), true);
-  assert.deepEqual(accepted, ['typed', 'typed']); assert.match(spoken[1]!, /^Please pull over/);
+  assert.deepEqual(accepted, ['typed', 'typed']); assert.match(spoken.join(' '), /Please pull over/);
   check.cancel(); assert.equal(check.authorizesContact(result), false);
 });
 test('typed refusal and direct request preserve explicit authorization; unclear consent never authorizes', async () => {

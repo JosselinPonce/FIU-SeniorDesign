@@ -20,16 +20,18 @@
  * The featuriser must stay identical to tools/intent/train.py (parity test in
  * tests/intent.test.ts).
  */
+import { wellnessLanguage, type WellnessCategory } from './wellnessLanguage.ts';
 import model from './intentModel.ts';
 
 export type Intent = 'ok' | 'not_ok' | 'unclear' | 'silent';
 export type Understood = {
+  context?: WellnessCategory;
   contactCallRequested: boolean;
   intent: Intent;
   urgent: boolean;
   confidence: number;
   probs: [number, number, number] | null; // ok, not_ok, unclear
-  reason: 'empty' | 'urgent-keyword' | 'negation' | 'model';
+  reason: 'empty' | 'urgent-keyword' | 'negation' | 'symptom-report' | 'model';
 };
 
 const DIM: number = model.dim;
@@ -129,6 +131,10 @@ function wellness(transcript: string | null | undefined): Omit<Understood, 'cont
   }
   if (NEGATED_FINE.test(t) && !/\bnot bad\b/.test(t)) {
     return { intent: 'not_ok', urgent: false, confidence: Math.max(probs[1], 0.9), probs, reason: 'negation' };
+  }
+  const natural = wellnessLanguage(t, transcript ?? t);
+  if (natural && !/["“”]/.test(transcript ?? '') && !/\b(?:she said|he said|they said|ella dice|el dice|if|what if|si estuviera)\b/.test(t)) {
+    return { ...natural, urgent: false, confidence: natural.intent === 'unclear' ? Math.max(...probs) : 0.9, probs, reason: 'symptom-report' };
   }
   if (probs[1] >= NOT_OK_MIN) return { intent: 'not_ok', urgent: false, confidence: probs[1], probs, reason: 'model' };
   if (probs[0] >= OK_MIN) return { intent: 'ok', urgent: false, confidence: probs[0], probs, reason: 'model' };

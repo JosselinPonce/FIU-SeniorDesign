@@ -34,9 +34,9 @@ test('gesture claims movement beyond tap slop; floating wrapper passes ordinary 
 });
 test('diagnostics only enter from Advanced; category card matches the other navigation cards', () => {
   const settings=source('components/SettingsView.tsx');
-  const advanced=settings.slice(settings.indexOf("{page === 'advanced'"));
+  const advanced=settings.slice(settings.indexOf("{page === 'developer' && __DEV__"));
   assert.match(advanced,/__DEV__ \? props.gemmaDiagnostics/);
-  assert.match(settings,/accessibilityLabel="Advanced Settings" onPress=\{\(\) => setPage\('advanced'\)\} style=\{st.category\}/);
+  assert.match(settings,/accessibilityLabel="Advanced Settings" onPress=\{\(\) => navigate\('advanced'\)\} style=\{st.category\}/);
   const shell=source('components/SmartWheelScreen.tsx');
   const picker=shell.slice(shell.indexOf('if (!drive.driver)'),shell.indexOf('if (editOpening)'));
   assert.doesNotMatch(picker,/Local AI diagnostics/);

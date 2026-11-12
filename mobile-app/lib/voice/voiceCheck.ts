@@ -21,6 +21,8 @@
  * the dialogue policy is unit-tested without a device (tests/voiceCheck.test.ts).
  * Transcripts are used in memory only and never stored.
  */
+import { semanticDecision, semanticEligible, type SemanticTask, type SemanticContext, type SemanticResult } from '../assistant/safetySemantic.ts';
+import { completeSafetyResponsePlan, promptSentences, safetyGuidancePlan } from './responsePlan.ts';
 import { understand, understandCallAnswer, mentionsEmergencyServices } from './intent.ts';
 
 import { approvedAcknowledgment, acknowledgmentContext, type AcknowledgmentContext } from '../assistant/safetyAcknowledgment.ts';
@@ -35,6 +37,7 @@ export type RecognitionPhase = 'preparing' | 'ready' | 'listening' | 'finalizing
 export type VoiceIO = {
   /** Register microphone-free preparation for the next prompt; never accepts an answer. */
   prepareRecognition?(lang: Lang, captureId: string): void;
+  pause?(): Promise<void>;
   speak(text: string, lang: Lang): Promise<void | { status: 'unavailable' }>;
   /** Only scoped successful final evidence is accepted; legacy strings are unconfirmed. */
   listen(lang: Lang, ms: number, hints: string[], captureId: string, onPhase?: (phase: RecognitionPhase) => void): Promise<CoreRecognition | string | null>;
@@ -75,7 +78,6 @@ const TEXT = {
     ok: "Okay. I'll keep an eye on things. Drive safely.",
     notOk: 'Please pull over as soon as it is safe. If you need emergency help, call 911.',
     urgent: 'Pull over as soon as it is safe and call 911 now.',
-    none: "I didn't hear an answer. Please pull over when it is safe. This has been recorded as an emergency.",
     hints: ['yes', 'no', "I'm okay", "I'm fine", 'not okay', 'I need help', 'help', 'call 911'],
   },
   es: {
@@ -87,7 +89,6 @@ const TEXT = {
     ok: 'Muy bien. Sigo pendiente. Maneja con cuidado.',
     notOk: 'Por favor detente cuando sea seguro. Si necesitas ayuda de emergencia, llama al 911.',
     urgent: 'Detente en cuanto sea seguro y llama al 911 ahora.',
-    none: 'No escuché respuesta. Por favor detente cuando sea seguro. Esto quedó registrado como una emergencia.',
     hints: ['sí', 'no', 'estoy bien', 'no estoy bien', 'ayuda', 'necesito ayuda', 'llama al 911'],
   },
 } as const;
@@ -108,16 +109,26 @@ export class VoiceCheck {
   }
   /** Read-only exclusion for post-check continuation; never an authorization grant. */
   get emergencyServicesExcluded(): boolean { return this.emergencyServices; }
+  private semanticTask: SemanticTask | null = null;
+  private cancelSemantic() {
+    try { this.semanticTask?.cancel(); } catch { /* Advisory cleanup cannot alter safety. */ }
+    this.semanticTask = null;
+  }
   private knownWellness: CheckResult | null = null;
+  private responseIssue: 'silence' | 'unfinished' | 'failure' | 'ambiguous' = 'silence';
+  private noteIssue(issue: 'silence' | 'unfinished' | 'failure' | 'ambiguous') {
+    const priority = { silence: 0, unfinished: 1, failure: 2, ambiguous: 3 };
+    if (priority[issue] > priority[this.responseIssue]) this.responseIssue = issue;
+  }
   private emergencyServices = false;
   private question: CheckQuestion = 'wellness';
   private readonly io: VoiceIO;
   private readonly lang: Lang;
   private readonly name: string;
-  private readonly options: { contactAvailable?: boolean; onQuestion?: (q: CheckQuestion, captureId: string) => void; onAnswer?: (answer: AcceptedSafetyAnswer) => void; cancelAcknowledgment?: () => void; startAcknowledgment?: (context: AcknowledgmentContext) => void; acknowledgment?: (context: AcknowledgmentContext) => string; contactName?: string };
+  private readonly options: { startSemantic?: (context: SemanticContext) => SemanticTask; contactAvailable?: boolean; onQuestion?: (q: CheckQuestion, captureId: string) => void; onAnswer?: (answer: AcceptedSafetyAnswer) => void; cancelAcknowledgment?: () => void; startAcknowledgment?: (context: AcknowledgmentContext) => void; acknowledgment?: (context: AcknowledgmentContext) => string; contactName?: string };
 
   constructor(io: VoiceIO, lang: Lang, name: string,
-    options: { contactAvailable?: boolean; onQuestion?: (q: CheckQuestion, captureId: string) => void; onAnswer?: (answer: AcceptedSafetyAnswer) => void; cancelAcknowledgment?: () => void; startAcknowledgment?: (context: AcknowledgmentContext) => void; acknowledgment?: (context: AcknowledgmentContext) => string; contactName?: string } = {}) {
+    options: { startSemantic?: (context: SemanticContext) => SemanticTask; contactAvailable?: boolean; onQuestion?: (q: CheckQuestion, captureId: string) => void; onAnswer?: (answer: AcceptedSafetyAnswer) => void; cancelAcknowledgment?: () => void; startAcknowledgment?: (context: AcknowledgmentContext) => void; acknowledgment?: (context: AcknowledgmentContext) => string; contactName?: string } = {}) {
     this.io = io;
     this.lang = lang;
     this.name = name;
@@ -150,6 +161,7 @@ export class VoiceCheck {
 
   cancel() {
     this.cancelled = true;
+    this.cancelSemantic();
     this.buttonAnswer?.({ button: 'cancel' });
     this.io.cancel();
   }
@@ -160,7 +172,7 @@ export class VoiceCheck {
   }
 
   /** Each question owns its answer promise; a wellness tap cannot consent to a call. */
-  private async ask(prompt: string, question: CheckQuestion, hints: string[]) {
+  private async ask(prompt: string | string[], question: CheckQuestion, hints: string[]) {
     if (this.cancelled) throw new Error('Check cancelled');
     this.question = question;
     const captureId = this.captureId = `core-${this.checkId}-${++this.captureNumber}`;
@@ -178,12 +190,22 @@ export class VoiceCheck {
           if (this.cancelled || settled) return { text: null, final: false, captureId, evidence: undefined };
           this.io.prepareRecognition?.(this.lang, captureId);
           let playbackFailed = false;
-          try { playbackFailed = (await this.io.speak(prompt, this.lang))?.status === 'unavailable'; }
+          try {
+            const sentences = Array.isArray(prompt) ? prompt : promptSentences(prompt);
+            for (const [i, sentence] of sentences.entries()) {
+              if (this.cancelled || settled) break;
+              if (i) await this.io.pause?.();
+              if (this.cancelled || settled) break;
+              playbackFailed ||= (await this.io.speak(sentence, this.lang))?.status === 'unavailable';
+              if (playbackFailed) break;
+            }
+          }
           catch { playbackFailed = true; }
           if (settled || this.cancelled) return { text: null, final: false, captureId, evidence: undefined };
           // The question and choices remain visible. Never accept an unheard
           // contact prompt's queued speech as consent; allow a full button window.
           if (playbackFailed) {
+            if (question === 'wellness') this.noteIssue('failure');
             this.io.cancel();
             await new Promise<void>(resolve => { fallbackTimer = setTimeout(resolve, LISTEN_MS); });
             return { text: null, final: false, captureId, evidence: undefined };
@@ -192,6 +214,7 @@ export class VoiceCheck {
           let evidence: CoreRecognition | string | null;
           try { evidence = await this.io.listen(this.lang, LISTEN_MS, hints, captureId); }
           catch {
+            if (question === 'wellness') this.noteIssue('failure');
             trace('listen rejected', { captureId, question, settled, cancelled: this.cancelled });
             if (!settled && !this.cancelled) {
               this.io.cancel();
@@ -214,6 +237,9 @@ export class VoiceCheck {
             if (settled || this.cancelled) return { text: null, final: false, captureId, evidence: undefined };
           }
           const usable = successfulFinal(evidence, captureId);
+          if (question === 'wellness' && !usable) {
+            this.noteIssue(evidence.captureId !== captureId || evidence.status === 'error' || evidence.status === 'cancelled' || evidence.status === 'stale' ? 'failure' : evidence.transcript.trim() ? 'unfinished' : 'silence');
+          }
           return { text: usable ? evidence.transcript : null, final: usable && successfulFinal(evidence, captureId), captureId, evidence };
         })(),
         button,
@@ -224,7 +250,7 @@ export class VoiceCheck {
       // Observation only, after the winning response. Never feeds back into interpretation.
       try {
         if ('button' in answer) this.options.onAnswer?.({ question, channel: 'button',
-          text: answer.button === 'ok' ? "I'm OK" : answer.button === 'not_ok' ? "I'm not OK" : answer.button === 'call_yes' ? 'Open phone interface' : 'No thanks' });
+          text: this.lang === 'es' ? answer.button === 'ok' ? 'Estoy bien' : answer.button === 'not_ok' ? 'No me siento bien' : answer.button === 'call_yes' ? 'Abrir el teléfono' : 'No, gracias' : answer.button === 'ok' ? "I'm OK" : answer.button === 'not_ok' ? "I'm not OK" : answer.button === 'call_yes' ? 'Open phone interface' : 'No thanks' });
         else if ('typed' in answer) this.options.onAnswer?.({ question, channel: 'typed', text: answer.typed });
         else if (answer.final && answer.text) this.options.onAnswer?.({ question, channel: 'voice', text: answer.text });
       } catch { /* Presentation failure cannot alter safety decisions. */ }
@@ -241,7 +267,15 @@ export class VoiceCheck {
   private async announce(text: string) {
     if (this.cancelled) throw new Error('Check cancelled');
     let played = false;
-    try { played = (await this.io.speak(text, this.lang))?.status !== 'unavailable'; } catch { /* Visible safety copy remains available. */ }
+    try {
+      for (const [i, sentence] of promptSentences(text).entries()) {
+        if (this.cancelled) throw Error('Check cancelled');
+        if (i) await this.io.pause?.();
+        if (this.cancelled) throw Error('Check cancelled');
+        played = (await this.io.speak(sentence, this.lang))?.status !== 'unavailable';
+        if (!played) break;
+      }
+    } catch { /* Visible safety copy remains available. */ }
     if (this.cancelled) throw new Error('Check cancelled');
     return played;
   }
@@ -250,6 +284,8 @@ export class VoiceCheck {
     const t = TEXT[this.lang];
     let result: CheckResult | null = null;
     let statement: string | null = null;
+    let semanticContext: SemanticContext | null = null;
+    let semanticChannel: 'voice' | 'typed' = 'voice';
     for (const [index, prompt] of [t.ask(this.name, reason), t.again].entries()) {
       const heard = await this.ask(prompt, 'wellness', [...t.hints]);
       if ('button' in heard) {
@@ -258,7 +294,18 @@ export class VoiceCheck {
       } else {
         this.emergencyServices ||= mentionsEmergencyServices(heard.text);
         const u = understand(heard.text);
+        if (typeof __DEV__ !== 'undefined' && __DEV__) responsivenessProbe('warning', 'VoiceCheck semantic eligibility')('eligibility', { captureId: heard.captureId, question: 'wellness', usable: !!heard.final && !!heard.text && semanticEligible({ event: reason, language: this.lang, statement: heard.text }), outcome: u.intent });
         responsivenessProbe('warning', 'VoiceCheck interpretation')('wellness interpreted', { captureId: heard.captureId, question: 'wellness', outcome: u.intent, hasText: !!heard.text });
+        if (heard.final && u.intent === 'unclear') {
+          this.noteIssue('ambiguous');
+          if (index === 0 && heard.text && this.options.startSemantic) {
+            const c: SemanticContext = Object.freeze({ event: reason, language: this.lang, statement: heard.text });
+            if (semanticEligible(c)) {
+              semanticContext = c; semanticChannel = 'typed' in heard ? 'typed' : 'voice';
+              try { this.semanticTask = this.options.startSemantic(c); } catch { /* Clarification is unchanged. */ }
+            }
+          }
+        }
         if (u.intent === 'ok' || u.intent === 'not_ok') {
           result = { outcome: u.intent, urgent: u.urgent, channel: 'typed' in heard ? 'typed' : 'voice', attempts: index + 1,
             confidence: u.confidence, contactCall: u.contactCallRequested && heard.final ? 'explicit_request' : 'not_requested' };
@@ -270,13 +317,31 @@ export class VoiceCheck {
         break;
       }
     }
+    if (!result && semanticContext) {
+      let advice: SemanticResult | null = null;
+      let decision: 'not_ok' | 'unclear' = 'unclear';
+      try { advice = this.semanticTask?.get() ?? null; decision = semanticDecision(semanticContext, advice); } catch { /* Existing conservative fallback. */ }
+      if (typeof __DEV__ !== 'undefined' && __DEV__) responsivenessProbe('warning', 'VoiceCheck semantic decision')('application decision', { captureId: this.captureId, outcome: decision, source: advice ? 'gemma' : 'fallback', reason: !advice ? 'unavailable_or_not_ready' : decision === 'not_ok' ? 'grounded_caution' : 'advice_not_sufficient' });
+      if (decision === 'not_ok') {
+        result = { outcome: 'not_ok', urgent: false, channel: semanticChannel, attempts: 2, confidence: null, contactCall: 'not_requested' };
+        statement = semanticContext.statement;
+      }
+    }
+    this.cancelSemantic();
     this.knownWellness = result;
     if (!result) {
-      await this.announce(t.none);
+      const prefix = this.lang === 'en'
+        ? { silence: 'No answer was confirmed.', unfinished: 'Speech was detected, but no final response was confirmed.', failure: 'Voice input was unavailable. No answer was confirmed.', ambiguous: "I couldn't understand your answer." }[this.responseIssue]
+        : { silence: 'No se confirmó ninguna respuesta.', unfinished: 'Se detectó voz, pero no se confirmó una respuesta final.', failure: 'La entrada de voz no estuvo disponible. No se confirmó una respuesta.', ambiguous: 'No pude entender tu respuesta.' }[this.responseIssue];
+      if (typeof __DEV__ !== 'undefined' && __DEV__) responsivenessProbe('warning', 'VoiceCheck unresolved response')('classified', { captureId: this.captureId, question: 'wellness', reason: this.responseIssue });
+      await this.announce(`${prefix} ${t.notOk}`);
       return { outcome: 'no_response', urgent: false, channel: 'none', attempts: 2,
         confidence: null, contactCall: 'not_requested' };
     }
     if (result.outcome === 'ok') {
+      if (statement && /\b(long day|rough day|dia largo|día largo|día difícil|dia dificil)\b/i.test(statement)) {
+        await this.announce(this.lang === 'es' ? 'Me alegra que te sientas bien. Parece que ha sido un día largo.' : "Glad you're feeling okay. It sounds like a long day.");
+      }
       await this.announce(t.ok);
       return result;
     }
@@ -286,11 +351,14 @@ export class VoiceCheck {
     if (canAcknowledge) {
       try { this.options.startAcknowledgment?.(context); } catch { /* Fixed fallback. */ }
     }
-    // Mandatory guidance starts immediately. Inference is never awaited, and
-    // urgent/direct-call branches do not add an empathy playback before handoff.
-    const guidancePlayed = await this.announce(result.urgent ? t.urgent : t.notOk);
-    if (canAcknowledge && !guidancePlayed) {
-      try { this.options.cancelAcknowledgment?.(); } catch { /* Presentation cleanup cannot alter safety. */ }
+    // Inference runs during immediate mandatory guidance, never as a blocking step.
+    const planTrace = typeof __DEV__ !== 'undefined' && __DEV__ ? responsivenessProbe('warning', 'Sensi sentence response plan') : () => {};
+    const guidance = safetyGuidancePlan(this.lang, result.urgent);
+    let guidancePlayed = true;
+    for (const [i, segment] of guidance.entries()) {
+      if (i) await this.io.pause?.();
+      if (typeof __DEV__ !== 'undefined' && __DEV__) planTrace(segment.role, { stage: segment.role, captureId: this.captureId, locale: this.lang });
+      guidancePlayed = await this.announce(segment.text) && guidancePlayed;
     }
     let empathy = '';
     if (canAcknowledge && guidancePlayed) {
@@ -311,7 +379,17 @@ export class VoiceCheck {
     const retry = this.lang === 'en'
       ? `I didn't catch that. ${offer}`
       : `No te entendí. ${offer}`;
-    for (const prompt of [empathy ? `${empathy} ${offer}` : offer, retry]) {
+    if (!guidancePlayed) { try { this.options.cancelAcknowledgment?.(); } catch { /* Presentation only. */ } }
+    const responsePlan = completeSafetyResponsePlan(guidance, empathy, offer);
+    for (const segment of responsePlan.slice(guidance.length, -1)) {
+      if (typeof __DEV__ !== 'undefined' && __DEV__) planTrace('acknowledgment', { stage: 'acknowledgment', captureId: this.captureId, locale: this.lang });
+      await this.io.pause?.(); await this.announce(segment.text);
+    }
+    await this.io.pause?.();
+    const response = [responsePlan.at(-1)!.text];
+    if (typeof __DEV__ !== 'undefined' && __DEV__) planTrace('contact_offer', { stage: 'contact_offer', captureId: this.captureId, locale: this.lang });
+    if (typeof __DEV__ !== 'undefined' && __DEV__) responsivenessProbe('warning', 'Sensi response composition')('coordinated response', { captureId: this.captureId, question: 'contact_offer', source: 'sentence_plan', locale: this.lang });
+    for (const prompt of [response, retry]) {
       let heard: Awaited<ReturnType<VoiceCheck['ask']>>;
       try {
         heard = await this.ask(prompt, 'contact_offer', ['yes please', 'go ahead', 'no thanks', 'do not call', 'sí', 'no']);

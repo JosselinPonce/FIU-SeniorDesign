@@ -7,7 +7,7 @@ import ts from 'typescript';
 import { saveSelectedProfile } from '../lib/db/profileEditing.ts';
 import { SafetyController, initialSafety } from '../lib/analysis/safetyController.ts';
 import { SeqTracker } from '../lib/ble/protocol.ts';
-import { openAuthorizedPhoneInterface } from '../lib/voice/phoneHandoff.ts';
+import { openAuthorizedPhoneInterface, openConfirmedDemoPhoneInterface, hasSystemPhoneConfirmation } from '../lib/voice/phoneHandoff.ts';
 import { recognitionEvidence } from '../lib/voice/coreRecognition.ts';
 const require = createRequire(import.meta.url);
 const tick = async () => { for (let n = 0; n < 20; n++) await new Promise<void>(r => setImmediate(r)); };
@@ -54,11 +54,11 @@ function harness() {
     setSessionSampleRate: async () => {}, setSetting: async () => {},
   };
   const deps: Record<string, any> = {
-    '../voice/phoneHandoff': { openAuthorizedPhoneInterface },
+    '../voice/phoneHandoff': { openAuthorizedPhoneInterface, openConfirmedDemoPhoneInterface, hasSystemPhoneConfirmation },
     '../assistant/mode': { SENSI_MODE: 'gemma' },
-    react, 'react-native': { AppState: app, Linking: { openURL: async (url: string) => { calls.push(url); } } },
+    react, 'react-native': { Platform: { OS: 'ios', Version: 26 }, AppState: app, Linking: { openURL: async (url: string) => { calls.push(url); } } },
     'expo-haptics': { notificationAsync: async () => {}, NotificationFeedbackType: {} },
-    '../../modules/gemma-poc/phone': { phoneSafetyAcknowledgment: () => ({ get: () => 'I hear you.', source: 'fallback', cancel() {} }) },
+    '../../modules/gemma-poc/phone': { phoneSafetySemantic: () => ({ get: () => null, cancel() {} }), phoneSafetyAcknowledgment: () => ({ get: () => 'I hear you.', source: 'fallback', cancel() {} }) },
     '../ble/bleService': { WheelConnection: class { constructor(cb: any) { callbacks = cb; } start() {} stop() {} setAllowDirect() {} } },
     '../ble/protocol': { SeqTracker, uuidv4: () => `id-${++id}`, Deframer: class { crcErrors = 0; feed() { return [input]; } } },
     '../db/liveSync': { LiveUploader: class { status = { bytesSent: 0 }; nudge() {} stop() {} follow(id: string) { followed.push(id); } async finish(id: string) { finished.push(id); } } },
@@ -180,7 +180,7 @@ for (const entry of ['rehearsal', 'simulator'] as const) for (const channel of [
       assert.equal(f.render().safety.last.simulation, true);
       assert.equal(f.render().safety.last.handoff, accepted ? 'simulated' : undefined);
       assert.deepEqual(f.calls, [], 'actual hook Linking.openURL must never run');
-      assert.ok(f.render().safety.conversation.messages.some((m: any) => /Simulation complete/.test(m.text)));
+      assert.ok(f.render().safety.conversation.messages.some((m: any) => /[Ss]imulation complete/.test(m.text)));
       assert.deepEqual(f.saved, []);
     }
   });
@@ -211,7 +211,7 @@ test('a genuine live incident preempts simulator warm-up without inheriting simu
   assert.equal(await pending, null);
   assert.equal(f.render().safety.last.episode.id, episode);
   assert.equal(f.render().safety.conversation.simulation, false);
-  assert.equal(f.render().safety.conversation.messages.some((m: any) => /Simulation complete/.test(m.text)), false);
+  assert.equal(f.render().safety.conversation.messages.some((m: any) => /[Ss]imulation complete/.test(m.text)), false);
 });
 
 

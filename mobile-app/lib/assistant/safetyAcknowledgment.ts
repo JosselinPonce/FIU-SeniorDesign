@@ -1,3 +1,4 @@
+import { responsivenessProbe } from '../voice/responsivenessDiagnostics.ts';
 /** Event-scoped presentation only. Never interpretation, severity or consent. */
 export type AcknowledgmentContext = Readonly<{
   event: 'bpm_high' | 'bpm_low' | 'spo2_low';
@@ -18,7 +19,18 @@ const REPORT = {
 };
 export function acknowledgmentContext(event: AcknowledgmentContext['event'], language: AcknowledgmentContext['language'], statement?: string | null): AcknowledgmentContext {
   if (!['bpm_high', 'bpm_low', 'spo2_low'].includes(event) || !['en', 'es'].includes(language)) throw new Error('Invalid acknowledgment context');
-  const text = typeof statement === 'string' ? statement.trim().replace(/’/g, "'") : '';
+  let text = typeof statement === 'string' ? statement.trim().replace(/’/g, "'") : '';
+  text = text.replace(/^(?:um|uh|well|pues|bueno)[, ]+/i, '').replace(/\b(really|very|muy|tan),\s*/gi, '$1 ');
+  // Canonicalize only complete, explicit first-person reports. The model still
+  // receives the bounded feeling, never arbitrary trailing clauses or instructions.
+  if (!REPORT[language].test(text)) {
+  const natural = language === 'en'
+    ? text.match(/^(?:no[, ]+)?(?:i(?: am|'m| feel)|im)(?: feeling)? (?:(?:really|very|a little|so|quite) ){0,4}(dizzy|lightheaded|tired|sleepy|weak|nauseous|unwell|sick|exhausted)[.!]?$/i)
+    : text.match(/^(?:no,\s*)?(?:estoy|me siento) (?:(?:muy|un poco|tan|realmente) ){0,4}(mareado|mareada|cansado|cansada|débil|debil|mal|con náuseas|con nauseas)[.!]?$/i);
+  if (natural) text = language === 'en' ? `I'm feeling ${natural[1]!.toLowerCase().replace('exhausted', 'tired')}` : `Me siento ${natural[1]!.toLowerCase()}`;
+  if (language === 'es' && /^no me siento (?:muy )?bien[.!]?$/i.test(text)) text = 'Me siento mal';
+  if (language === 'en' && /^(?:no[, ]+)?i(?:'m| am) not feeling (?:very )?well[.!]?$/i.test(text)) text = "I'm feeling unwell";
+  }
   return Object.freeze({ event, outcome: 'not_ok', language,
     statement: text.length <= 160 && REPORT[language].test(text) ? text : null });
 }
@@ -87,26 +99,37 @@ export type SafetyAcknowledgment = { get(lang: 'en' | 'es'): string; cancel(): v
 /** Runs during mandatory guidance, never awaited by the safety workflow. get()
  * consumes once and aborts; late completion has no publication authority. */
 export function startSafetyAcknowledgment(generate: (signal: AbortSignal) => Promise<string>, context: AcknowledgmentContext, ms = 5000): SafetyAcknowledgment {
+  const trace = typeof __DEV__ !== 'undefined' && __DEV__ ? responsivenessProbe('warning', 'Gemma contextual acknowledgment') : () => {};
   const safe = acknowledgmentContext(context.event, context.language, context.statement);
-  if (!canGenerateAcknowledgment(context)) return {
-    get: lang => approvedAcknowledgment(null, lang), cancel() {}, source: 'fallback',
-  };
+  if (typeof __DEV__ !== 'undefined' && __DEV__) trace('eligibility', { locale: safe.language, usable: canGenerateAcknowledgment(safe) });
+  if (!canGenerateAcknowledgment(context)) {
+    if (typeof __DEV__ !== 'undefined' && __DEV__) trace('inference skipped', { reason: 'ineligible_statement', fallbackText: true });
+    return { get: lang => approvedAcknowledgment(null, lang), cancel() {}, source: 'fallback' };
+  }
   const abort = new AbortController();
+  let attempted = false;
   let ready: string | null = null;
   let consumed = false;
   let source: 'gemma' | 'fallback' = 'fallback';
-  const timer = setTimeout(() => { ready = null; abort.abort(); }, ms);
-  void Promise.resolve().then(() => abort.signal.aborted ? '' : generate(abort.signal)).then(text => {
+  const timer = setTimeout(() => { if (typeof __DEV__ !== 'undefined' && __DEV__) trace('fallback', { reason: 'timeout', fallbackText: true }); ready = null; abort.abort(); }, ms);
+  void Promise.resolve().then(() => {
+    if (abort.signal.aborted) { if (typeof __DEV__ !== 'undefined' && __DEV__) trace('inference skipped', { reason: 'consumed_before_start' }); return ''; }
+    attempted = true; if (typeof __DEV__ !== 'undefined' && __DEV__) trace('inference attempted'); return generate(abort.signal);
+  }).then(text => {
+    if (attempted) if (typeof __DEV__ !== 'undefined' && __DEV__) trace('inference completed', { cancelled: abort.signal.aborted, usable: !!validateAcknowledgment(text, safe), reason: validateAcknowledgment(text, safe) ? 'accepted' : 'output_contract_rejected' });
     if (!abort.signal.aborted && !consumed) ready = validateAcknowledgment(text, safe);
-  }).catch(() => {}).finally(() => clearTimeout(timer));
+  }).catch(() => { if (typeof __DEV__ !== 'undefined' && __DEV__) trace('inference failed', { reason: 'unavailable_or_lifecycle_failure' }); }).finally(() => clearTimeout(timer));
   return {
     get(lang) {
       const text = !consumed && !abort.signal.aborted && lang === safe.language ? ready : null;
       source = text ? 'gemma' : 'fallback';
+      if (typeof __DEV__ !== 'undefined' && __DEV__) trace('acknowledgment selected', { source, fallbackText: !text, reason: text ? 'accepted' : consumed ? 'already_consumed' : abort.signal.aborted ? 'cancelled_or_timeout' : 'not_ready_or_rejected' });
       consumed = true; ready = null; clearTimeout(timer); abort.abort();
       return approvedAcknowledgment(text, lang, safe);
     },
-    cancel() { consumed = true; ready = null; clearTimeout(timer); abort.abort(); },
+    cancel() {
+      if (typeof __DEV__ !== 'undefined' && __DEV__) trace('cancelled', { cancelled: true });
+      consumed = true; ready = null; clearTimeout(timer); abort.abort(); },
     get source() { return source; },
   };
 }

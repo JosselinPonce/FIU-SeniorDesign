@@ -62,10 +62,10 @@ test('timeout, cancellation, unavailable generation and consumed results always 
 });
 
 for (const fixture of [safetyAcknowledgmentFixtures[0], safetyAcknowledgmentFixtures[2]]) {
-  test(`mocked ${fixture.language} inference overlaps mandatory guidance; adds no new turn and cannot affect consent`, async () => {
+  test(`mocked ${fixture.language} unready inference never delays coordinated guidance; adds no new turn and cannot affect consent`, async () => {
     const guidance = deferred<void>(); const said: string[] = []; let n = 0;
     let ack: ReturnType<typeof startSafetyAcknowledgment> | undefined;
-    const check = new VoiceCheck({ cancel() {}, speak: async text => { said.push(text); if (said.length === 2) await guidance.promise; },
+    const check = new VoiceCheck({ cancel() {}, speak: async text => { said.push(text); if (/^(?:Please pull over|Por favor detente)/.test(text)) await guidance.promise; },
       listen: async (_lang, _ms, _hints, id) => {
         const text = ++n === 1 ? fixture.statement : 'no';
         return recognitionEvidence(id, { status: 'success', transcript: text, finalTranscript: text, isFinal: true, finalResultReceived: true });
@@ -76,11 +76,11 @@ for (const fixture of [safetyAcknowledgmentFixtures[0], safetyAcknowledgmentFixt
       acknowledgment: () => ack!.get(fixture.language),
     });
     const pending = check.run(fixture.event); await tick();
-    assert.ok(ack); assert.equal(said.length, 2); assert.match(said[1]!, /^(Please pull over|Por favor detente)/);
-    assert.ok(!said[1]!.includes(fixture.output));
+    assert.ok(ack); assert.equal(said.length, 4); assert.match(said[3]!, /(Please pull over|Por favor detente)/);
+    assert.ok(!said[3]!.includes(fixture.output));
     guidance.resolve(); const result = await pending;
-    assert.equal(said.length, 3); assert.ok(said[2]!.startsWith(fixture.output + ' '));
-    assert.match(said[2]!, /Would you like me to call your emergency contact\?|¿Quieres que llame a tu contacto de emergencia\?/);
+    assert.equal(said.length, 7); assert.equal(said[5], fixture.output);
+    assert.match(said[6]!, /Would you like me to call your emergency contact\?|¿Quieres que llame a tu contacto de emergencia\?/);
     assert.equal(result.outcome, 'not_ok'); assert.equal(result.contactCall, 'declined_offer'); assert.equal(check.authorizesContact(result), false);
     ack!.cancel();
   });
@@ -100,11 +100,11 @@ test('OK, silence, urgent, direct contact requests and no available contact neve
 test('cancel during guidance aborts the episode task and prevents late empathy/contact publication', async () => {
   const guidance = deferred<void>(), generation = deferred<string>(); const said: string[] = [];
   let ack: ReturnType<typeof startSafetyAcknowledgment> | undefined;
-  const check = new VoiceCheck({ cancel() { ack?.cancel(); }, speak: async text => { said.push(text); if (said.length === 2) await guidance.promise; },
+  const check = new VoiceCheck({ cancel() { ack?.cancel(); }, speak: async text => { said.push(text); if (/^(?:Please pull over|Por favor detente)/.test(text)) await guidance.promise; },
     listen: async (_l, _ms, _h, id) => recognitionEvidence(id, { status: 'success', transcript: "I'm dizzy", finalTranscript: "I'm dizzy", isFinal: true, finalResultReceived: true }),
   }, 'en', '', { contactAvailable: true, startAcknowledgment: c => { ack = startSafetyAcknowledgment(() => generation.promise, c); }, acknowledgment: () => ack!.get('en') });
   const pending = check.run('bpm_high'); await tick(); check.cancel(); generation.resolve("I'm sorry you're feeling dizzy."); guidance.resolve();
-  await assert.rejects(pending, /cancelled/); await tick(); assert.equal(said.length, 2);
+  await assert.rejects(pending, /cancelled/); await tick(); assert.equal(said.length, 4);
 });
 
 test('invalid or hung inference cannot prevent guidance or grant consent; failed playback cancels unused inference', async () => {
@@ -112,7 +112,7 @@ test('invalid or hung inference cannot prevent guidance or grant consent; failed
     const said: string[] = []; let ack: ReturnType<typeof startSafetyAcknowledgment> | undefined; let scope!: AnswerScope;
     let check!: VoiceCheck; let cancelled = 0;
     check = new VoiceCheck({ cancel() {}, speak: async text => {
-      said.push(text); if (said.length === 2 && mode === 'playback_failed') return { status: 'unavailable' as const };
+      said.push(text); if (/^(?:Please pull over|Por favor detente)/.test(text) && mode === 'playback_failed') return { status: 'unavailable' as const };
       await tick();
     }, listen: async () => null }, 'en', '', { contactAvailable: true,
       onQuestion: (question, captureId) => { scope = { question, captureId }; check.answerByText(question === 'wellness' ? "I'm dizzy" : 'maybe', scope); },
@@ -120,9 +120,9 @@ test('invalid or hung inference cannot prevent guidance or grant consent; failed
       cancelAcknowledgment: () => { cancelled++; ack?.cancel(); }, acknowledgment: () => ack!.get('en'),
     });
     const result = await check.run('bpm_high'); ack?.cancel();
-    assert.match(said[1]!, /^Please pull over/); assert.equal(result.outcome, 'not_ok'); assert.equal(result.contactCall, 'unconfirmed_offer');
+    assert.match(said.join(' '), /Please pull over/); assert.equal(result.outcome, 'not_ok'); assert.equal(result.contactCall, 'unconfirmed_offer');
     assert.equal(check.authorizesContact(result), false); assert.ok(said.every(s => !s.includes('You are safe.')));
-    if (mode === 'playback_failed') assert.equal(cancelled, 1);
+    assert.equal(ack?.source, 'fallback');
   }
 });
 
@@ -134,7 +134,7 @@ test('production controller cancellation owns the task; old output cannot enter 
   const controller = new SafetyController({ assistantMode: () => 'gemma',
     startAcknowledgment: context => { contexts.push(context.statement ?? ''); return startSafetyAcknowledgment(() => generation.promise, context); },
     voiceIO: () => ({ cancel() {}, listen: async () => new Promise(() => {}), speak: async text => {
-      spoken.push(text); if (++count === 2) await guidance.promise;
+      spoken.push(text); if (/^(?:Please pull over|Por favor detente)/.test(text)) await guidance.promise;
     } }), save: async () => {}, saveAck: async () => {}, haptic() {}, onChange: s => { state = s; }, newId: () => 'event',
   });
   controller.configure({ id: 'p', custom_id: null, display_name: 'Driver', age: 30, gender: 'male', height_cm: 180, weight_kg: 80,
@@ -180,6 +180,6 @@ for (const stage of ['start', 'read'] as const) test(`throwing presentation ${st
     acknowledgment: () => { if (stage === 'read') throw Error('failed'); return 'invalid output'; },
   });
   const result = await check.run('bpm_high');
-  assert.match(spoken[1]!, /^Please pull over/); assert.match(spoken[2]!, /^I'm sorry to hear that\. Would you like/);
+  assert.equal(spoken.length, 7); assert.equal(spoken[5], "I'm sorry to hear that."); assert.match(spoken[6]!, /^Would you like/);
   assert.equal(result.outcome, 'not_ok'); assert.equal(result.contactCall, 'declined_offer'); assert.equal(check.authorizesContact(result), false);
 });

@@ -1,3 +1,4 @@
+import { VoiceCheckLanguageScope } from '../lib/i18n/LanguageProvider';
 import { traceVoiceCheckUI } from '../lib/voice/responsivenessDiagnostics';
 import { LocalizedPressable as Pressable, LocalizedText as Text } from '../lib/i18n/native';
 import { SafetyTypedResponse } from './SafetyTypedResponse';
@@ -282,6 +283,7 @@ export function VoiceCheckModal(props: { drive: Drive }) {
   if (sf.conversation) return null; // Local/Connected use the shared Sensi safety view.
   return (
     <Modal visible={sf.check !== null} transparent animationType="fade">
+      <VoiceCheckLanguageScope language={d.driver?.language === 'es' ? 'es' : 'en'}>
         <View style={st.scrim}>
           <View style={st.alertBox}>
             <Text style={st.alertTitle}>{offer ? 'Would you like me to call your emergency contact?' : 'Are you feeling OK?'}</Text>
@@ -298,7 +300,7 @@ export function VoiceCheckModal(props: { drive: Drive }) {
             {sf.check?.fallbackText ? <Text style={st.alertBody}>{sf.check.fallbackText}</Text> : null}
             <Text style={st.alertHint}>
               You can answer out loud or tap below. The phone interface opens only after a call request or agreement.
-              Simulated vitals demos never open it. If you need emergency help, pull over safely and call 911.
+              Simulations open it only with real-contact demonstration enabled and consent to the contact offer. If you need emergency help, pull over safely and call 911.
             </Text>
             <Btn title={offer ? "Open phone interface" : "I'm OK"} onPress={() => sf.check && d.respondAlert(offer ? 'call_yes' : 'ok', { episodeId: sf.check.episode.id, question: sf.check.question, captureId: sf.check.captureId })} />
             <Pressable onPress={() => sf.check && d.respondAlert(offer ? 'call_no' : 'not_ok', { episodeId: sf.check.episode.id, question: sf.check.question, captureId: sf.check.captureId })} style={st.unwell} accessibilityRole="button">
@@ -307,6 +309,7 @@ export function VoiceCheckModal(props: { drive: Drive }) {
             {sf.check ? <SafetyTypedResponse scope={{ episodeId: sf.check.episode.id, question: sf.check.question, captureId: sf.check.captureId }} submit={d.respondAlertText} /> : null}
           </View>
         </View>
+      </VoiceCheckLanguageScope>
     </Modal>
   );
 }

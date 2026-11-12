@@ -1,5 +1,6 @@
+import { ScreenHeader } from './ScreenHeader';
 import { LocalizedText as Text } from '../lib/i18n/native';
-import { ScrollView } from 'react-native';
+import { View, ScrollView } from 'react-native';
 import type { useDriveSession } from '../lib/hooks/useDriveSession';
 import { CHART_SECONDS } from '../lib/hooks/useDriveSession';
 import { useTheme } from '../lib/theme/ThemeProvider';
@@ -17,8 +18,7 @@ export function VitalsDetailView({ drive: d, onBack }: { drive: ReturnType<typeo
     { title: 'Heart Rate', value: d.bpm, unit: 'BPM', points: d.bpmSeries, color: tokens.heartAccent, min: 40, max: 160, band, bounds: th ? { low: th.lowWarn, high: th.highWarn } : undefined },
     { title: 'SpO₂ (estimate)', value: d.spo2, unit: '%', points: d.spo2Series, color: tokens.oxygenAccent, min: 85, max: 100, band: null, bounds: th ? { low: th.spo2Warn } : undefined },
   ];
-  return <ScrollView contentContainerStyle={{ padding: 14, gap: 12, paddingBottom: 24 }}>
-    <Btn title="Back to dashboard" kind="ghost" onPress={onBack} />
+  return <View style={{ flex: 1 }}><ScreenHeader title="Detailed Vitals" onBack={onBack} backLabel="Back to dashboard" /><ScrollView contentContainerStyle={{ padding: 14, gap: 12, paddingBottom: 24 }}>
     <Text accessibilityRole="header" style={{ color: tokens.text, fontSize: 22, fontWeight: '700' }}>Detailed Vitals</Text>
     <Text style={{ color: tokens.textSecondary }}>Current session buffer · up to {CHART_SECONDS / 60} minutes. Missing readings remain gaps.</Text>
     {metrics.map(metric => {
@@ -47,5 +47,5 @@ export function VitalsDetailView({ drive: d, onBack }: { drive: ReturnType<typeo
       </> : <Text style={{ color: tokens.textSecondary }}>Personalized thresholds unavailable</Text>}
       <Text style={{ color: tokens.textMuted }}>Range labels describe the latest reading. Safety checks continue to use existing signal-quality and timing rules.</Text>
     </Card>
-  </ScrollView>;
+  </ScrollView></View>;
 }

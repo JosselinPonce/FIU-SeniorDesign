@@ -3,16 +3,16 @@ import type { AssistantMode } from './mode.ts';
 import type { CheckQuestion, CheckResult } from '../voice/voiceCheck.ts';
 
 /** Transient display state only. Never persist this or derive consent from it. */
-export type SafetyConversation = { episodeId: string; mode: AssistantMode; messages: ConversationMessage[]; finished: boolean; simulation?: boolean; acknowledgmentSource?: 'gemma' | 'fallback' };
+export type SafetyConversation = { episodeId: string; language?: 'en' | 'es'; mode: AssistantMode; messages: ConversationMessage[]; finished: boolean; simulation?: boolean; realContactDemo?: boolean; acknowledgmentSource?: 'gemma' | 'fallback' };
 export function canOfferSafetyContinuation(result: CheckResult): boolean {
   return result.outcome === 'ok' && result.contactCall === 'not_requested';
 }
 export function safetyButtonText(question: CheckQuestion, positive: boolean): string {
   return question === 'contact_offer' ? positive ? 'Yes, open phone' : 'No, thanks' : positive ? "I'm OK" : "I'm not OK";
 }
-export function simulationCompletion(result: CheckResult): string {
+export function simulationCompletion(result: CheckResult, pendingContact = false, realContactRun = false): string {
   return result.contactCall === 'explicit_request' || result.contactCall === 'accepted_offer'
-    ? 'Simulation complete. In a real emergency, DriveSense would open the phone interface.'
+    ? pendingContact ? 'Contact consent received. Phone confirmation is pending.' : realContactRun ? 'Simulation complete. No phone interface was opened.' : 'Noncalling simulation complete. No phone interface was opened.'
     : result.contactCall === 'declined_offer'
     ? 'Simulation complete. You declined the call. No phone interface was opened.'
     : 'Simulation complete. No phone interface was opened.';
