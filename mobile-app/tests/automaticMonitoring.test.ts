@@ -12,23 +12,25 @@ function frame(seq: number, heartRate = 155): Frame {
   return { version: 3, seq, rateHz: 0, quality: 90, startMs: seq * 1000, endMs: (seq + 1) * 1000,
     heartRate, spo2: 98, flags: 15, samples: [], finger: true, usable: true, raw: new Uint8Array() };
 }
-function fixture() {
+function fixture(warm: 'ok' | 'throw' = 'ok') {
   let state: SafetyState = initialSafety, n = 0, inference = 0, inferenceCancelled = 0;
   let final: ((text: string) => void) | null = null;
   let partial: ((text: string) => void) | null = null;
-  const saved: any[] = [], calls: string[] = [], speech: string[] = [];
+  const saved: any[] = [], calls: string[] = [], speech: string[] = [], events: string[] = [];
   const c = new SafetyController({ assistantMode: () => 'local',
     startAcknowledgment: () => { inference++; return { get: () => "I'm sorry you're feeling dizzy.", source: 'gemma', cancel() { inferenceCancelled++; } }; },
-    voiceIO: () => ({ speak: async text => { speech.push(text); }, listen: async (_l, _m, _h, id) => new Promise(resolve => {
+    beginGemmaWarm: () => { events.push('begin'); if (warm === 'throw') throw new Error('Gemma is down'); },
+    endGemmaWarm: () => { events.push('end'); },
+    voiceIO: () => ({ speak: async text => { speech.push(text); events.push('speak'); }, listen: async (_l, _m, _h, id) => { events.push('listen'); return new Promise(resolve => {
       final = text => resolve(recognitionEvidence(id, { status: 'success', transcript: text, finalTranscript: text, isFinal: true, finalResultReceived: true }));
       partial = text => resolve(recognitionEvidence(id, { status: 'timeout', transcript: text, isFinal: false, finalResultReceived: false }));
-    }), cancel() {} }),
+    }); }, cancel() {} }),
     save: async row => { saved.push(row); }, saveAck: async () => {}, haptic() {},
     handoffContact: async phone => { calls.push(phone); }, onChange: s => { state = s; }, newId: () => `incident-${++n}`,
   });
   c.configure(profile, null);
   c.setMonitoringContext(true, true, true);
-  return { c, saved, calls, speech, get state() { return state; }, get inference() { return inference; }, get inferenceCancelled() { return inferenceCancelled; },
+  return { c, saved, calls, speech, events, get state() { return state; }, get inference() { return inference; }, get inferenceCancelled() { return inferenceCancelled; },
     feed: (seq: number, at = 100000 + seq * 1000, bpm = 155, missing = 0) => c.onFrame(frame(seq, bpm), new Date(at), missing),
     final: (text: string) => { assert.ok(final); final(text); },
     partial: (text: string) => { assert.ok(partial); partial(text); },
@@ -153,4 +155,38 @@ test('continuity handles sequence/device-clock wrap and presents every monitorin
   assert.equal(gate.accept({ ...frame(0xffffffff), endMs: 0xffffff00 }, 1000, 0).accepted, true);
   assert.equal(gate.accept({ ...frame(0), endMs: 744 }, 2000, 0).accepted, true);
   for (const status of ['active', 'waiting', 'disconnected', 'unavailable'] as const) assert.ok(monitoringMessage(status).length > 15);
+});
+
+/** Standard rehearsal dialogue: answer the wellness and contact questions. */
+async function rehearseOnce(f: ReturnType<typeof fixture>) {
+  const done = f.c.rehearse();
+  await tick(); assert.ok(f.state.check?.phase, 'rehearsal has started');
+  f.final("I'm dizzy"); await tick();
+  f.final('yes'); await tick();
+  await done;
+  await tick();
+}
+
+test('rehearse warms gemma at check start and ends the lease at teardown', async () => {
+  const f = fixture();
+  await rehearseOnce(f);
+  const events = f.events;
+  assert.ok(events.includes('begin'), 'the check begin warms the model');
+  assert.ok(events.includes('end'), 'the teardown ends the lease');
+  assert.equal(events.indexOf('begin'), 0, 'begin precedes every speak and listen');
+  assert.equal(events.lastIndexOf('begin'), events.indexOf('begin'), 'exactly one begin per check');
+  assert.ok(events.indexOf('end') > events.lastIndexOf('speak'), 'end comes after voice.run settles, after the last speak');
+  assert.ok(events.indexOf('end') > events.lastIndexOf('listen'), 'end comes after the recognition has stopped');
+  assert.equal(events.filter(event => event === 'end').length, 1, 'exactly one end per check');
+  assert.equal(f.state.last?.simulation, true);
+  assert.deepEqual(f.saved, []);
+});
+
+test('a throwing gemma warm never starts a lease and never blocks the check', async () => {
+  const f = fixture('throw');
+  await rehearseOnce(f);
+  assert.equal(f.events.includes('end'), true, 'teardown still releases exactly once');
+  assert.equal(f.events.filter(event => event === 'end').length, 1);
+  assert.equal(f.state.last?.simulation, true);
+  assert.deepEqual(f.saved, []);
 });

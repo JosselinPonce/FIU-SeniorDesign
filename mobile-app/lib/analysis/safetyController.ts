@@ -107,6 +107,9 @@ type Deps = {
   voiceIO: () => VoiceIO;
   /** Called when a voice check ends, so other audio returns to full volume. */
   releaseAudio?: () => void;
+  /** Warm-lease semantic model lifecycle: one begin/end pair per voice check. */
+  beginGemmaWarm?: () => void;
+  endGemmaWarm?: () => void;
   save: (row: Omit<DriveAlertRow, 'sync_status'>) => Promise<void>;
   saveAck: (profileId: string, ack: Ack) => Promise<void>;
   /** Adaptation history: called whenever the thresholds are (re)computed. */
@@ -571,6 +574,10 @@ export class SafetyController {
     publishDialogue();
     this.deps.haptic('warning');
     const base = this.deps.voiceIO();
+    // Warm the semantic model for the whole exchange, before the first speak;
+    // a Gemma failure must never stop the check from starting.
+    try { this.deps.beginGemmaWarm?.(); }
+    catch { /* The dialogue below speaks its fixed fallback text without the model. */ }
     // Report what the voice check is doing so the screen can show it.
     const io: VoiceIO = {
       pause: () => base.pause?.() ?? Promise.resolve(),
@@ -656,6 +663,10 @@ export class SafetyController {
       result = voice.cancelledResult ?? { outcome: 'no_response', urgent: false, channel: 'none', attempts: 0, confidence: null, contactCall: 'not_requested' };
     }
     this.voice = null;
+    // Release the warm lease exactly once, after voice.run has settled on both
+    // the cancelled and the normal path; a failed release never fails the check.
+    try { this.deps.endGemmaWarm?.(); }
+    catch { /* Fixed acknowledgment below keeps working without the lease. */ }
     this.acknowledgment?.cancel();
     if (this.acknowledgment === acknowledgment) this.acknowledgment = null;
     this.deps.releaseAudio?.();
