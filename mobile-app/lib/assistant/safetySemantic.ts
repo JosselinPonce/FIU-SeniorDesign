@@ -43,6 +43,33 @@ export function semanticDecision(c: SemanticContext, v: SemanticResult | null): 
   return !/\b(not|don't|dont|no estoy|no me siento|sin)\b/.test(t) && GROUNDED_CATEGORIES[v.context].some(category => found.includes(category)) ? 'not_ok' : 'unclear';
 }
 export type SemanticTask = { get(): SemanticResult | null; cancel(): void };
+export type CombinedDecision = { intent: 'ok' | 'not_ok' | 'unclear'; source: 'gemma' | 'lexicon_veto' | 'hedge_veto' | 'undecided' };
+/** Deterministic combiner: turns a Gemma verdict into the emergency-check
+ * decision. Binding invariant: Gemma alone can neither clear nor escalate past
+ * the deterministic vetoes — hedged or negated statements never escalate, an OK
+ * beside recognized symptom vocabulary never clears, statements with no
+ * interpretive language (digits only) never escalate, and every ungrounded
+ * verdict stays unclear/undecided. Never touches vitals, consent or contact
+ * state; the hedge/laxity data comes from symptomScan, not a local list. */
+export function semanticCombinedDecision(c: SemanticContext, advice: SemanticResult | null): CombinedDecision {
+  const v = advice && ['OK','NOT_OK','UNCERTAIN'].includes(advice.state) && ['fatigue','dizziness','discomfort','other','none'].includes(advice.context)
+    && ['yes','no','uncertain'].includes(advice.concern) ? advice : null;
+  const t = normalise(c.statement);
+  if (!v || !/[a-z]/.test(t)) return { intent: 'unclear', source: 'undecided' };
+  const scan = symptomScan(t);
+  if (v.state === 'NOT_OK') {
+    if (v.concern !== 'yes') return { intent: 'unclear', source: 'undecided' };
+    if (scan.hedged || scan.kind === 'negated_only') return { intent: 'unclear', source: 'hedge_veto' };
+    return { intent: 'not_ok', source: 'gemma' };
+  }
+  if (v.state === 'OK') {
+    if (scan.hedged) return { intent: 'unclear', source: 'hedge_veto' };
+    if (scan.kind === 'affirmative') return { intent: 'unclear', source: 'lexicon_veto' };
+    if (v.concern === 'yes') return { intent: 'unclear', source: 'undecided' };
+    return { intent: 'ok', source: 'gemma' };
+  }
+  return { intent: 'unclear', source: 'undecided' };
+}
 export function startSemantic(generate: (signal: AbortSignal) => Promise<string>, c: SemanticContext, budget = 5000): SemanticTask {
   const trace = typeof __DEV__ !== 'undefined' && __DEV__ ? responsivenessProbe('warning','Gemma semantic assistance') : () => {};
   const abort = new AbortController(); let value: SemanticResult | null = null, consumed = false;

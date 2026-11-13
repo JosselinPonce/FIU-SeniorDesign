@@ -4,7 +4,7 @@ import { understand, understandCallAnswer } from '../lib/voice/intent.ts';
 import { VoiceCheck } from '../lib/voice/voiceCheck.ts';
 import { recognitionEvidence } from '../lib/voice/coreRecognition.ts';
 import { acknowledgmentContext, canGenerateAcknowledgment, validateAcknowledgment, startSafetyAcknowledgment } from '../lib/assistant/safetyAcknowledgment.ts';
-import { semanticEligible, semanticPrompt, semanticDecision, startSemantic, validateSemantic, type SemanticContext } from '../lib/assistant/safetySemantic.ts';
+import { semanticEligible, semanticPrompt, semanticDecision, semanticCombinedDecision, startSemantic, validateSemantic, type SemanticContext } from '../lib/assistant/safetySemantic.ts';
 import { GemmaPoc } from '../modules/gemma-poc/controller.ts';
 const tick = () => new Promise<void>(r => setImmediate(r));
 const final = (id: string, text: string) => recognitionEvidence(id,{ status:'success',transcript:text,finalTranscript:text,isFinal:true,finalResultReceived:true });
@@ -62,6 +62,50 @@ test('literal severity pin: my head hurts really bad is eligible', () => {
 test('gemma grounding follows the lexicon', () => {
   assert.equal(semanticDecision({event:'bpm_high',language:'en',statement:'my head hurts since yesterday'},{state:'NOT_OK',context:'other',concern:'yes'}),'not_ok');
 });
+
+const c0 = { event: 'bpm_high' as const, language: 'en' as const, statement: '123456789' };
+test('gemma NOT_OK on novel symptoms escalates', () => {
+  const c = { event: 'bpm_high' as const, language: 'en' as const, statement: "I'm feeling under the weather today" };
+  assert.deepEqual(semanticCombinedDecision(c, { state: 'NOT_OK', context: 'other', concern: 'yes' }),
+    { intent: 'not_ok', source: 'gemma' });
+});
+test('gemma NOT_OK on a negated statement does not escalate', () => {
+  const c = { event: 'bpm_low' as const, language: 'en' as const, statement: "I'm not dizzy" };
+  assert.deepEqual(semanticCombinedDecision(c, { state: 'NOT_OK', context: 'dizziness', concern: 'yes' }),
+    { intent: 'unclear', source: 'hedge_veto' });
+});
+test('gemma NOT_OK on a hedged statement does not escalate', () => {
+  const c = { event: 'bpm_high' as const, language: 'en' as const, statement: 'maybe I feel weird' };
+  assert.deepEqual(semanticCombinedDecision(c, { state: 'NOT_OK', context: 'other', concern: 'yes' }),
+    { intent: 'unclear', source: 'hedge_veto' });
+});
+test('gemma OK vetoes on affirmative symptoms', () => {
+  const c = { event: 'bpm_high' as const, language: 'en' as const, statement: 'everything is okay but my head hurts' };
+  assert.deepEqual(semanticCombinedDecision(c, { state: 'OK', context: 'none', concern: 'no' }),
+    { intent: 'unclear', source: 'lexicon_veto' });
+});
+test('gemma OK without symptoms clears an unclear statement', () => {
+  const c = { event: 'bpm_high' as const, language: 'en' as const, statement: 'everything is okay I think' };
+  assert.deepEqual(semanticCombinedDecision(c, { state: 'OK', context: 'other', concern: 'no' }),
+    { intent: 'ok', source: 'gemma' });
+});
+test('undecided advice stays unclear', () =>
+  assert.deepEqual(semanticCombinedDecision(c0, null), { intent: 'unclear', source: 'undecided' }));
+test('gemma NOT_OK without a yes concern stays undecided', () =>
+  assert.deepEqual(semanticCombinedDecision({ ...c0, statement: 'my chest hurts' }, { state: 'NOT_OK', context: 'other', concern: 'no' }),
+    { intent: 'unclear', source: 'undecided' }));
+test('gemma OK beside a stated concern stays undecided', () =>
+  assert.deepEqual(semanticCombinedDecision({ ...c0, statement: 'I am fine' }, { state: 'OK', context: 'none', concern: 'yes' }),
+    { intent: 'unclear', source: 'undecided' }));
+test('gemma uncertain stays undecided', () =>
+  assert.deepEqual(semanticCombinedDecision({ ...c0, statement: 'I am tired' }, { state: 'UNCERTAIN', context: 'fatigue', concern: 'yes' }),
+    { intent: 'unclear', source: 'undecided' }));
+test('invalid advice stays undecided', () =>
+  assert.deepEqual(semanticCombinedDecision({ ...c0, statement: 'my chest hurts' }, { state: 'CALL', context: 'other', concern: 'yes' } as never),
+    { intent: 'unclear', source: 'undecided' }));
+test('digit-only noise never escalates', () =>
+  assert.deepEqual(semanticCombinedDecision(c0, { state: 'NOT_OK', context: 'other', concern: 'yes' }),
+    { intent: 'unclear', source: 'undecided' }));
 for(const mode of ['accepted','wrong_context','ai_ok','invalid','unavailable','late'] as const) test(`mocked semantic assistance during clarification: ${mode}`,async()=>{
   const playing=deferred<void>(),generation=deferred<string>(); const spoken:string[]=[]; let n=0,attempts=0;
   const check=new VoiceCheck({cancel(){},speak:async text=>{spoken.push(text); if(text==="I didn't catch that.") await playing.promise;},
