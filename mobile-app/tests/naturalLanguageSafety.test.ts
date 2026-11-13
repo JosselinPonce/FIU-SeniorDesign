@@ -120,6 +120,23 @@ test('incomplete partial cannot request semantic inference even when its text is
   const pending=check.run('bpm_high');await tick();t.mock.timers.tick(6000);const result=await pending;assert.equal(result.outcome,'ok');assert.equal(attempts,0);
 });
 
+test('false-OK regression: headache behind a positive phrase is not_ok', () => {
+  assert.equal(understand("no I am fine but I have a headache").intent, 'not_ok');
+  assert.equal(understand("no estoy bien, me duele la cabeza").intent, 'not_ok'); // already passed? keep as pin
+  assert.equal(understand("i'm fine but i feel dizzy").intent, 'not_ok');
+});
+test('mild fatigue with positive phrase stays ok', () => {
+  assert.equal(understand("i'm okay just a bit tired").intent, 'ok');
+  assert.equal(understand("estoy bien solo un poco cansado").intent, 'ok');
+});
+test('genuine symptom idioms are not_ok', () => {
+  assert.equal(understand("I am feeling under the weather").intent, 'not_ok');
+  assert.equal(understand("my arm hurts").intent, 'not_ok');
+});
+test('hedged symptom is unclear, not not_ok', () => {
+  assert.equal(understand("maybe i feel a bit dizzy").intent, 'unclear');
+});
+
 for(const consent of [false,true])test(`Spanish semantic advice still needs independent finalized contact consent (${consent})`,async()=>{
   const gate=deferred<void>();let captures=0,attempts=0;const said:string[]=[];
   const check=new VoiceCheck({cancel(){},speak:async(s,lang)=>{assert.equal(lang,'es');said.push(s);if(s==='No te entendí.')await gate.promise;},
