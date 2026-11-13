@@ -405,6 +405,43 @@ test('reAskWaitMs is the ceiling the in-flight verdict may resolve inside', asyn
   assert.deepEqual([r.outcome, r.attempts], ['not_ok', 1]);  // the 40 ms verdict lands inside the 60 ms window
   assert.ok(!f.said.some(t => t.includes("didn't catch that")));
 });
+test('a button tap wins immediately during the bounded wait, discarding the gemma verdict', async () => {
+  const signals: AbortSignal[] = [];
+  const f = fake(['yeah just need to stretch my legs'], { listenDelay: 10 });
+  // The OK verdict lands before the tap and would clear this rules-unclear
+  // statement; the button tap must still win and the verdict must be discarded.
+  const check = new VoiceCheck(f.io, 'en', '', {
+    reAskWaitMs: 60000,
+    startSemantic: ctx => startSemantic(signal => { signals.push(signal);
+      return new Promise<string>(resolve => setTimeout(() => resolve('{"state":"OK","context":"none","concern":"no"}'), 20)); }, ctx, 5000),
+  });
+  const pending = check.run('bpm_high');
+  await new Promise(resolve => setTimeout(resolve, 40));
+  assert.equal(check.answerByButton('not_ok'), true);
+  const r = await pending;
+  assert.deepEqual([r.outcome, r.channel, r.attempts], ['not_ok', 'button', 1]);
+  assert.ok(!f.said.some(t => t.includes("didn't catch that")));   // no re-ask
+  assert.equal(signals[0].aborted, true);   // the task was cancelled without its verdict being applied
+});
+test('a typed answer wins immediately during the bounded wait, discarding the gemma verdict', async () => {
+  const signals: AbortSignal[] = [];
+  const f = fake(['yeah just need to stretch my legs'], { listenDelay: 10 });
+  let scope: { question: 'wellness' | 'contact_offer'; captureId: string } | null = null;
+  const check = new VoiceCheck(f.io, 'en', '', {
+    reAskWaitMs: 60000,
+    onQuestion: (question, captureId) => { scope = { question, captureId }; },
+    startSemantic: ctx => startSemantic(signal => { signals.push(signal);
+      return new Promise<string>(resolve => setTimeout(() => resolve('{"state":"OK","context":"none","concern":"no"}'), 20)); }, ctx, 5000),
+  });
+  const pending = check.run('bpm_high');
+  await new Promise(resolve => setTimeout(resolve, 40));
+  assert.equal(typeof scope!.captureId, 'string');
+  assert.equal(check.answerByText('no i feel dizzy', scope!), true);
+  const r = await pending;
+  assert.deepEqual([r.outcome, r.channel, r.attempts], ['not_ok', 'typed', 1]);
+  assert.ok(!f.said.some(t => t.includes("didn't catch that")));
+  assert.equal(signals[0].aborted, true);
+});
 test('never two semantic tasks in flight: the re-ask attempt opens its task only after the first is cancelled', async () => {
   let alive = 0; const events: string[] = [];
   const f = fake(['perhaps', 'perhaps']);

@@ -289,6 +289,7 @@ export class VoiceCheck {
     let statement: string | null = null;
     let semanticContext: SemanticContext | null = null;
     let semanticChannel: 'voice' | 'typed' = 'voice';
+    let manualDecided = false;
     for (const [index, prompt] of [t.ask(this.name, reason), t.again].entries()) {
       const heard = await this.ask(prompt, 'wellness', [...t.hints]);
       if ('button' in heard) {
@@ -322,34 +323,82 @@ export class VoiceCheck {
               // probe — the task is still consumed exactly once afterwards; when
               // the window expires the task is cancelled and never consumed as
               // if fresh. A task without the probe (no semantic lane) gets no
-              // wait and is consulted only after the loop, as today.
-              // Flush already-queued microtask work before any timer-based poll:
-              // a lane that resolves without timers (mock/immediate adapters)
-              // records its verdict within that drain, so the combined decision
-              // lands in the same event-loop turn as the answer itself. Each hop
-              // lets the queued prefix drain, so the cap just bounds the flush;
-              // everything slower is polled below.
-              for (let hops = 0; hops < 64 && !settled(); hops++) await Promise.resolve();
-              const ceiling = Math.max(0, this.options.reAskWaitMs ?? 2000);
-              for (let waited = 0; !settled() && waited < ceiling && !this.cancelled; waited += 50) {
-                await new Promise<void>(resolve => { setTimeout(resolve, Math.min(50, ceiling - waited)); });
-              }
-              let advice: SemanticResult | null = null;
-              try { advice = this.semanticTask?.get() ?? null; } catch { /* Conservative fallback. */ }
-              this.cancelSemantic();
-              const combined = semanticCombinedDecision(semanticContext, advice);
-              if (typeof __DEV__ !== 'undefined' && __DEV__) responsivenessProbe('warning', 'VoiceCheck semantic decision')('combined decision', { captureId: heard.captureId, question: 'wellness', outcome: combined.intent, decisionSource: combined.source, source: combined.source === 'gemma' ? 'gemma-primary' : 'fallback-deterministic' });
-              if (combined.intent !== 'unclear') {
-                result = { outcome: combined.intent, urgent: false, channel: semanticChannel, attempts: index + 1,
-                  confidence: null, contactCall: 'not_requested' };
+              // wait here and is dead before attempt 2 opens anything new.
+              // The question scope stays open and on screen during this window,
+              // so per the header contract a button tap or typed answer is still
+              // accepted for it and WINS IMMEDIATELY: the window ends at once, the
+              // in-flight verdict is cancelled and never applied.
+              const manual = new Promise<ManualAnswer>((resolve) => { this.buttonAnswer = resolve; });
+              let won: ManualAnswer | null = null;
+              manual.then(answer => { won = answer; });
+              try {
+                // Flush already-queued microtask work before any timer-based poll:
+                // a lane that resolves without timers (mock/immediate adapters)
+                // records its verdict within that drain, so the combined decision
+                // lands in the same event-loop turn as the answer itself. Each hop
+                // lets the queued prefix drain, so the cap just bounds the flush;
+                // everything slower is polled below.
+                for (let hops = 0; hops < 64 && !settled() && won === null && !this.cancelled; hops++) await Promise.resolve();
+                const ceiling = Math.max(0, this.options.reAskWaitMs ?? 2000);
+                for (let waited = 0; !settled() && waited < ceiling && !this.cancelled && won === null; waited += 50) {
+                  await Promise.race([
+                    new Promise<void>(resolve => { setTimeout(resolve, Math.min(50, ceiling - waited)); }),
+                    manual.then(answer => { won = answer; }),
+                  ]);
+                }
+              } finally { this.buttonAnswer = null; }
+              // `winner` is read fresh with an explicit annotation to defeat
+              // control-flow narrowing: `won` is only ever assigned from the
+              // manual-answer callback, so the flow thinks it can only be null.
+              const winner = won as ManualAnswer | null;
+              if (winner === null || this.cancelled || ('button' in winner && winner.button === 'cancel')) {
+                let advice: SemanticResult | null = null;
+                try { advice = this.semanticTask?.get() ?? null; } catch { /* Conservative fallback. */ }
+                this.cancelSemantic();
+                const combined = semanticCombinedDecision(semanticContext, advice);
+                if (typeof __DEV__ !== 'undefined' && __DEV__) responsivenessProbe('warning', 'VoiceCheck semantic decision')('combined decision', { captureId: heard.captureId, question: 'wellness', outcome: combined.intent, decisionSource: combined.source, source: combined.source === 'gemma' ? 'gemma-primary' : 'fallback-deterministic' });
+                if (combined.intent !== 'unclear') {
+                  result = { outcome: combined.intent, urgent: false, channel: semanticChannel, attempts: index + 1,
+                    confidence: null, contactCall: 'not_requested' };
+                }
+              } else {
+                // The tap wins; the semantic verdict is discarded without ever
+                // being read (cancel first — a consumed task can never be treated
+                // as fresh advice later).
+                this.cancelSemantic();
+                manualDecided = true;
+                let winText: string;
+                let decided: CheckResult | null;
+                if ('button' in winner) {
+                  winText = this.lang === 'es' ? winner.button === 'ok' ? 'Estoy bien' : 'No me siento bien' : winner.button === 'ok' ? "I'm OK" : "I'm not OK";
+                  decided = { outcome: winner.button === 'ok' ? 'ok' : 'not_ok', urgent: false,
+                    channel: 'button', attempts: index + 1, confidence: null, contactCall: 'not_requested' };
+                } else {
+                  const typedUnderstood = understand(winner.typed);
+                  this.emergencyServices ||= mentionsEmergencyServices(winner.typed);
+                  statement = winner.typed;
+                  winText = winner.typed;
+                  if (typedUnderstood.contactCallRequested) this.consent = { captureId: this.captureId, decision: 'explicit_request', typed: true as const };
+                  decided = typedUnderstood.intent === 'ok' || typedUnderstood.intent === 'not_ok'
+                    ? { outcome: typedUnderstood.intent, urgent: typedUnderstood.urgent, channel: 'typed', attempts: index + 1,
+                      confidence: typedUnderstood.confidence, contactCall: typedUnderstood.contactCallRequested ? 'explicit_request' : 'not_requested' }
+                    : null;   // a typed answer the rules still find unclear falls through to the re-ask
+                }
+                result = decided;
+                if (typeof __DEV__ !== 'undefined' && __DEV__ && decided) responsivenessProbe('warning', 'VoiceCheck semantic decision')('combined decision', { captureId: this.captureId, question: 'wellness', outcome: decided.outcome, source: 'pre-filter' });
+                try { this.options.onAnswer?.({ question: 'wellness', channel: decided?.channel === 'button' ? 'button' : 'typed', text: winText }); } catch { /* Presentation failure cannot alter safety decisions. */ }
               }
             }
           }
         }
       }
       if (result) {
-        if ('text' in heard && heard.final) statement = heard.text;
-        if (result.contactCall === 'explicit_request' && 'text' in heard) this.consent = { captureId: heard.captureId, decision: 'explicit_request', ...('typed' in heard ? { typed: true as const } : { evidence: heard.evidence }) };
+        if (!manualDecided) {
+          // A manual win during the wait already decided statement/consent from
+          // its own channel; the voice answer it beat must not decide instead.
+          if ('text' in heard && heard.final) statement = heard.text;
+          if (result.contactCall === 'explicit_request' && 'text' in heard) this.consent = { captureId: heard.captureId, decision: 'explicit_request', ...('typed' in heard ? { typed: true as const } : { evidence: heard.evidence }) };
+        }
         break;
       }
     }
