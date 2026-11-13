@@ -52,7 +52,7 @@ test('localized display primitives preserve raw user content, input values, call
   const exports: any = {};
   const calls: any[] = [];
   const deps: Record<string, any> = {
-    'expo/node_modules/@expo/vector-icons/Feather': { default: 'FeatherIcon' },
+    '@expo/vector-icons/Feather': { __esModule: true, default: 'FeatherIcon' },
     './ScreenHeader': { ScreenHeader: 'ScreenHeader', ScreenHeading: 'ScreenHeading' },
     '../lib/ui/profileSummary': { driverInitials: (name: string) => name[0], maskedContactPhone: (phone: string) => `••• ••• ${phone.slice(-4)}` },
     '../lib/analysis/safetyController': { contactPhone: (phone?: string) => ({phone: phone || null}) },
@@ -99,7 +99,7 @@ test('driver confirmation is explicit, preserves identity/voice language, and ca
   const source = readFileSync(new NodeURL('../components/DriverConfirmation.tsx', import.meta.url), 'utf8');
   const exports: any = {};
   const deps: Record<string, any> = {
-    'expo/node_modules/@expo/vector-icons/Feather': { default: 'FeatherIcon' },
+    '@expo/vector-icons/Feather': { __esModule: true, default: 'FeatherIcon' },
     './ScreenHeader': { ScreenHeader: 'ScreenHeader', ScreenHeading: 'ScreenHeading' },
     '../lib/ui/profileSummary': { driverInitials: (name: string) => name[0], maskedContactPhone: (phone: string) => `••• ••• ${phone.slice(-4)}` },
     react: { useRef: (value: any) => ({ current: value }) }, 'react/jsx-runtime': require('react/jsx-runtime'),
