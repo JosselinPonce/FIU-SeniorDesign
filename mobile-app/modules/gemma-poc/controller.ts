@@ -133,7 +133,7 @@ export class GemmaPoc {
       const started = Date.now();
       try { const text = await this.context.generate(prompt); if (!signal.aborted) selected = text; }
       finally { this.set({ inferenceMs: Date.now() - started }); }
-    }, 1500);
+    }, 3500); // Semantic lane needs the wider band; acknowledgment keeps 1500.
     return selected;
   }
   dispose(): Promise<void> {

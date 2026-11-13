@@ -121,6 +121,9 @@ export const gemmaPoc = new GemmaPoc({
 
 let safetyGemmaOwned = false;
 let maintenanceOwned = false;
+// Check-scoped warm lease: the model stays resident for one emergency voice
+// check only, and is unloaded the moment the lease returns to zero.
+let leaseCount = 0;
 /** Hold the existing runtime across the entire explicit repair sequence. */
 export async function withGemmaMaintenance(action: () => Promise<void>): Promise<void> {
   if (maintenanceOwned || safetyGemmaOwned || provisioner.busy || gemmaPoc.state.busy
@@ -128,6 +131,16 @@ export async function withGemmaMaintenance(action: () => Promise<void>): Promise
     throw new Error('Gemma is busy. Wait for the current operation to finish and retry.');
   maintenanceOwned = true;
   try { await action(); } finally { maintenanceOwned = false; }
+}
+/** Warm the model for one check; Task 8's check lifecycle balances this with endGemmaWarmLease. */
+export function beginGemmaWarmLease(): void {
+  leaseCount++;
+  if (!gemmaPoc.state.loaded) void gemmaPoc.load().catch(() => {});
+}
+/** Release one lease; unloading happens only when the check's last lease ends. */
+export function endGemmaWarmLease(): void {
+  leaseCount = Math.max(0, leaseCount - 1);
+  if (leaseCount === 0 && gemmaPoc.state.loaded) void gemmaPoc.dispose();
 }
 /** Event-only warm request. Never provisions or downloads a model. */
 async function eventGemma(signal: AbortSignal, language: 'en' | 'es', generate: () => Promise<string>) {
@@ -154,9 +167,13 @@ async function eventGemma(signal: AbortSignal, language: 'en' | 'es', generate: 
       signal.removeEventListener('abort', cancel);
       subscription.remove();
       try {
-        await gemmaPoc.dispose();
-        if (gemmaPoc.state.loaded || gemmaPoc.cleanupRequired || gemmaPoc.state.error)
-          throw new Error('Model cleanup did not complete; using fixed acknowledgment.');
+        // A warm lease keeps the runtime for the check's next event; only an
+        // unleased event disposes and enforces completion of that cleanup.
+        if (leaseCount === 0) {
+          await gemmaPoc.dispose();
+          if (gemmaPoc.state.loaded || gemmaPoc.cleanupRequired || gemmaPoc.state.error)
+            throw new Error('Model cleanup did not complete; using fixed acknowledgment.');
+        }
       } finally { safetyGemmaOwned = false; }
     }
   }
