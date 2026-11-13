@@ -198,7 +198,7 @@ test('maintenance lease excludes event-time Gemma without blocking mandatory gui
 });
 
 for (const mode of ['accepted','invalid','missing'] as const) test(`production phone semantic adapter during clarification (${mode}, mocked native GGUF)`, async () => {
-  const f = fixture('en',{statement:'fatigue this evening',followup:'perhaps',installed:mode!=='missing',output:mode==='invalid'?'unsafe extra prose':'{"state":"NOT_OK","context":"fatigue","concern":"yes"}'});
+  const f = fixture('en',{statement:'so tired since yesterday',followup:'perhaps',installed:mode!=='missing',output:mode==='invalid'?'unsafe extra prose':'{"state":"NOT_OK","context":"fatigue","concern":"yes"}'});
   f.guidance.resolve(); const pending=f.controller.rehearse(); await tick();
   assert.equal(f.generations,mode==='missing'?0:1); assert.equal(f.releases,mode==='missing'?0:1);
   assert.ok(f.spoken.includes("I didn't catch that.")); f.clarification.resolve();const result=await pending;

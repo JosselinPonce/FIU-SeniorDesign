@@ -1,5 +1,6 @@
 import { responsivenessProbe } from '../voice/responsivenessDiagnostics.ts';
 import { normalise, understand } from '../voice/intent.ts';
+import { symptomScan } from '../voice/symptomLexicon.ts';
 export type SemanticContext = Readonly<{ event: 'bpm_high' | 'bpm_low' | 'spo2_low'; language: 'en' | 'es'; statement: string }>;
 export type SemanticResult = Readonly<{ state: 'OK' | 'NOT_OK' | 'UNCERTAIN'; context: 'fatigue' | 'dizziness' | 'discomfort' | 'other' | 'none'; concern: 'yes' | 'no' | 'uncertain' }>;
 export function semanticEligible(c: SemanticContext): boolean {
@@ -26,13 +27,18 @@ export function validateSemantic(value: unknown): SemanticResult | null {
 }
 /** The model alone cannot clear or escalate a statement. A NOT_OK suggestion
  * needs independently recognized symptom vocabulary; all other advice clarifies. */
+const GROUNDED_CATEGORIES = {
+  fatigue: ['fatigue'], dizziness: ['dizziness'],
+  discomfort: ['pain', 'cardiovascular', 'respiratory', 'neural', 'nausea', 'other'],
+  other: ['fatigue', 'dizziness', 'cardiovascular', 'respiratory', 'neural', 'pain', 'nausea', 'other'],
+  none: [],
+} as const; // other → any lexicon category; none → never grounded
 export function semanticDecision(c: SemanticContext, v: SemanticResult | null): 'not_ok' | 'unclear' {
   if (!v || !semanticEligible(c) || v.state !== 'NOT_OK' || v.concern !== 'yes') return 'unclear';
   const t = normalise(c.statement);
   if (/\b(i don't know|i dont know|not sure|unsure|no se|no estoy segur[oa]|me siento rar[oa]|something feels off|maybe|perhaps|might|i suppose|tal vez|quizas|quiza)\b/.test(t)) return 'unclear';
-  const grounded = { fatigue: /\b(tired|sleepy|fatigue|fatiga|cansancio|exhausted|worn out|cansad[oa]|agotad[oa]|sueno)\b/,
-    dizziness: /\b(dizzy|lightheaded|maread[oa]|mareo)\b/, discomfort: /\b(unwell|sick|nause\w*|mal|dolor|debil)\b/, other: /a^/, none: /a^/ };
-  return grounded[v.context].test(t) && !/\b(not|don't|dont|no estoy|no me siento|sin)\b/.test(t) ? 'not_ok' : 'unclear';
+  const found = symptomScan(t).categories;
+  return !/\b(not|don't|dont|no estoy|no me siento|sin)\b/.test(t) && GROUNDED_CATEGORIES[v.context].some(category => found.includes(category)) ? 'not_ok' : 'unclear';
 }
 export type SemanticTask = { get(): SemanticResult | null; cancel(): void };
 export function startSemantic(generate: (signal: AbortSignal) => Promise<string>, c: SemanticContext, budget = 5000): SemanticTask {

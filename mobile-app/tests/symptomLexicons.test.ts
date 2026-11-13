@@ -26,3 +26,9 @@ test('Spanish affirmative', () => {
   assert.equal(s.kind, 'affirmative'); assert.ok(s.categories.includes('neural'));
 });
 test('Spanish negated', () => { assert.equal(symptomScan(normalise('no estoy mareado')).kind, 'negated_only'); });
+test('fatigue-word tokens in English and Spanish', () => {
+  const s = symptomScan(normalise('fatigue this evening'));
+  assert.equal(s.kind, 'affirmative'); assert.ok(s.categories.includes('fatigue'));
+  const es = symptomScan(normalise('cansancio'));
+  assert.equal(es.kind, 'affirmative'); assert.ok(es.categories.includes('fatigue'));
+});

@@ -33,7 +33,7 @@ export const HEDGES: RegExp =
 // as substrings of the normalised text. Spanish feminine/masculine endings
 // are listed out because word-boundary matching cannot truncate them.
 const LEXICON: Readonly<Record<SymptomCategory, readonly string[]>> = {
-  fatigue: ['tired', 'sleepy', 'exhausted', 'worn out', 'cansada', 'cansado', 'agotada', 'agotado', 'sueno'],
+  fatigue: ['tired', 'sleepy', 'exhausted', 'worn out', 'cansada', 'cansado', 'agotada', 'agotado', 'sueno', 'fatigue', 'fatiga', 'cansancio'],
   dizziness: ['dizzy', 'lightheaded', 'mareada', 'mareado', 'mareo'],
   cardiovascular: ['chest pain', 'chest hurts', 'heart racing', 'heart pounding', 'taquicardia', 'dolor en el pecho', 'me duele el pecho'],
   respiratory: ["can't breathe", 'cant breathe', 'short of breath', 'hard to breathe', 'no puedo respirar', 'me falta el aire'],
