@@ -1,15 +1,17 @@
 import { responsivenessProbe } from '../voice/responsivenessDiagnostics.ts';
-import { normalise, understand } from '../voice/intent.ts';
+import { normalise } from '../voice/intent.ts';
 import { symptomScan } from '../voice/symptomLexicon.ts';
 export type SemanticContext = Readonly<{ event: 'bpm_high' | 'bpm_low' | 'spo2_low'; language: 'en' | 'es'; statement: string }>;
 export type SemanticResult = Readonly<{ state: 'OK' | 'NOT_OK' | 'UNCERTAIN'; context: 'fatigue' | 'dizziness' | 'discomfort' | 'other' | 'none'; concern: 'yes' | 'no' | 'uncertain' }>;
+/** The whole rule-safe unclear band reaches the Gemma classifier. Hedged statements
+ * stay eligible (the combiner's hedge veto owns them); epistemic no-information
+ * phrasing and third-person/reported-speech statements stay excluded. */
 export function semanticEligible(c: SemanticContext): boolean {
   return ['bpm_high','bpm_low','spo2_low'].includes(c.event) && ['en','es'].includes(c.language)
-    && c.statement.length > 0 && c.statement.length <= 160 && /^[\p{L}\p{M}\s,.'’¿?¡!-]+$/u.test(c.statement)
+    && c.statement.length > 0 && c.statement.length <= 300 && /^[\p{L}\p{M}\s,.'’¿?¡!0-9-]+$/u.test(c.statement)
     && !/\b(ignore|instructions|system|prompt|call|contact|llama|llames|instrucciones|sistema)\b/i.test(c.statement)
-    && !/\b(he|she|they|someone|ella|ellos|amigo)\b/i.test(c.statement)
-    && !/\b(i don't know|i dont know|not sure|unsure|something feels off|no se|no estoy segur[oa]|me siento rar[oa]|maybe|perhaps|tal vez|quizas|quiza)\b/.test(normalise(c.statement))
-    && understand(c.statement).intent === 'unclear';
+    && !/\b(he|she|they|someone|ella|ellos|amigo|says|said|dice|dijo)\b/i.test(c.statement)
+    && !/\b(i don't know|i dont know|not sure|unsure|something feels off|no se|no estoy segur[oa]|me siento rar[oa])\b/.test(normalise(c.statement));
 }
 export function semanticPrompt(c: SemanticContext): string {
   if (!semanticEligible(c)) throw Error('Ineligible semantic context');
