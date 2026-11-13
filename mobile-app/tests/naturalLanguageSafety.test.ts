@@ -136,6 +136,9 @@ test('genuine symptom idioms are not_ok', () => {
 test('hedged symptom is unclear, not not_ok', () => {
   assert.equal(understand("maybe i feel a bit dizzy").intent, 'unclear');
 });
+test('a hedge survives negation stripping and never resolves to ok', () => {
+  assert.equal(understand("i am not dizzy i don't know i'm fine").intent, 'unclear');
+});
 
 for(const consent of [false,true])test(`Spanish semantic advice still needs independent finalized contact consent (${consent})`,async()=>{
   const gate=deferred<void>();let captures=0,attempts=0;const said:string[]=[];

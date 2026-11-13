@@ -25,7 +25,7 @@ export function wellnessLanguage(t: string, original = t): { intent: 'ok' | 'not
   const hedged = HEDGES.test(t);
   const mildFatigue = !hedged && scan.kind === 'affirmative' && scan.categories.length === 1
     && scan.categories[0] === 'fatigue' && /\b(?:just a little|just a bit|only a little|solo|solamente)\b/.test(affirmed);
-  const okAllowed = scan.kind === 'none' || mildFatigue;
+  const okAllowed = !hedged && (scan.kind === 'none' || mildFatigue);
   if (!hedged) {
     if (unsafe.test(affirmed)) return { intent: 'not_ok', context: /dizzy|lightheaded|mare/.test(affirmed) ? 'dizziness' : 'fatigue' };
     if (/\b(weak|sick|nauseous|pain|numb|blurry|shaking|sweating|racing|pounding|mal|dolor|debil)\b/.test(affirmed)) return { intent: 'not_ok', context: 'discomfort' };
