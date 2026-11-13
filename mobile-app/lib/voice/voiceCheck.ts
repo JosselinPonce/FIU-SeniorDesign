@@ -6,7 +6,10 @@
  *     ok      → reassure, done (outcome ok)
  *     not_ok  → safety instructions, then offer a saved-contact phone handoff
  *     explicit contact request → skip the offer; caller handles the handoff
- *     unclear or silence → ask once more, simpler → listen (6 s)
+ *     unclear → the on-device Gemma classifier gets one bounded window
+ *       (reAskWaitMs, default 2000 ms) to resolve the answer (its verdict is
+ *       combined with the deterministic vetoes, never with consent state) →
+ *       resolved, or ask once more, simpler → listen (6 s)
  *       ok / not_ok as above; still unclear or silent → no_response
  *
  * No response is treated like "not okay" by the caller (proposal: escalate
@@ -21,7 +24,7 @@
  * the dialogue policy is unit-tested without a device (tests/voiceCheck.test.ts).
  * Transcripts are used in memory only and never stored.
  */
-import { semanticDecision, semanticEligible, type SemanticTask, type SemanticContext, type SemanticResult } from '../assistant/safetySemantic.ts';
+import { semanticCombinedDecision, semanticEligible, type SemanticTask, type SemanticContext, type SemanticResult } from '../assistant/safetySemantic.ts';
 import { completeSafetyResponsePlan, promptSentences, safetyGuidancePlan } from './responsePlan.ts';
 import { understand, understandCallAnswer, mentionsEmergencyServices } from './intent.ts';
 
@@ -125,10 +128,10 @@ export class VoiceCheck {
   private readonly io: VoiceIO;
   private readonly lang: Lang;
   private readonly name: string;
-  private readonly options: { startSemantic?: (context: SemanticContext) => SemanticTask; contactAvailable?: boolean; onQuestion?: (q: CheckQuestion, captureId: string) => void; onAnswer?: (answer: AcceptedSafetyAnswer) => void; cancelAcknowledgment?: () => void; startAcknowledgment?: (context: AcknowledgmentContext) => void; acknowledgment?: (context: AcknowledgmentContext) => string; contactName?: string };
+  private readonly options: { startSemantic?: (context: SemanticContext) => SemanticTask; reAskWaitMs?: number; contactAvailable?: boolean; onQuestion?: (q: CheckQuestion, captureId: string) => void; onAnswer?: (answer: AcceptedSafetyAnswer) => void; cancelAcknowledgment?: () => void; startAcknowledgment?: (context: AcknowledgmentContext) => void; acknowledgment?: (context: AcknowledgmentContext) => string; contactName?: string };
 
   constructor(io: VoiceIO, lang: Lang, name: string,
-    options: { startSemantic?: (context: SemanticContext) => SemanticTask; contactAvailable?: boolean; onQuestion?: (q: CheckQuestion, captureId: string) => void; onAnswer?: (answer: AcceptedSafetyAnswer) => void; cancelAcknowledgment?: () => void; startAcknowledgment?: (context: AcknowledgmentContext) => void; acknowledgment?: (context: AcknowledgmentContext) => string; contactName?: string } = {}) {
+    options: { startSemantic?: (context: SemanticContext) => SemanticTask; reAskWaitMs?: number; contactAvailable?: boolean; onQuestion?: (q: CheckQuestion, captureId: string) => void; onAnswer?: (answer: AcceptedSafetyAnswer) => void; cancelAcknowledgment?: () => void; startAcknowledgment?: (context: AcknowledgmentContext) => void; acknowledgment?: (context: AcknowledgmentContext) => string; contactName?: string } = {}) {
     this.io = io;
     this.lang = lang;
     this.name = name;
@@ -296,19 +299,52 @@ export class VoiceCheck {
         const u = understand(heard.text);
         if (typeof __DEV__ !== 'undefined' && __DEV__) responsivenessProbe('warning', 'VoiceCheck semantic eligibility')('eligibility', { captureId: heard.captureId, question: 'wellness', usable: !!heard.final && !!heard.text && semanticEligible({ event: reason, language: this.lang, statement: heard.text }), outcome: u.intent });
         responsivenessProbe('warning', 'VoiceCheck interpretation')('wellness interpreted', { captureId: heard.captureId, question: 'wellness', outcome: u.intent, hasText: !!heard.text });
-        if (heard.final && u.intent === 'unclear') {
-          this.noteIssue('ambiguous');
-          if (index === 0 && heard.text && this.options.startSemantic) {
-            const c: SemanticContext = Object.freeze({ event: reason, language: this.lang, statement: heard.text });
-            if (semanticEligible(c)) {
-              semanticContext = c; semanticChannel = 'typed' in heard ? 'typed' : 'voice';
-              try { this.semanticTask = this.options.startSemantic(c); } catch { /* Clarification is unchanged. */ }
-            }
-          }
-        }
         if (u.intent === 'ok' || u.intent === 'not_ok') {
+          // Pre-filters keep deciding instantly: no semantic task, no waiting.
           result = { outcome: u.intent, urgent: u.urgent, channel: 'typed' in heard ? 'typed' : 'voice', attempts: index + 1,
             confidence: u.confidence, contactCall: u.contactCallRequested && heard.final ? 'explicit_request' : 'not_requested' };
+          if (typeof __DEV__ !== 'undefined' && __DEV__) responsivenessProbe('warning', 'VoiceCheck semantic decision')('combined decision', { captureId: heard.captureId, question: 'wellness', outcome: u.intent, source: 'pre-filter' });
+        } else if (heard.final && heard.text && u.intent === 'unclear') {
+          this.noteIssue('ambiguous');
+          semanticContext = Object.freeze({ event: reason, language: this.lang, statement: heard.text });
+          semanticChannel = 'typed' in heard ? 'typed' : 'voice';
+          // Never two semantic tasks in flight: the previous attempt's task is
+          // consumed or cancelled before this attempt's task starts.
+          this.cancelSemantic();
+          if (semanticEligible(semanticContext)) {
+            try { this.semanticTask = this.options.startSemantic?.(semanticContext) ?? null; } catch { /* Clarification is unchanged. */ }
+            const task = this.semanticTask;
+            const settled = task?.settled;
+            if (settled && index === 0) {
+              // Bounded pre-re-ask window: the in-flight classification gets one
+              // bounded chance (reAskWaitMs, default 2000 ms) to land before the
+              // simpler second question plays. settled() is a non-destructive
+              // probe — the task is still consumed exactly once afterwards; when
+              // the window expires the task is cancelled and never consumed as
+              // if fresh. A task without the probe (no semantic lane) gets no
+              // wait and is consulted only after the loop, as today.
+              // Flush already-queued microtask work before any timer-based poll:
+              // a lane that resolves without timers (mock/immediate adapters)
+              // records its verdict within that drain, so the combined decision
+              // lands in the same event-loop turn as the answer itself. Each hop
+              // lets the queued prefix drain, so the cap just bounds the flush;
+              // everything slower is polled below.
+              for (let hops = 0; hops < 64 && !settled(); hops++) await Promise.resolve();
+              const ceiling = Math.max(0, this.options.reAskWaitMs ?? 2000);
+              for (let waited = 0; !settled() && waited < ceiling && !this.cancelled; waited += 50) {
+                await new Promise<void>(resolve => { setTimeout(resolve, Math.min(50, ceiling - waited)); });
+              }
+              let advice: SemanticResult | null = null;
+              try { advice = this.semanticTask?.get() ?? null; } catch { /* Conservative fallback. */ }
+              this.cancelSemantic();
+              const combined = semanticCombinedDecision(semanticContext, advice);
+              if (typeof __DEV__ !== 'undefined' && __DEV__) responsivenessProbe('warning', 'VoiceCheck semantic decision')('combined decision', { captureId: heard.captureId, question: 'wellness', outcome: combined.intent, decisionSource: combined.source, source: combined.source === 'gemma' ? 'gemma-primary' : 'fallback-deterministic' });
+              if (combined.intent !== 'unclear') {
+                result = { outcome: combined.intent, urgent: false, channel: semanticChannel, attempts: index + 1,
+                  confidence: null, contactCall: 'not_requested' };
+              }
+            }
+          }
         }
       }
       if (result) {
@@ -317,14 +353,21 @@ export class VoiceCheck {
         break;
       }
     }
-    if (!result && semanticContext) {
+    if (!result && this.semanticTask) {
+      // The dialogue ended unresolved with the last attempt's task alive: it is
+      // consumed exactly once. Cancellation first marks any still-in-flight
+      // value stale; get() is then the single consultation and its settled
+      // value is used only when one exists — unresolved stays today's path.
       let advice: SemanticResult | null = null;
-      let decision: 'not_ok' | 'unclear' = 'unclear';
-      try { advice = this.semanticTask?.get() ?? null; decision = semanticDecision(semanticContext, advice); } catch { /* Existing conservative fallback. */ }
-      if (typeof __DEV__ !== 'undefined' && __DEV__) responsivenessProbe('warning', 'VoiceCheck semantic decision')('application decision', { captureId: this.captureId, outcome: decision, source: advice ? 'gemma' : 'fallback', reason: !advice ? 'unavailable_or_not_ready' : decision === 'not_ok' ? 'grounded_caution' : 'advice_not_sufficient' });
-      if (decision === 'not_ok') {
-        result = { outcome: 'not_ok', urgent: false, channel: semanticChannel, attempts: 2, confidence: null, contactCall: 'not_requested' };
-        statement = semanticContext.statement;
+      const task = this.semanticTask;
+      this.semanticTask = null;
+      try { task.cancel(); } catch { /* Advisory cleanup cannot alter safety. */ }
+      try { advice = task.get() ?? null; } catch { /* Conservative fallback. */ }
+      const combined = semanticCombinedDecision(semanticContext!, advice);
+      if (typeof __DEV__ !== 'undefined' && __DEV__) responsivenessProbe('warning', 'VoiceCheck semantic decision')('combined decision', { captureId: this.captureId, question: 'wellness', outcome: combined.intent, decisionSource: combined.source, source: combined.source === 'gemma' ? 'gemma-primary' : 'fallback-deterministic' });
+      if (combined.intent !== 'unclear') {
+        result = { outcome: combined.intent, urgent: false, channel: semanticChannel, attempts: 2, confidence: null, contactCall: 'not_requested' };
+        statement = semanticContext!.statement;
       }
     }
     this.cancelSemantic();

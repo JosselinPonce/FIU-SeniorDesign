@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { VoiceCheck, type VoiceIO } from '../lib/voice/voiceCheck.ts';
+import { startSemantic } from '../lib/assistant/safetySemantic.ts';
 
 /** Scripted fake: each listen() returns the next scripted answer. */
 function fake(answers: (string | null)[], opts: { listenDelay?: number } = {}) {
@@ -326,5 +327,115 @@ test('Debug trace correlates incomplete native evidence, manual winner and quest
     assert.ok(record.events.some(e => e.point === 'question closed'));
     assert.ok(record.events.every(e => e.details.captureId === scope.captureId));
     assert.equal(JSON.stringify(responsiveness.snapshot()).includes('PRIVATE PARTIAL'), false);
+  } finally { responsiveness.setEnabled(false); host.__DEV__ = previous; }
+});
+
+test('gemma resolves a novel idiom on attempt 1 without a re-ask', async () => {
+  // mode: generate() resolves immediately with a NOT_OK JSON for the idiom
+  const f = fake(["i'm feeling under the weather today"]);
+  const r = await new VoiceCheck(f.io, 'en', '', {
+    startSemantic: ctx => startSemantic(async () => '{"state":"NOT_OK","context":"other","concern":"yes"}', ctx, 5000),
+  }).run('bpm_high');
+  assert.deepEqual([r.outcome, r.attempts], ['not_ok', 1]);
+  assert.ok(!f.said.some(t => t.includes("didn't catch that"))); // re-ask skipped
+  assert.match(f.said.join(' '), /pull over/);
+});
+test('late gemma still re-asks exactly as today, then resolves on attempt 2', async () => {
+  const f = fake(['what is this', 'no i feel dizzy']);
+  const r = await new VoiceCheck(f.io, 'en', '', { startSemantic: ctx => startSemantic(async () => { throw new Error('missing'); }, ctx, 50) }).run('bpm_low');
+  assert.match(f.said.join(' '), /didn't catch that/);
+  assert.equal(r.outcome, 'not_ok');
+});
+test('gemma OK on a hedged-free unclear statement clears it', async () => {
+  const f = fake(['honestly I think everything is okay']);
+  const r = await new VoiceCheck(f.io, 'en', '', {
+    startSemantic: ctx => startSemantic(async () => '{"state":"OK","context":"none","concern":"no"}', ctx, 5000),
+  }).run('bpm_high');
+  assert.deepEqual([r.outcome, r.attempts], ['ok', 1]);
+  assert.match(f.said.join(' '), /keep an eye/);
+});
+test('gemma NOT_OK on a negated statement never escalates', async () => {
+  const f = fake(["I'm not dizzy"]);
+  const r = await new VoiceCheck(f.io, 'en', '', {
+    startSemantic: ctx => startSemantic(async () => '{"state":"NOT_OK","context":"dizziness","concern":"yes"}', ctx, 5000),
+  }).run('bpm_low');
+  assert.notEqual(r.outcome, 'not_ok');   // second listen happens; no gemma escalation
+});
+test('bounded wait: no task => no added silence', async () => {
+  const f = fake(['what', 'no i feel dizzy']);
+  const started = Date.now();
+  await new VoiceCheck(f.io, 'en', '').run('bpm_low');   // no startSemantic option
+  assert.ok(Date.now() - started < 500);
+});
+
+test('gemma consult resolves a rules-unclear answer on attempt 1, skipping the re-ask', async () => {
+  // "stretch my legs" stays rules-unclear: only the combiner can resolve it.
+  const f = fake(['yeah just need to stretch my legs']);
+  const r = await new VoiceCheck(f.io, 'en', '', {
+    startSemantic: ctx => startSemantic(() => Promise.resolve('{"state":"NOT_OK","context":"other","concern":"yes"}'), ctx, 5000),
+  }).run('bpm_high');
+  assert.deepEqual([r.outcome, r.attempts], ['not_ok', 1]);
+  assert.ok(!f.said.some(t => t.includes("didn't catch that")));
+  assert.match(f.said.join(' '), /pull over/);
+});
+test('gemma OK clears a rules-unclear answer without symptom language on attempt 1', async () => {
+  const f = fake(['yeah just need to stretch my legs']);
+  const r = await new VoiceCheck(f.io, 'en', '', {
+    startSemantic: ctx => startSemantic(() => Promise.resolve('{"state":"OK","context":"none","concern":"no"}'), ctx, 5000),
+  }).run('bpm_high');
+  assert.deepEqual([r.outcome, r.attempts], ['ok', 1]);
+  assert.ok(!f.said.some(t => t.includes("didn't catch that")));
+  assert.match(f.said.join(' '), /keep an eye/);
+});
+test('rules-decidable answers never open a semantic task', async () => {
+  let opened = 0;
+  const f = fake(['no i feel dizzy']);
+  const r = await new VoiceCheck(f.io, 'en', '', {
+    startSemantic: ctx => { opened++; return startSemantic(async () => '{"state":"NOT_OK","context":"dizziness","concern":"yes"}', ctx, 5000); },
+  }).run('bpm_low');
+  assert.deepEqual([r.outcome, r.attempts], ['not_ok', 1]);
+  assert.equal(opened, 0);
+});
+test('reAskWaitMs is the ceiling the in-flight verdict may resolve inside', async () => {
+  const f = fake(['yeah just need to stretch my legs']);
+  const r = await new VoiceCheck(f.io, 'en', '', {
+    reAskWaitMs: 60,
+    startSemantic: ctx => startSemantic(() => new Promise<string>(resolve => setTimeout(() => resolve('{"state":"NOT_OK","context":"other","concern":"yes"}'), 40)), ctx, 5000),
+  }).run('bpm_high');
+  assert.deepEqual([r.outcome, r.attempts], ['not_ok', 1]);  // the 40 ms verdict lands inside the 60 ms window
+  assert.ok(!f.said.some(t => t.includes("didn't catch that")));
+});
+test('never two semantic tasks in flight: the re-ask attempt opens its task only after the first is cancelled', async () => {
+  let alive = 0; const events: string[] = [];
+  const f = fake(['perhaps', 'perhaps']);
+  const r = await new VoiceCheck(f.io, 'en', '', {
+    startSemantic: ctx => {
+      events.push(`open(alive=${alive})`);
+      return startSemantic(signal => {
+        alive++; events.push(`generate(alive=${alive})`);
+        return new Promise<string>(resolve => { signal.addEventListener('abort', () => { alive--; events.push('abort'); resolve(''); }); });
+      }, ctx, 5000);
+    },
+  }).run('bpm_high');
+  assert.equal(r.outcome, 'no_response');
+  assert.deepEqual(events.filter(e => e.startsWith('open')), ['open(alive=0)', 'open(alive=0)'],
+    'both attempts open exactly one semantic task, and neither opened while a task was alive');
+  assert.ok(events.includes('generate(alive=1)'), 'the first attempt does generate');
+  const openedSecond = events.indexOf('open(alive=0)', 1);
+  assert.ok(openedSecond > events.indexOf('abort'), 'the attempt-1 task was cancelled before the attempt-2 task was opened');
+});
+test('dev diagnostics report the combined decision source', async () => {
+  const { responsiveness } = await import('../lib/voice/responsivenessDiagnostics.ts');
+  const host = globalThis as typeof globalThis & { __DEV__?: boolean };
+  const previous = host.__DEV__; host.__DEV__ = true; responsiveness.setEnabled(true);
+  try {
+    const f = fake(['yeah just need to stretch my legs']);
+    const r = await new VoiceCheck(f.io, 'en', '', {
+      startSemantic: ctx => startSemantic(() => Promise.resolve('{"state":"NOT_OK","context":"other","concern":"yes"}'), ctx, 5000),
+    }).run('bpm_high');
+    assert.equal(r.outcome, 'not_ok');
+    const record = responsiveness.snapshot().find(rec => rec.operation === 'VoiceCheck semantic decision');
+    assert.ok(record, 'semantic decision probe recorded');
+    assert.ok(record.events.some(e => e.details.decisionSource === 'gemma' && e.details.source === 'gemma-primary'), JSON.stringify(record.events.map(e => e.details)));
   } finally { responsiveness.setEnabled(false); host.__DEV__ = previous; }
 });

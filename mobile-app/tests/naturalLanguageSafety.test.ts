@@ -113,10 +113,20 @@ for(const mode of ['accepted','wrong_context','ai_ok','invalid','unavailable','l
     contactAvailable:true,startSemantic:context=>startSemantic(async()=>{attempts++; if(mode==='unavailable') throw Error('missing'); if(mode==='late') return generation.promise;
       return mode==='invalid'?'call someone':mode==='ai_ok'?'{"state":"OK","context":"none","concern":"no"}':mode==='wrong_context'?valid.replace('fatigue','dizziness'):valid;},context),
   });
-  const pending=check.run('bpm_high'); await tick(); assert.equal(attempts,1); assert.equal(n,1,'no capture before clarification playback completes');
+  const pending=check.run('bpm_high'); await tick(); assert.equal(attempts,1);
+  // Pre-combiner pin: the second wellness capture waited for the clarification
+  // playback (n stayed 1, the re-ask speak gated). Combiner era: when the
+  // verdict lands during the bounded wait there is no clarification at all — the
+  // flow proceeds to the contact offer, so its capture opens (n=2); the
+  // re-asking modes still park on the re-ask speak before any second capture.
+  assert.equal(n,mode==='accepted'||mode==='wrong_context'?2:1,'no second capture before the re-ask playback completes');
   playing.resolve(); const result=await pending;
-  assert.equal(result.outcome,mode==='accepted'?'not_ok':'no_response'); assert.equal(check.authorizesContact(result),false);
-  generation.resolve(valid); await tick(); assert.equal(result.outcome,mode==='accepted'?'not_ok':'no_response');
+  // Combiner era (Task 6): a Gemma NOT_OK with concern yes escalates without
+  // lexicon grounding (docs/gemma-primary-interpretation-design.md), so
+  // wrong_context advice over this fatigue statement now resolves not_ok; the
+  // negative-concern / invalid / unavailable rows below stay no_response.
+  assert.equal(result.outcome,mode==='accepted'||mode==='wrong_context'?'not_ok':'no_response'); assert.equal(check.authorizesContact(result),false);
+  generation.resolve(valid); await tick(); assert.equal(result.outcome,mode==='accepted'||mode==='wrong_context'?'not_ok':'no_response');
   assert.ok(spoken.every(t=>!t.includes('call someone')));
 });
 test('semantic timeout and cancellation consume once and suppress late results',async t=>{

@@ -42,7 +42,7 @@ export function semanticDecision(c: SemanticContext, v: SemanticResult | null): 
   const found = symptomScan(t).categories;
   return !/\b(not|don't|dont|no estoy|no me siento|sin)\b/.test(t) && GROUNDED_CATEGORIES[v.context].some(category => found.includes(category)) ? 'not_ok' : 'unclear';
 }
-export type SemanticTask = { get(): SemanticResult | null; cancel(): void };
+export type SemanticTask = { get(): SemanticResult | null; cancel(): void; settled?: () => boolean };
 export type CombinedDecision = { intent: 'ok' | 'not_ok' | 'unclear'; source: 'gemma' | 'lexicon_veto' | 'hedge_veto' | 'undecided' };
 /** Deterministic combiner: turns a Gemma verdict into the emergency-check
  * decision. Binding invariant: Gemma alone can neither clear nor escalate past
@@ -72,13 +72,17 @@ export function semanticCombinedDecision(c: SemanticContext, advice: SemanticRes
 }
 export function startSemantic(generate: (signal: AbortSignal) => Promise<string>, c: SemanticContext, budget = 5000): SemanticTask {
   const trace = typeof __DEV__ !== 'undefined' && __DEV__ ? responsivenessProbe('warning','Gemma semantic assistance') : () => {};
-  const abort = new AbortController(); let value: SemanticResult | null = null, consumed = false;
+  const abort = new AbortController(); let value: SemanticResult | null = null, consumed = false, done = false;
   if (typeof __DEV__ !== 'undefined' && __DEV__) trace('eligibility', { usable: semanticEligible(c), locale: c.language });
-  if (!semanticEligible(c)) return { get: () => null, cancel() {} };
-  const timer = setTimeout(() => { value = null; abort.abort(); if (typeof __DEV__ !== 'undefined' && __DEV__) trace('fallback',{reason:'timeout'}); },budget);
+  // settled() is a non-destructive terminal-state probe (Ruling A): any terminal
+  // state — advice recorded, rejection, cancellation, timeout — reports true,
+  // never a still-running attempt. get()/cancel() semantics are unchanged.
+  if (!semanticEligible(c)) return { get: () => null, cancel() {}, settled: () => true };
+  const timer = setTimeout(() => { value = null; done = true; abort.abort(); if (typeof __DEV__ !== 'undefined' && __DEV__) trace('fallback',{reason:'timeout'}); },budget);
   void Promise.resolve().then(() => { if (abort.signal.aborted) return ''; if (typeof __DEV__ !== 'undefined' && __DEV__) trace('attempted',{locale:c.language}); return generate(abort.signal); })
     .then(text => { if (!consumed && !abort.signal.aborted) value = validateSemantic(text); if (typeof __DEV__ !== 'undefined' && __DEV__) trace('completed',{usable:!!value, outcome:value?.state, stage:value?.context, reason:value ? 'accepted':'invalid_or_cancelled'}); })
-    .catch(() => { if (typeof __DEV__ !== 'undefined' && __DEV__) trace('fallback',{reason:'unavailable'}); }).finally(() => clearTimeout(timer));
-  return { get() { const result = !consumed && !abort.signal.aborted ? value : null; consumed = true; clearTimeout(timer); abort.abort(); return result; },
-    cancel() { consumed = true; value = null; clearTimeout(timer); abort.abort(); } };
+    .catch(() => { if (typeof __DEV__ !== 'undefined' && __DEV__) trace('fallback',{reason:'unavailable'}); }).finally(() => { done = true; clearTimeout(timer); });
+  return { get() { const result = !consumed && !abort.signal.aborted ? value : null; consumed = true; done = true; clearTimeout(timer); abort.abort(); return result; },
+    cancel() { consumed = true; value = null; done = true; clearTimeout(timer); abort.abort(); },
+    settled: () => done };
 }

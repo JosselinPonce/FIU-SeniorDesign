@@ -14,6 +14,7 @@ export type TimingDetails = {
   isFinal?: boolean; hasText?: boolean; finalResultReceived?: boolean; hasFinalTranscript?: boolean;
   reason?: string; status?: string; endpointReason?: string; nativeMs?: number; listeningMs?: number;
   preparationMs?: number; finalizingMs?: number; firstPartialMs?: number | null;
+  decisionSource?: string;
 };
 export type TimingRecord = {
   id: number; lane: 'warning' | 'assistant'; operation: string; startedMs: number;
