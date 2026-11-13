@@ -115,9 +115,14 @@ transcribes any speech. The fix target is interpretation.
 3. **Gemma classification (primary for the unclear band):** every statement the
    deterministic layers leave `unclear` — including hedged and borderline ones —
    runs `generateSafetySemantic` with the existing prompt/contract
-   (`state/context/concern` JSON, strict `validateSemantic`). Started as soon
-   as a usable final transcript exists, for **both** attempts (today it starts
-   only after attempt 0 is unclear).
+   (`state/context/concern` JSON, strict `validateSemantic`). The consult
+   applies to the first unclear answer only: it starts as soon as a usable
+   final transcript exists for that answer, and its verdict resolves inside the
+   bounded re-ask wait; attempt-2 (re-asked) answers keep today's deterministic
+   path. Known tension (review minor 8): the useful Gemma window is therefore
+   capped by the 2 s `reAskWaitMs` — the 3500 ms native deadline leaves
+   validation headroom, and verdicts landing in the 2–3.5 s band are cancelled
+   at wait expiry.
 4. **Combiner (new module, replaces `semanticDecision` as the Gemma-side
    decision):**
    - Gemma `NOT_OK` + `concern: yes`, statement not negated/hedged
@@ -141,7 +146,7 @@ transcribes any speech. The fix target is interpretation.
    starts only if a Gemma task is actually running — a missing/failed model
    re-asks immediately, with no added silence). If the verdict lands, it is
    applied and the re-ask is skipped; otherwise the re-ask plays as today and
-   the attempt-0 task is cancelled before attempt 1's task starts.
+   the attempt-0 task is cancelled (attempt 1 opens no consult of its own).
 7. **Post-decision behavior (unchanged):** ok → reassure (+ `learnFromOk`);
    not_ok → mandatory guidance + acknowledgment + contact offer; no_response →
    classified failure message + not_ok guidance. Gemma output never touches
@@ -156,8 +161,9 @@ transcribes any speech. The fix target is interpretation.
   change to the Gemma lifecycle; provisioning/ downloading (the provider non-
   goal) is untouched, and the model is still never resident across drives.
 - **One operation at a time (hardware constraint, `GemmaPoc`):** attempt-0's
-  semantic task is always consumed or cancelled before attempt-1's task
-  starts; no two concurrent `eventGemma` calls are ever issued from the check.
+  semantic task is always consumed or cancelled inside its bounded wait, and
+  attempt 1 opens no task; no two concurrent `eventGemma` calls are ever
+  issued from the check.
 - **Deadlines:** the semantic path's native deadline in
   `gemma-poc/controller.ts` (`generateSafetySemantic`, hard-coded 1500 ms)
   rises to **3500 ms** within the existing 5 s `startSemantic` JS budget,
@@ -252,8 +258,10 @@ fallback; it is not a substitute for stage 2.
   posture) combination, assert the decision. Including: Gemma OK with an
   affirmative symptom token → not OK; Gemma NOT_OK on a negated statement →
   re-ask path; Gemma NOT_OK on hedged statement → re-ask path.
-- **Sequencing:** attempt-0 task is consumed/cancelled before attempt-1 starts
-  (no concurrent Gemma events); warm-load kicked at check start and disposed
+- **Sequencing:** only the first unclear answer opens a consult — attempt-0's
+  task is consumed or cancelled inside its bounded wait, and attempt 1 opens
+  none (no concurrent Gemma events); warm-load kicked at check start and
+  disposed
   at teardown; semantic native deadline raised to 3500 ms with the
   acknowledgment lane untouched.
 - **Bounded wait:** a settled attempt-0 verdict skips the re-ask; the 2 s

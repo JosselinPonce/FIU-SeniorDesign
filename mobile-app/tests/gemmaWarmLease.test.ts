@@ -84,6 +84,31 @@ test('ending without a lease stays at zero and keeps the no-lease cleanup behavi
   assert.deepEqual(f.counts(), { inits: 1, releases: 1, generations: 1 }, 'the lease count never goes negative');
 });
 
+test('a lease that ends before the cold load settles chains exactly one dispose after settle', async () => {
+  const f = harness();
+  f.exports.beginGemmaWarmLease();
+  f.exports.endGemmaWarmLease();   // the tap inside the first spoken sentence ends the check before SHA-256/init completes
+  assert.equal(f.counts().releases, 0, 'the load is still pending, so end cannot dispose yet');
+  assert.equal(await settle(() => f.counts().inits === 1), true, 'the in-flight load still completes');
+  assert.equal(await settle(() => f.counts().releases === 1), true, 'the chained dispose runs after the load settles');
+  await tick(); await tick();
+  assert.equal(f.counts().releases, 1, 'exactly one dispose');
+  assert.equal(f.poc.state.loaded, false, 'the model does not stay resident across drives');
+});
+test('begin, end, begin: the fresh lease reuses the pending load and still releases exactly once', async () => {
+  const f = harness();
+  f.exports.beginGemmaWarmLease();
+  f.exports.endGemmaWarmLease();
+  f.exports.beginGemmaWarmLease();   // new lease while the first load is still pending
+  assert.equal(await settle(() => f.poc.state.loaded), true);
+  assert.equal(f.counts().inits, 1, 'a pending load is reused, never restarted');
+  f.exports.endGemmaWarmLease();     // the second end comes after the load settles
+  assert.equal(await settle(() => f.counts().releases === 1), true);
+  await tick(); await tick();
+  assert.equal(f.counts().releases, 1, 'no double dispose with the fresh lease');
+  assert.equal(f.poc.state.loaded, false);
+});
+
 test('semantic deadline is 3500ms, acknowledgment stays 1500ms', () => {
   const src = readFileSync(new NodeURL('../modules/gemma-poc/controller.ts', import.meta.url), 'utf8');
   // The acknowledgment body is 639 chars from signature to its call site, so the

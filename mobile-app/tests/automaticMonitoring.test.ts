@@ -12,12 +12,12 @@ function frame(seq: number, heartRate = 155): Frame {
   return { version: 3, seq, rateHz: 0, quality: 90, startMs: seq * 1000, endMs: (seq + 1) * 1000,
     heartRate, spo2: 98, flags: 15, samples: [], finger: true, usable: true, raw: new Uint8Array() };
 }
-function fixture(warm: 'ok' | 'throw' = 'ok') {
+function fixture(warm: 'ok' | 'throw' = 'ok', mode: 'local' | 'core' = 'local') {
   let state: SafetyState = initialSafety, n = 0, inference = 0, inferenceCancelled = 0;
   let final: ((text: string) => void) | null = null;
   let partial: ((text: string) => void) | null = null;
   const saved: any[] = [], calls: string[] = [], speech: string[] = [], events: string[] = [];
-  const c = new SafetyController({ assistantMode: () => 'local',
+  const c = new SafetyController({ assistantMode: () => mode,
     startAcknowledgment: () => { inference++; return { get: () => "I'm sorry you're feeling dizzy.", source: 'gemma', cancel() { inferenceCancelled++; } }; },
     beginGemmaWarm: () => { events.push('begin'); if (warm === 'throw') throw new Error('Gemma is down'); },
     endGemmaWarm: () => { events.push('end'); },
@@ -187,6 +187,16 @@ test('a throwing gemma warm never starts a lease and never blocks the check', as
   await rehearseOnce(f);
   assert.equal(f.events.includes('end'), true, 'teardown still releases exactly once');
   assert.equal(f.events.filter(event => event === 'end').length, 1);
+  assert.equal(f.state.last?.simulation, true);
+  assert.deepEqual(f.saved, []);
+});
+
+test('core mode never begins the gemma warm lease; teardown still ends its no-op lease once', async () => {
+  const f = fixture('ok', 'core');   // selected === 'core' never opens a consult or acknowledgment
+  await rehearseOnce(f);
+  assert.equal(f.events.includes('begin'), false, 'core mode must not cold-load a model that never generates a token');
+  assert.equal(f.events.filter(event => event === 'end').length, 1, 'the unconditional end still fires exactly once');
+  assert.equal(f.state.last?.result.outcome, 'not_ok');
   assert.equal(f.state.last?.simulation, true);
   assert.deepEqual(f.saved, []);
 });

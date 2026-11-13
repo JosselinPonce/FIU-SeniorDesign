@@ -124,6 +124,11 @@ let maintenanceOwned = false;
 // Check-scoped warm lease: the model stays resident for one emergency voice
 // check only, and is unloaded the moment the lease returns to zero.
 let leaseCount = 0;
+// The cold load a lease started (when cold). A check that ends before the load
+// settles must not leave the model resident with zero leases, so
+// endGemmaWarmLease chains the dispose onto this promise; leases opened while
+// the load is still in flight reuse it instead of starting a second runtime.
+let pendingLeaseLoad: Promise<void> | null = null;
 /** Hold the existing runtime across the entire explicit repair sequence. */
 export async function withGemmaMaintenance(action: () => Promise<void>): Promise<void> {
   if (maintenanceOwned || safetyGemmaOwned || provisioner.busy || gemmaPoc.state.busy
@@ -135,12 +140,28 @@ export async function withGemmaMaintenance(action: () => Promise<void>): Promise
 /** Warm the model for one check; Task 8's check lifecycle balances this with endGemmaWarmLease. */
 export function beginGemmaWarmLease(): void {
   leaseCount++;
-  if (!gemmaPoc.state.loaded) void gemmaPoc.load().catch(() => {});
+  if (!gemmaPoc.state.loaded && !pendingLeaseLoad) {
+    const load = gemmaPoc.load().catch(() => {});
+    pendingLeaseLoad = load;
+    // Only the settled promise itself clears the capture, so any lease that
+    // began while it was in flight keeps pointing at the same load.
+    void load.finally(() => { if (pendingLeaseLoad === load) pendingLeaseLoad = null; });
+  }
 }
-/** Release one lease; unloading happens only when the check's last lease ends. */
+/** Release one lease; unloading happens only when the check's last lease ends,
+ * including one that ended before its cold load had finished loading. */
 export function endGemmaWarmLease(): void {
   leaseCount = Math.max(0, leaseCount - 1);
-  if (leaseCount === 0 && gemmaPoc.state.loaded) void gemmaPoc.dispose();
+  if (leaseCount > 0) return;
+  if (gemmaPoc.state.loaded) { void gemmaPoc.dispose(); return; }
+  // The check ended while the cold load was still pending: dispose at settle
+  // time, re-checking both the lease count and readiness there (a newer lease
+  // or a failed load must never trigger this unload, and dispose() itself
+  // dedupes a concurrent release).
+  const pending = pendingLeaseLoad;
+  if (pending) void pending.finally(() => {
+    if (leaseCount === 0 && gemmaPoc.state.loaded) void gemmaPoc.dispose();
+  });
 }
 /** Event-only warm request. Never provisions or downloads a model. */
 async function eventGemma(signal: AbortSignal, language: 'en' | 'es', generate: () => Promise<string>) {

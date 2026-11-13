@@ -10,7 +10,7 @@ export function semanticEligible(c: SemanticContext): boolean {
   return ['bpm_high','bpm_low','spo2_low'].includes(c.event) && ['en','es'].includes(c.language)
     && c.statement.length > 0 && c.statement.length <= 300 && /^[\p{L}\p{M}\s,.'’¿?¡!0-9-]+$/u.test(c.statement)
     && !/\b(ignore|instructions|system|prompt|call|contact|llama|llames|instrucciones|sistema)\b/i.test(c.statement)
-    && !/\b(he|she|they|someone|ella|ellos|amigo|says|said|dice|dijo)\b/i.test(c.statement)
+    && !/\b(he|she|they|someone|ella|ellos|amigo|says|said|told|dice|dijo|dijeron|me dijo)\b/i.test(c.statement)
     && !/\b(i don't know|i dont know|not sure|unsure|something feels off|no se|no estoy segur[oa]|me siento rar[oa])\b/.test(normalise(c.statement));
 }
 export function semanticPrompt(c: SemanticContext): string {
@@ -28,7 +28,8 @@ export function validateSemantic(value: unknown): SemanticResult | null {
   } catch { return null; }
 }
 /** The model alone cannot clear or escalate a statement. A NOT_OK suggestion
- * needs independently recognized symptom vocabulary; all other advice clarifies. */
+ * needs independently recognized symptom vocabulary; all other advice clarifies.
+ * @legacy Pinned for test parity; the production decision path is semanticCombinedDecision. */
 const GROUNDED_CATEGORIES = {
   fatigue: ['fatigue'], dizziness: ['dizziness'],
   discomfort: ['pain', 'cardiovascular', 'respiratory', 'neural', 'nausea', 'other'],
@@ -48,8 +49,9 @@ export type CombinedDecision = { intent: 'ok' | 'not_ok' | 'unclear'; source: 'g
  * decision. Binding invariant: Gemma alone can neither clear nor escalate past
  * the deterministic vetoes — hedged or negated statements never escalate, an OK
  * beside recognized symptom vocabulary never clears, statements with no
- * interpretive language (digits only) never escalate, and every ungrounded
- * verdict stays unclear/undecided. Never touches vitals, consent or contact
+ * interpretive language (digits only) never escalate, and a NOT_OK verdict
+ * escalates regardless of grounding when concern is 'yes' and the statement is
+ * neither hedged nor negated. Never touches vitals, consent or contact
  * state; the hedge/laxity data comes from symptomScan, not a local list. */
 export function semanticCombinedDecision(c: SemanticContext, advice: SemanticResult | null): CombinedDecision {
   const v = advice && ['OK','NOT_OK','UNCERTAIN'].includes(advice.state) && ['fatigue','dizziness','discomfort','other','none'].includes(advice.context)

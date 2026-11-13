@@ -442,24 +442,44 @@ test('a typed answer wins immediately during the bounded wait, discarding the ge
   assert.ok(!f.said.some(t => t.includes("didn't catch that")));
   assert.equal(signals[0].aborted, true);
 });
-test('never two semantic tasks in flight: the re-ask attempt opens its task only after the first is cancelled', async () => {
-  let alive = 0; const events: string[] = [];
-  const f = fake(['perhaps', 'perhaps']);
+test('never two semantic tasks in flight: only the first unclear answer consults, attempt 2 decides by rules', async () => {
+  let opens = 0; const events: string[] = [];
+  const f = fake(['perhaps', 'no i feel dizzy']);
   const r = await new VoiceCheck(f.io, 'en', '', {
+    reAskWaitMs: 60,
     startSemantic: ctx => {
-      events.push(`open(alive=${alive})`);
+      events.push(`open(${++opens})`);
       return startSemantic(signal => {
-        alive++; events.push(`generate(alive=${alive})`);
-        return new Promise<string>(resolve => { signal.addEventListener('abort', () => { alive--; events.push('abort'); resolve(''); }); });
+        events.push('generate');
+        return new Promise<string>(resolve => { signal.addEventListener('abort', () => { events.push('abort'); resolve(''); }); });
       }, ctx, 5000);
     },
   }).run('bpm_high');
-  assert.equal(r.outcome, 'no_response');
-  assert.deepEqual(events.filter(e => e.startsWith('open')), ['open(alive=0)', 'open(alive=0)'],
-    'both attempts open exactly one semantic task, and neither opened while a task was alive');
-  assert.ok(events.includes('generate(alive=1)'), 'the first attempt does generate');
-  const openedSecond = events.indexOf('open(alive=0)', 1);
-  assert.ok(openedSecond > events.indexOf('abort'), 'the attempt-1 task was cancelled before the attempt-2 task was opened');
+  assert.deepEqual([r.outcome, r.attempts], ['not_ok', 2], 'attempt 2 settles by the deterministic rules');
+  assert.deepEqual(events, ['open(1)', 'generate', 'abort'],
+    'exactly one semantic task opens, and it is cancelled before attempt 2 answers');
+  assert.ok(f.said.some(t => t.includes("didn't catch that")), 'the re-ask still played');
+});
+test('a typed-unclear manual answer during the wait re-arms consent for the re-ask request', async () => {
+  const signals: AbortSignal[] = [];
+  const f = fake(['yeah just need to stretch my legs', 'please call my mom'], { listenDelay: 10 });
+  let scope: { question: 'wellness' | 'contact_offer'; captureId: string } | null = null;
+  const check = new VoiceCheck(f.io, 'en', '', {
+    contactAvailable: true,
+    reAskWaitMs: 60000,
+    onQuestion: (question, captureId) => { scope = { question, captureId }; },
+    startSemantic: ctx => startSemantic(signal => { signals.push(signal);
+      return new Promise<string>(() => {}); }, ctx, 5000),
+  });
+  const pending = check.run('bpm_high');
+  await new Promise(resolve => setTimeout(resolve, 40));
+  assert.equal(check.answerByText('what', scope!), true);   // typed, but the rules still find it unclear
+  const r = await pending;
+  assert.ok(f.said.some(t => t.includes("didn't catch that")), 'the typed-unclear answer fell through to the re-ask');
+  assert.deepEqual([r.outcome, r.channel], ['not_ok', 'voice']);
+  assert.equal(r.contactCall, 'explicit_request', 'the attempt-2 request survives the earlier manual-unclear answer');
+  assert.equal(check.authorizesContact(r), true, 'the attempt-2 explicit request still captures its consent evidence');
+  assert.equal(signals[0].aborted, true);   // attempt 0's consult was cancelled with the manual win
 });
 test('dev diagnostics report the combined decision source', async () => {
   const { responsiveness } = await import('../lib/voice/responsivenessDiagnostics.ts');

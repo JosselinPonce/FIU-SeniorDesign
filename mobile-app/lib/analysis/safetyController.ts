@@ -575,9 +575,14 @@ export class SafetyController {
     this.deps.haptic('warning');
     const base = this.deps.voiceIO();
     // Warm the semantic model for the whole exchange, before the first speak;
-    // a Gemma failure must never stop the check from starting.
-    try { this.deps.beginGemmaWarm?.(); }
-    catch { /* The dialogue below speaks its fixed fallback text without the model. */ }
+    // a Gemma failure must never stop the check from starting. Core mode never
+    // routes a consult or acknowledgment, so it must not cold-load a model
+    // that would never generate a token. The end stays unconditional: an end
+    // without a begin is a no-op (the lease count floors at zero).
+    if (selected !== 'core') {
+      try { this.deps.beginGemmaWarm?.(); }
+      catch { /* The dialogue below speaks its fixed fallback text without the model. */ }
+    }
     // Report what the voice check is doing so the screen can show it.
     const io: VoiceIO = {
       pause: () => base.pause?.() ?? Promise.resolve(),

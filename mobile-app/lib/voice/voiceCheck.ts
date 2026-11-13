@@ -8,8 +8,10 @@
  *     explicit contact request → skip the offer; caller handles the handoff
  *     unclear → the on-device Gemma classifier gets one bounded window
  *       (reAskWaitMs, default 2000 ms) to resolve the answer (its verdict is
- *       combined with the deterministic vetoes, never with consent state) →
- *       resolved, or ask once more, simpler → listen (6 s)
+ *       combined with the deterministic vetoes, never with consent state).
+ *       The consult covers only this first unclear answer's bounded wait; a
+ *       re-asked answer opens no consult and is decided by the deterministic
+ *       pipeline alone → resolved, or ask once more, simpler → listen (6 s)
  *       ok / not_ok as above; still unclear or silent → no_response
  *
  * No response is treated like "not okay" by the caller (proposal: escalate
@@ -289,8 +291,12 @@ export class VoiceCheck {
     let statement: string | null = null;
     let semanticContext: SemanticContext | null = null;
     let semanticChannel: 'voice' | 'typed' = 'voice';
-    let manualDecided = false;
     for (const [index, prompt] of [t.ask(this.name, reason), t.again].entries()) {
+      // Scoped to this iteration only. A later attempt must re-arm the
+      // statement/consent capture below: a typed-unclear manual answer during
+      // an earlier attempt's wait must never suppress a later attempt's own
+      // explicit contact request and its consent evidence.
+      let manualDecided = false;
       const heard = await this.ask(prompt, 'wellness', [...t.hints]);
       if ('button' in heard) {
         result = { outcome: heard.button === 'ok' ? 'ok' : 'not_ok', urgent: false,
@@ -309,10 +315,12 @@ export class VoiceCheck {
           this.noteIssue('ambiguous');
           semanticContext = Object.freeze({ event: reason, language: this.lang, statement: heard.text });
           semanticChannel = 'typed' in heard ? 'typed' : 'voice';
-          // Never two semantic tasks in flight: the previous attempt's task is
-          // consumed or cancelled before this attempt's task starts.
+          // The consult covers the FIRST unclear answer only: its bounded
+          // pre-re-ask window owns the attempt-0 verdict. A re-asked answer
+          // opens no consult and is decided by the deterministic pipeline
+          // exactly as pre-branch (escalation unchanged and fail-safe).
           this.cancelSemantic();
-          if (semanticEligible(semanticContext)) {
+          if (index === 0 && semanticEligible(semanticContext)) {
             try { this.semanticTask = this.options.startSemantic?.(semanticContext) ?? null; } catch { /* Clarification is unchanged. */ }
             const task = this.semanticTask;
             const settled = task?.settled;
@@ -402,23 +410,10 @@ export class VoiceCheck {
         break;
       }
     }
-    if (!result && this.semanticTask) {
-      // The dialogue ended unresolved with the last attempt's task alive: it is
-      // consumed exactly once. Cancellation first marks any still-in-flight
-      // value stale; get() is then the single consultation and its settled
-      // value is used only when one exists — unresolved stays today's path.
-      let advice: SemanticResult | null = null;
-      const task = this.semanticTask;
-      this.semanticTask = null;
-      try { task.cancel(); } catch { /* Advisory cleanup cannot alter safety. */ }
-      try { advice = task.get() ?? null; } catch { /* Conservative fallback. */ }
-      const combined = semanticCombinedDecision(semanticContext!, advice);
-      if (typeof __DEV__ !== 'undefined' && __DEV__) responsivenessProbe('warning', 'VoiceCheck semantic decision')('combined decision', { captureId: this.captureId, question: 'wellness', outcome: combined.intent, decisionSource: combined.source, source: combined.source === 'gemma' ? 'gemma-primary' : 'fallback-deterministic' });
-      if (combined.intent !== 'unclear') {
-        result = { outcome: combined.intent, urgent: false, channel: semanticChannel, attempts: 2, confidence: null, contactCall: 'not_requested' };
-        statement = semanticContext!.statement;
-      }
-    }
+    // Attempt-2 answers open no semantic consult and no post-loop consume
+    // block exists: the consult is scoped to the first unclear answer's
+    // bounded wait, so a re-asked answer falls to the deterministic pipeline
+    // exactly as pre-branch (escalation unchanged, fail-safe).
     this.cancelSemantic();
     this.knownWellness = result;
     if (!result) {
