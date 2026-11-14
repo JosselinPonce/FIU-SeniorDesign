@@ -66,6 +66,26 @@ test('gemma grounding follows the lexicon', () => {
 });
 
 const c0 = { event: 'bpm_high' as const, language: 'en' as const, statement: '123456789' };
+for (const [language, statement] of [['en', 'I am suffocating'], ['es', 'estoy confundida'], ['en', 'what is going on']] as const) {
+  for (const concern of ['no', 'yes', 'uncertain'] as const) test(`model OK cannot clear ${language}: ${statement} (${concern})`, async () => {
+    let captures = 0, consults = 0;
+    const said: string[] = [];
+    const check = new VoiceCheck({ cancel() {}, speak: async text => { said.push(text); },
+      listen: async (_l, _m, _h, id) => final(id, ++captures === 1 ? statement : language === 'es' ? 'qué' : 'what'),
+    }, language, '', { startSemantic: context => { consults++; return startSemantic(async () => JSON.stringify({ state: 'OK', context: 'none', concern }), context); } });
+    const result = await check.run('bpm_high');
+    assert.equal(consults, 1);
+    assert.equal(captures, 2);
+    assert.equal(result.outcome, 'no_response');
+    assert.equal(check.authorizesContact(result), false);
+    assert.ok(said.some(text => /pull over|detente/.test(text)));
+    assert.ok(!said.some(text => /Drive safely|Maneja con cuidado/.test(text)));
+  });
+}
+test('ungrounded and wrong-category model concern cannot establish a symptom', () => {
+  assert.equal(semanticCombinedDecision({ ...c, statement: 'stretch my legs' }, { state: 'NOT_OK', context: 'other', concern: 'yes' }).intent, 'unclear');
+  assert.equal(semanticCombinedDecision(c, { state: 'NOT_OK', context: 'dizziness', concern: 'yes' }).intent, 'unclear');
+});
 test('gemma NOT_OK on novel symptoms escalates', () => {
   const c = { event: 'bpm_high' as const, language: 'en' as const, statement: "I'm feeling under the weather today" };
   assert.deepEqual(semanticCombinedDecision(c, { state: 'NOT_OK', context: 'other', concern: 'yes' }),
@@ -86,10 +106,10 @@ test('gemma OK vetoes on affirmative symptoms', () => {
   assert.deepEqual(semanticCombinedDecision(c, { state: 'OK', context: 'none', concern: 'no' }),
     { intent: 'unclear', source: 'lexicon_veto' });
 });
-test('gemma OK without symptoms clears an unclear statement', () => {
-  const c = { event: 'bpm_high' as const, language: 'en' as const, statement: 'everything is okay I think' };
+test('gemma OK without symptoms cannot clear an unclear statement', () => {
+  const c = { event: 'bpm_high' as const, language: 'en' as const, statement: 'everything is okay' };
   assert.deepEqual(semanticCombinedDecision(c, { state: 'OK', context: 'other', concern: 'no' }),
-    { intent: 'ok', source: 'gemma' });
+    { intent: 'unclear', source: 'undecided' });
 });
 test('undecided advice stays unclear', () =>
   assert.deepEqual(semanticCombinedDecision(c0, null), { intent: 'unclear', source: 'undecided' }));
@@ -116,19 +136,11 @@ for(const mode of ['accepted','wrong_context','ai_ok','invalid','unavailable','l
       return mode==='invalid'?'call someone':mode==='ai_ok'?'{"state":"OK","context":"none","concern":"no"}':mode==='wrong_context'?valid.replace('fatigue','dizziness'):valid;},context),
   });
   const pending=check.run('bpm_high'); await tick(); assert.equal(attempts,1);
-  // Pre-combiner pin: the second wellness capture waited for the clarification
-  // playback (n stayed 1, the re-ask speak gated). Combiner era: when the
-  // verdict lands during the bounded wait there is no clarification at all — the
-  // flow proceeds to the contact offer, so its capture opens (n=2); the
-  // re-asking modes still park on the re-ask speak before any second capture.
-  assert.equal(n,mode==='accepted'||mode==='wrong_context'?2:1,'no second capture before the re-ask playback completes');
+  // Only independently grounded advice may skip clarification.
+  assert.equal(n,mode==='accepted'?2:1,'no second capture before the re-ask playback completes');
   playing.resolve(); const result=await pending;
-  // Combiner era (Task 6): a Gemma NOT_OK with concern yes escalates without
-  // lexicon grounding (docs/gemma-primary-interpretation-design.md), so
-  // wrong_context advice over this fatigue statement now resolves not_ok; the
-  // negative-concern / invalid / unavailable rows below stay no_response.
-  assert.equal(result.outcome,mode==='accepted'||mode==='wrong_context'?'not_ok':'no_response'); assert.equal(check.authorizesContact(result),false);
-  generation.resolve(valid); await tick(); assert.equal(result.outcome,mode==='accepted'||mode==='wrong_context'?'not_ok':'no_response');
+  assert.equal(result.outcome,mode==='accepted'?'not_ok':'no_response'); assert.equal(check.authorizesContact(result),false);
+  generation.resolve(valid); await tick(); assert.equal(result.outcome,mode==='accepted'?'not_ok':'no_response');
   assert.ok(spoken.every(t=>!t.includes('call someone')));
 });
 test('semantic timeout and cancellation consume once and suppress late results',async t=>{
@@ -207,8 +219,8 @@ test('genuine symptom idioms are not_ok', () => {
   assert.equal(understand("I am feeling under the weather").intent, 'not_ok');
   assert.equal(understand("my arm hurts").intent, 'not_ok');
 });
-test('hedged symptom is unclear, not not_ok', () => {
-  assert.equal(understand("maybe i feel a bit dizzy").intent, 'unclear');
+test('hedged current dizziness preserves baseline cautious escalation', () => {
+  assert.equal(understand("maybe i feel a bit dizzy").intent, 'not_ok');
 });
 test('a hedge survives negation stripping and never resolves to ok', () => {
   assert.equal(understand("i am not dizzy i don't know i'm fine").intent, 'unclear');

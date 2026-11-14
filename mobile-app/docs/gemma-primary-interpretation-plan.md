@@ -1,5 +1,10 @@
 # Gemma-Primary Voice-Check Interpretation — Implementation Plan
 
+> Historical design/plan, superseded by [controlled-remediation.md](controlled-remediation.md).
+> Gemma cannot independently clear uncertainty as OK. SDK 54 is restored and
+> semantic/native availability shares a monotonic 2000 ms maximum budget.
+
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** The emergency "Are you feeling okay?" check understands any free-phrased driver answer (en/es) by making the on-device Gemma the primary classifier for the unclear band, with a shared symptom lexicon fixing the false-OK bug class first.

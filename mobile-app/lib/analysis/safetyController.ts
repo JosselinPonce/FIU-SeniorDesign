@@ -98,7 +98,7 @@ type Deps = {
   /** Immediate foreground/screen check, independent of React effect delivery. */
   interactionCurrent?: () => boolean;
   assistantMode?: () => AssistantMode;
-  startSemantic?: (context: SemanticContext) => SemanticTask;
+  startSemantic?: (context: SemanticContext, budget?: number) => SemanticTask;
   startAcknowledgment?: (context: AcknowledgmentContext) => SafetyAcknowledgment;
   /** Opens the phone interface only; resolution does not mean a connected call. */
   handoffContact?: (phone: string, origin: PhoneHandoffOrigin) => Promise<unknown>;
@@ -108,8 +108,7 @@ type Deps = {
   /** Called when a voice check ends, so other audio returns to full volume. */
   releaseAudio?: () => void;
   /** Warm-lease semantic model lifecycle: one begin/end pair per voice check. */
-  beginGemmaWarm?: () => void;
-  endGemmaWarm?: () => void;
+  beginGemmaWarm?: () => Readonly<{ release(): void }> | null;
   save: (row: Omit<DriveAlertRow, 'sync_status'>) => Promise<void>;
   saveAck: (profileId: string, ack: Ack) => Promise<void>;
   /** Adaptation history: called whenever the thresholds are (re)computed. */
@@ -574,14 +573,12 @@ export class SafetyController {
     publishDialogue();
     this.deps.haptic('warning');
     const base = this.deps.voiceIO();
-    // Warm the semantic model for the whole exchange, before the first speak;
-    // a Gemma failure must never stop the check from starting. Core mode never
-    // routes a consult or acknowledgment, so it must not cold-load a model
-    // that would never generate a token. The end stays unconditional: an end
-    // without a begin is a no-op (the lease count floors at zero).
+    // Retain only the lease acquired by this check. Core/failed acquisition
+    // has nothing to release and cannot unload a diagnostic or another check.
+    let warmLease: Readonly<{ release(): void }> | null = null;
     if (selected !== 'core') {
-      try { this.deps.beginGemmaWarm?.(); }
-      catch { /* The dialogue below speaks its fixed fallback text without the model. */ }
+      try { warmLease = this.deps.beginGemmaWarm?.() ?? null; }
+      catch { /* Fixed dialogue remains available without a model. */ }
     }
     // Report what the voice check is doing so the screen can show it.
     const io: VoiceIO = {
@@ -635,7 +632,7 @@ export class SafetyController {
       cancel: () => { recognitionEpoch++; if (activeSpeech) activeSpeech.interrupted = true; base.cancel(); },
     };
     const voice = new VoiceCheck(io, this.lang, this.name, {
-      startSemantic: context => { if (!current() || selected === 'core' || !this.deps.startSemantic) return { get: () => null, cancel() {} }; return this.deps.startSemantic(context); },
+      startSemantic: (context, budget) => { if (!current() || selected === 'core' || !this.deps.startSemantic) return { get: () => null, cancel() {} }; return this.deps.startSemantic(context, budget); },
       contactAvailable: contact.phone !== null,
       onQuestion: (q, id) => { question = q; captureId = id; },
       contactName: selected !== 'core' ? profile?.emergency_name ?? undefined : undefined,
@@ -668,10 +665,8 @@ export class SafetyController {
       result = voice.cancelledResult ?? { outcome: 'no_response', urgent: false, channel: 'none', attempts: 0, confidence: null, contactCall: 'not_requested' };
     }
     this.voice = null;
-    // Release the warm lease exactly once, after voice.run has settled on both
-    // the cancelled and the normal path; a failed release never fails the check.
-    try { this.deps.endGemmaWarm?.(); }
-    catch { /* Fixed acknowledgment below keeps working without the lease. */ }
+    try { warmLease?.release(); }
+    catch { /* Native cleanup cannot fail the deterministic check. */ }
     this.acknowledgment?.cancel();
     if (this.acknowledgment === acknowledgment) this.acknowledgment = null;
     this.deps.releaseAudio?.();

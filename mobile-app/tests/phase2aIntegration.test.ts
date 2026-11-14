@@ -42,7 +42,7 @@ function fixture(language: 'en' | 'es', options: {
   const exports: any = {};
   const source = readFileSync(new NodeURL('../modules/gemma-poc/phone.ts', import.meta.url), 'utf8');
   vm.runInNewContext(ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText, {
-    exports, AbortController, setTimeout, clearTimeout,
+    exports, AbortController, setTimeout, clearTimeout, performance,
     require: (name: string) => {
       if (name === 'react-native') return { Platform: { OS: 'ios' }, AppState: appState };
       if (name === 'expo-file-system') return { File: class { exists = options.installed !== false; size = GEMMA_ARTIFACT.bytes; modificationTime = 1; creationTime = 1; } };
@@ -201,7 +201,11 @@ for (const mode of ['accepted','invalid','missing'] as const) test(`production p
   const f = fixture('en',{statement:'so tired since yesterday',followup:'perhaps',installed:mode!=='missing',output:mode==='invalid'?'unsafe extra prose':'{"state":"NOT_OK","context":"fatigue","concern":"yes"}'});
   f.guidance.resolve(); const pending=f.controller.rehearse(); await tick();
   assert.equal(f.generations,mode==='missing'?0:1); assert.equal(f.releases,mode==='missing'?0:1);
-  assert.ok(f.spoken.includes("I didn't catch that.")); f.clarification.resolve();const result=await pending;
+  // A contact-offer retry shares "I didn't catch that" with wellness. Count
+  // wellness questions so the assertion cannot confuse these capture scopes.
+  assert.equal(f.spoken.filter(text => text === 'Are you feeling okay?').length, 1);
+  f.clarification.resolve(); const result=await pending;
+  assert.equal(f.spoken.filter(text => text === 'Are you feeling okay?').length, mode === 'accepted' ? 1 : 2);
   assert.equal(result.outcome,mode==='accepted'?'not_ok':'no_response');assert.equal(f.handoffs,0);assert.equal(f.downloads,0);assert.equal(f.saves,0);
   assert.equal(f.generations,mode==='missing'?0:1,'no second model reload for ineligible empathy');assert.equal(f.runtime.state.loaded,false);
 });

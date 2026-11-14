@@ -6,6 +6,12 @@
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#ffffff"
+    },
     "ios": {
       "icon": "./assets/branding/drivesense-icon-ios.png",
       "supportsTablet": true,
@@ -20,6 +26,7 @@
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#ffffff"
       },
+      "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false,
       "permissions": [
         "android.permission.BLUETOOTH_SCAN",
@@ -32,14 +39,6 @@
     },
     "plugins": [
       "expo-sqlite",
-      [
-        "expo-splash-screen",
-        {
-          "image": "./assets/splash-icon.png",
-          "resizeMode": "contain",
-          "backgroundColor": "#ffffff"
-        }
-      ],
       [
         "react-native-ble-plx",
         {
@@ -64,7 +63,7 @@
         "expo-build-properties",
         {
           "ios": {
-            "deploymentTarget": "16.4"
+            "deploymentTarget": "15.1"
           }
         }
       ],
@@ -75,8 +74,7 @@
           "forceCxx20": true,
           "enableOpenCLAndHexagon": false
         }
-      ],
-      "expo-font"
+      ]
     ]
   }
 }

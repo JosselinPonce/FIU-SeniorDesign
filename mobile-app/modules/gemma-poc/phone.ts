@@ -1,5 +1,5 @@
 import { responsivenessProbe } from '../../lib/voice/responsivenessDiagnostics';
-import { startSemantic, type SemanticContext } from '../../lib/assistant/safetySemantic';
+import { SEMANTIC_DECISION_MS, startSemantic, type SemanticContext } from '../../lib/assistant/safetySemantic';
 import { Platform, AppState } from 'react-native';
 import { File } from 'expo-file-system';
 import * as FS from 'expo-file-system/legacy';
@@ -121,67 +121,98 @@ export const gemmaPoc = new GemmaPoc({
 
 let safetyGemmaOwned = false;
 let maintenanceOwned = false;
-// Check-scoped warm lease: the model stays resident for one emergency voice
-// check only, and is unloaded the moment the lease returns to zero.
-let leaseCount = 0;
-// The cold load a lease started (when cold). A check that ends before the load
-// settles must not leave the model resident with zero leases, so
-// endGemmaWarmLease chains the dispose onto this promise; leases opened while
-// the load is still in flight reuse it instead of starting a second runtime.
+/** A token owns model residency only for its active foreground safety check. */
+export type GemmaWarmLease = Readonly<{ release(): void }>;
+const warmLeases = new Set<GemmaWarmLease>();
 let pendingLeaseLoad: Promise<void> | null = null;
-/** Hold the existing runtime across the entire explicit repair sequence. */
+let pendingLeaseDispose: Promise<void> | null = null;
+let warmRuntimeOwned = false;
+let cancelWarmLoad = () => {};
+let warmSubscription: { remove(): void } | null = null;
+
+function releaseWarmRuntime() {
+  if (warmLeases.size || !warmRuntimeOwned || pendingLeaseDispose) return;
+  cancelWarmLoad();
+  // Initialization may not support immediate abortion. Its controller retains
+  // ownership and releases any late context before this promise settles.
+  if (pendingLeaseLoad || safetyGemmaOwned) return;
+  const disposal = gemmaPoc.dispose();
+  pendingLeaseDispose = disposal;
+  void disposal.catch(() => {}).finally(() => {
+    if (pendingLeaseDispose === disposal) pendingLeaseDispose = null;
+    warmRuntimeOwned = false;
+  });
+}
+
+/** Repair and safety residency never acquire the runtime concurrently. */
 export async function withGemmaMaintenance(action: () => Promise<void>): Promise<void> {
-  if (maintenanceOwned || safetyGemmaOwned || provisioner.busy || gemmaPoc.state.busy
-      || gemmaPoc.state.loaded && !gemmaPoc.cleanupRequired)
+  if (maintenanceOwned || safetyGemmaOwned || warmLeases.size || pendingLeaseLoad || pendingLeaseDispose
+      || provisioner.busy || gemmaPoc.state.busy || gemmaPoc.state.loaded && !gemmaPoc.cleanupRequired)
     throw new Error('Gemma is busy. Wait for the current operation to finish and retry.');
   maintenanceOwned = true;
   try { await action(); } finally { maintenanceOwned = false; }
 }
-/** Warm the model for one check; Task 8's check lifecycle balances this with endGemmaWarmLease. */
-export function beginGemmaWarmLease(): void {
-  leaseCount++;
-  if (!gemmaPoc.state.loaded && !pendingLeaseLoad) {
-    const load = gemmaPoc.load().catch(() => {});
-    pendingLeaseLoad = load;
-    // Only the settled promise itself clears the capture, so any lease that
-    // began while it was in flight keeps pointing at the same load.
-    void load.finally(() => { if (pendingLeaseLoad === load) pendingLeaseLoad = null; });
-  }
-}
-/** Release one lease; unloading happens only when the check's last lease ends,
- * including one that ended before its cold load had finished loading. */
-export function endGemmaWarmLease(): void {
-  leaseCount = Math.max(0, leaseCount - 1);
-  if (leaseCount > 0) return;
-  if (gemmaPoc.state.loaded) { void gemmaPoc.dispose(); return; }
-  // The check ended while the cold load was still pending: dispose at settle
-  // time, re-checking both the lease count and readiness there (a newer lease
-  // or a failed load must never trigger this unload, and dispose() itself
-  // dedupes a concurrent release).
-  const pending = pendingLeaseLoad;
-  if (pending) void pending.finally(() => {
-    if (leaseCount === 0 && gemmaPoc.state.loaded) void gemmaPoc.dispose();
+
+export function beginGemmaWarmLease(): GemmaWarmLease | null {
+  if (AppState.currentState !== 'active' || maintenanceOwned || provisioner.busy
+      || pendingLeaseDispose || gemmaPoc.cleanupRequired
+      || pendingLeaseLoad && !warmLeases.size
+      || gemmaPoc.state.busy && !pendingLeaseLoad
+      || !warmLeases.size && (safetyGemmaOwned || gemmaPoc.state.loaded)) return null;
+  const token: GemmaWarmLease = Object.freeze({ release() {
+    if (!warmLeases.delete(token)) return;
+    if (!warmLeases.size) {
+      warmSubscription?.remove(); warmSubscription = null;
+      releaseWarmRuntime();
+    }
+  } });
+  warmLeases.add(token);
+  if (!warmSubscription) warmSubscription = AppState.addEventListener('change', state => {
+    if (state !== 'active') for (const lease of [...warmLeases]) lease.release();
   });
+  if (!gemmaPoc.state.loaded && !pendingLeaseLoad) {
+    warmRuntimeOwned = true;
+    const load = gemmaPoc.load().catch(() => {});
+    cancelWarmLoad = gemmaPoc.cancellationHandle();
+    pendingLeaseLoad = load;
+    void load.finally(() => {
+      if (pendingLeaseLoad === load) pendingLeaseLoad = null;
+      releaseWarmRuntime();
+    });
+  }
+  return token;
 }
+
+/** Unmatched, repeated and stale releases cannot affect another owner. */
+export function endGemmaWarmLease(lease?: GemmaWarmLease | null): void { lease?.release(); }
 /** Event-only warm request. Never provisions or downloads a model. */
 async function eventGemma(signal: AbortSignal, language: 'en' | 'es', generate: () => Promise<string>) {
   const trace = typeof __DEV__ !== 'undefined' && __DEV__ ? responsivenessProbe('warning', 'Gemma event model lifecycle') : () => {};
   {
     if (typeof __DEV__ !== 'undefined' && __DEV__) trace('model entry', { usable: gemmaPoc.state.loaded, locale: language });
-    if (maintenanceOwned || safetyGemmaOwned || provisioner.busy || gemmaPoc.state.busy || gemmaPoc.cleanupRequired || AppState.currentState !== 'active') throw new Error('Gemma is busy or app is inactive.');
+    if (maintenanceOwned || safetyGemmaOwned || pendingLeaseDispose || provisioner.busy
+        || gemmaPoc.state.busy || gemmaPoc.cleanupRequired || AppState.currentState !== 'active'
+        || gemmaPoc.state.loaded && !warmRuntimeOwned) throw new Error('Gemma is busy or app is inactive.');
     safetyGemmaOwned = true;
     let current = true;
-    const cancel = () => gemmaPoc.cancel();
+    let cancelOperation = () => {};
+    const cancel = () => cancelOperation();
     const subscription = AppState.addEventListener('change', state => {
       if (state !== 'active') { current = false; cancel(); }
     });
     signal.addEventListener('abort', cancel, { once: true });
     try {
       if (signal.aborted || !current) return '';
-      if (!gemmaPoc.state.loaded) await gemmaPoc.load();
+      if (!gemmaPoc.state.loaded) {
+        const loading = gemmaPoc.load();
+        cancelOperation = gemmaPoc.cancellationHandle();
+        await loading;
+      }
       if (typeof __DEV__ !== 'undefined' && __DEV__) trace('model readiness', { usable: gemmaPoc.state.loaded, cancelled: signal.aborted || !current });
       if (signal.aborted || !current || !gemmaPoc.state.loaded) return '';
-      const text = await generate();
+      const generating = generate();
+      cancelOperation = gemmaPoc.cancellationHandle();
+      const text = await generating;
       if (typeof __DEV__ !== 'undefined' && __DEV__) trace('inference returned', { nativeMs: gemmaPoc.state.inferenceMs ?? undefined });
       return signal.aborted || !current ? '' : text;
     } finally {
@@ -190,19 +221,22 @@ async function eventGemma(signal: AbortSignal, language: 'en' | 'es', generate: 
       try {
         // A warm lease keeps the runtime for the check's next event; only an
         // unleased event disposes and enforces completion of that cleanup.
-        if (leaseCount === 0) {
-          await gemmaPoc.dispose();
+        if (warmLeases.size === 0) {
+          try { await gemmaPoc.dispose(); } finally { warmRuntimeOwned = false; }
           if (gemmaPoc.state.loaded || gemmaPoc.cleanupRequired || gemmaPoc.state.error)
             throw new Error('Model cleanup did not complete; using fixed acknowledgment.');
         }
-      } finally { safetyGemmaOwned = false; }
+      } finally { safetyGemmaOwned = false; releaseWarmRuntime(); }
     }
   }
 }
 export function phoneSafetyAcknowledgment(context: AcknowledgmentContext) {
   return startSafetyAcknowledgment(signal => eventGemma(signal, context.language, () => gemmaPoc.generateSafetyAcknowledgment(context)), context);
 }
-export function phoneSafetySemantic(context: SemanticContext) {
+export function phoneSafetySemantic(context: SemanticContext, budget = SEMANTIC_DECISION_MS) {
   const safe = Object.freeze({ ...context });
-  return startSemantic(signal => eventGemma(signal, safe.language, () => gemmaPoc.generateSafetySemantic(safe)), safe);
+  const duration = Number.isFinite(budget) ? Math.min(SEMANTIC_DECISION_MS, Math.max(0, budget)) : SEMANTIC_DECISION_MS;
+  const deadline = performance.now() + duration;
+  return startSemantic(signal => eventGemma(signal, safe.language,
+    () => gemmaPoc.generateSafetySemantic(safe, Math.max(0, deadline - performance.now()))), safe, duration);
 }

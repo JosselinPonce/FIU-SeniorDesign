@@ -20,7 +20,8 @@
  * The featuriser must stay identical to tools/intent/train.py (parity test in
  * tests/intent.test.ts).
  */
-import { wellnessLanguage, type WellnessCategory } from './wellnessLanguage.ts';
+import { wellnessLanguage, clearWellnessAffirmation, type WellnessCategory } from './wellnessLanguage.ts';
+import { assertedWellnessClauses, hasAffirmativeUrgentSymptom, statementSegments, symptomScan } from './symptomLexicon.ts';
 import model from './intentModel.ts';
 
 export type Intent = 'ok' | 'not_ok' | 'unclear' | 'silent';
@@ -116,20 +117,26 @@ const SYMPTOM =
 export const OK_MIN = 0.75;
 export const NOT_OK_MIN = 0.5;
 
-function wellness(transcript: string | null | undefined): Omit<Understood, 'contactCallRequested'> {
+function wellnessCandidate(transcript: string | null | undefined): Omit<Understood, 'contactCallRequested'> {
   const t = normalise(transcript ?? '');
   if (!t) return { intent: 'silent', urgent: false, confidence: 1, probs: null, reason: 'empty' };
   const probs = modelProbs(t);
   const negatedHelp = NEGATED_HELP.test(t);
-  if (URGENT.test(t) && !negatedHelp) {
+  // Short Spanish negatives must not borrow the affirmative grammar's optional
+  // discourse "no". Raw clauses distinguish "no muy bien" from "No, muy bien".
+  const asserted = assertedWellnessClauses(transcript ?? t);
+  const negativeSpanishWellness = asserted.some(clause =>
+    /\bno (?:(?:(?:estoy|me siento|me encuentro) )?(?:(?:muy|perfectamente|nada|tan|para nada) )?bien|todo (?:esta )?bien)\b/.test(clause));
+  const negativeEnglishWellness = asserted.some(clause => /\bno (?:very |really )?(?:good|well|great|fine|okay|ok|alright)\b/.test(clause));
+  if (asserted.some(clause => URGENT.test(clause)) && (!negatedHelp || hasAffirmativeUrgentSymptom(transcript ?? t))) {
     return { intent: 'not_ok', urgent: true, confidence: 1, probs, reason: 'urgent-keyword' };
   }
   // "No, I don't need help" answers "are you okay?" with a yes -- unless the
   // driver also names a symptom ("I don't need help, just dizzy").
-  if (negatedHelp && !SYMPTOM.test(t) && !NEGATED_FINE.test(t)) {
+  if (negatedHelp && !SYMPTOM.test(t) && !NEGATED_FINE.test(t) && !negativeSpanishWellness && !negativeEnglishWellness) {
     return { intent: 'ok', urgent: false, confidence: 0.8, probs, reason: 'negation' };
   }
-  if (NEGATED_FINE.test(t) && !/\bnot bad\b/.test(t)) {
+  if (negativeEnglishWellness || negativeSpanishWellness || asserted.some(clause => NEGATED_FINE.test(clause)) && !/\bnot bad\b/.test(t)) {
     return { intent: 'not_ok', urgent: false, confidence: Math.max(probs[1], 0.9), probs, reason: 'negation' };
   }
   const natural = wellnessLanguage(t, transcript ?? t);
@@ -139,6 +146,33 @@ function wellness(transcript: string | null | undefined): Omit<Understood, 'cont
   if (probs[1] >= NOT_OK_MIN) return { intent: 'not_ok', urgent: false, confidence: probs[1], probs, reason: 'model' };
   if (probs[0] >= OK_MIN) return { intent: 'ok', urgent: false, confidence: probs[0], probs, reason: 'model' };
   return { intent: 'unclear', urgent: false, confidence: Math.max(...probs), probs, reason: 'model' };
+}
+
+/** The final boundary applies to every candidate path, including the early
+ * negated-help shortcut and logistic classifier. Unknown/qualified language
+ * cannot become OK without a complete, deterministic positive answer. */
+function wellness(transcript: string | null | undefined): Omit<Understood, 'contactCallRequested'> {
+  const result = wellnessCandidate(transcript);
+  const t = normalise(transcript ?? '');
+  if (!t || result.urgent || result.reason === 'negation' && result.intent === 'not_ok') return result;
+  const scan = symptomScan(assertedWellnessClauses(transcript ?? '').join('. '));
+  const unclear = () => ({ ...result, intent: 'unclear' as const, context: 'other' as const });
+  if (statementSegments(transcript ?? '').some(segment => segment.ownership !== 'driver')) {
+    // Unrelated reporting cannot erase independently asserted current symptoms.
+    if (scan.kind === 'affirmative' && !scan.hedged) return { ...result, intent: 'not_ok', reason: 'symptom-report', context: 'discomfort' };
+    return unclear();
+  }
+  if (scan.kind === 'negated_only' || scan.kind === 'historical_only') {
+    return !scan.hedged && clearWellnessAffirmation(t, transcript ?? t) ? { ...result, intent: 'ok', context: 'none' } : unclear();
+  }
+  if (result.intent === 'ok') {
+    if (scan.hedged) return unclear();
+    const mildFatigue = scan.categories.length === 1 && scan.categories[0] === 'fatigue'
+      && !/\b(?:exhausted|agotad[oa])\b/.test(t) && /\b(?:just a bit|just a little|only a little|solo|solamente)\b/.test(t);
+    if (scan.kind === 'affirmative' && !mildFatigue) return { ...result, intent: 'not_ok', reason: 'symptom-report', context: 'discomfort' };
+    if (!clearWellnessAffirmation(t, transcript ?? t)) return unclear();
+  }
+  return result;
 }
 
 /** Call consent is contextual and rule-based, never a wellness probability. */

@@ -1,4 +1,4 @@
-import Feather from '@expo/vector-icons/Feather';
+import Feather from 'expo/node_modules/@expo/vector-icons/Feather';
 import { SafeAreaView, ScrollView, View } from 'react-native';
 import { useRef } from 'react';
 import { LocalizedPressable as Pressable, LocalizedText as Text } from '../lib/i18n/native';

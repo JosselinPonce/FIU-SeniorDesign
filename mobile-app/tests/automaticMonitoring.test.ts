@@ -19,8 +19,7 @@ function fixture(warm: 'ok' | 'throw' = 'ok', mode: 'local' | 'core' = 'local') 
   const saved: any[] = [], calls: string[] = [], speech: string[] = [], events: string[] = [];
   const c = new SafetyController({ assistantMode: () => mode,
     startAcknowledgment: () => { inference++; return { get: () => "I'm sorry you're feeling dizzy.", source: 'gemma', cancel() { inferenceCancelled++; } }; },
-    beginGemmaWarm: () => { events.push('begin'); if (warm === 'throw') throw new Error('Gemma is down'); },
-    endGemmaWarm: () => { events.push('end'); },
+    beginGemmaWarm: () => { events.push('begin'); if (warm === 'throw') throw new Error('Gemma is down'); return { release: () => { events.push('end'); } }; },
     voiceIO: () => ({ speak: async text => { speech.push(text); events.push('speak'); }, listen: async (_l, _m, _h, id) => { events.push('listen'); return new Promise(resolve => {
       final = text => resolve(recognitionEvidence(id, { status: 'success', transcript: text, finalTranscript: text, isFinal: true, finalResultReceived: true }));
       partial = text => resolve(recognitionEvidence(id, { status: 'timeout', transcript: text, isFinal: false, finalResultReceived: false }));
@@ -185,17 +184,17 @@ test('rehearse warms gemma at check start and ends the lease at teardown', async
 test('a throwing gemma warm never starts a lease and never blocks the check', async () => {
   const f = fixture('throw');
   await rehearseOnce(f);
-  assert.equal(f.events.includes('end'), true, 'teardown still releases exactly once');
-  assert.equal(f.events.filter(event => event === 'end').length, 1);
+  assert.equal(f.events.includes('end'), false, 'failed acquisition owns nothing to release');
+  assert.equal(f.events.filter(event => event === 'end').length, 0);
   assert.equal(f.state.last?.simulation, true);
   assert.deepEqual(f.saved, []);
 });
 
-test('core mode never begins the gemma warm lease; teardown still ends its no-op lease once', async () => {
+test('core mode neither acquires nor releases a model lease', async () => {
   const f = fixture('ok', 'core');   // selected === 'core' never opens a consult or acknowledgment
   await rehearseOnce(f);
   assert.equal(f.events.includes('begin'), false, 'core mode must not cold-load a model that never generates a token');
-  assert.equal(f.events.filter(event => event === 'end').length, 1, 'the unconditional end still fires exactly once');
+  assert.equal(f.events.filter(event => event === 'end').length, 0, 'core mode owns no lease');
   assert.equal(f.state.last?.result.outcome, 'not_ok');
   assert.equal(f.state.last?.simulation, true);
   assert.deepEqual(f.saved, []);

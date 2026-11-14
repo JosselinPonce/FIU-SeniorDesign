@@ -1,6 +1,6 @@
 import { responsivenessProbe } from '../voice/responsivenessDiagnostics.ts';
 import { normalise } from '../voice/intent.ts';
-import { symptomScan } from '../voice/symptomLexicon.ts';
+import { assertedWellnessClauses, symptomScan } from '../voice/symptomLexicon.ts';
 export type SemanticContext = Readonly<{ event: 'bpm_high' | 'bpm_low' | 'spo2_low'; language: 'en' | 'es'; statement: string }>;
 export type SemanticResult = Readonly<{ state: 'OK' | 'NOT_OK' | 'UNCERTAIN'; context: 'fatigue' | 'dizziness' | 'discomfort' | 'other' | 'none'; concern: 'yes' | 'no' | 'uncertain' }>;
 /** The whole rule-safe unclear band reaches the Gemma classifier. Hedged statements
@@ -27,64 +27,70 @@ export function validateSemantic(value: unknown): SemanticResult | null {
     return Object.freeze({ state: v.state, context: v.context, concern: v.concern });
   } catch { return null; }
 }
-/** The model alone cannot clear or escalate a statement. A NOT_OK suggestion
- * needs independently recognized symptom vocabulary; all other advice clarifies.
- * @legacy Pinned for test parity; the production decision path is semanticCombinedDecision. */
 const GROUNDED_CATEGORIES = {
   fatigue: ['fatigue'], dizziness: ['dizziness'],
   discomfort: ['pain', 'cardiovascular', 'respiratory', 'neural', 'nausea', 'other'],
   other: ['fatigue', 'dizziness', 'cardiovascular', 'respiratory', 'neural', 'pain', 'nausea', 'other'],
   none: [],
 } as const; // other → any lexicon category; none → never grounded
+/** Compatibility wrapper; production and diagnostics share one safety boundary. */
 export function semanticDecision(c: SemanticContext, v: SemanticResult | null): 'not_ok' | 'unclear' {
-  if (!v || !semanticEligible(c) || v.state !== 'NOT_OK' || v.concern !== 'yes') return 'unclear';
-  const t = normalise(c.statement);
-  if (/\b(i don't know|i dont know|not sure|unsure|no se|no estoy segur[oa]|me siento rar[oa]|something feels off|maybe|perhaps|might|i suppose|tal vez|quizas|quiza)\b/.test(t)) return 'unclear';
-  const found = symptomScan(t).categories;
-  return !/\b(not|don't|dont|no estoy|no me siento|sin)\b/.test(t) && GROUNDED_CATEGORIES[v.context].some(category => found.includes(category)) ? 'not_ok' : 'unclear';
+  return semanticCombinedDecision(c, v).intent === 'not_ok' ? 'not_ok' : 'unclear';
 }
-export type SemanticTask = { get(): SemanticResult | null; cancel(): void; settled?: () => boolean };
-export type CombinedDecision = { intent: 'ok' | 'not_ok' | 'unclear'; source: 'gemma' | 'lexicon_veto' | 'hedge_veto' | 'undecided' };
-/** Deterministic combiner: turns a Gemma verdict into the emergency-check
- * decision. Binding invariant: Gemma alone can neither clear nor escalate past
- * the deterministic vetoes — hedged or negated statements never escalate, an OK
- * beside recognized symptom vocabulary never clears, statements with no
- * interpretive language (digits only) never escalate, and a NOT_OK verdict
- * escalates regardless of grounding when concern is 'yes' and the statement is
- * neither hedged nor negated. Never touches vitals, consent or contact
- * state; the hedge/laxity data comes from symptomScan, not a local list. */
+export const SEMANTIC_DECISION_MS = 2000;
+export type SemanticTask = { get(): SemanticResult | null; cancel(): void; settled?: () => boolean; completion?: Promise<void> };
+export type CombinedDecision = { intent: 'not_ok' | 'unclear'; source: 'gemma' | 'lexicon_veto' | 'hedge_veto' | 'undecided' };
+/** Advisory classification cannot clear uncertainty. A cautious NOT_OK needs
+ * independent affirmative symptom evidence in the matching category. This
+ * boundary never grants contact consent or changes sensor severity. */
 export function semanticCombinedDecision(c: SemanticContext, advice: SemanticResult | null): CombinedDecision {
   const v = advice && ['OK','NOT_OK','UNCERTAIN'].includes(advice.state) && ['fatigue','dizziness','discomfort','other','none'].includes(advice.context)
     && ['yes','no','uncertain'].includes(advice.concern) ? advice : null;
   const t = normalise(c.statement);
-  if (!v || !/[a-z]/.test(t)) return { intent: 'unclear', source: 'undecided' };
-  const scan = symptomScan(t);
+  if (!v || !semanticEligible(c) || !/[a-z]/.test(t)) return { intent: 'unclear', source: 'undecided' };
+  const scan = symptomScan(assertedWellnessClauses(c.statement).join('. '));
   if (v.state === 'NOT_OK') {
     if (v.concern !== 'yes') return { intent: 'unclear', source: 'undecided' };
     if (scan.hedged || scan.kind === 'negated_only') return { intent: 'unclear', source: 'hedge_veto' };
-    return { intent: 'not_ok', source: 'gemma' };
+    return scan.kind === 'affirmative' && GROUNDED_CATEGORIES[v.context].some(category => scan.categories.includes(category))
+      ? { intent: 'not_ok', source: 'gemma' } : { intent: 'unclear', source: 'undecided' };
   }
   if (v.state === 'OK') {
     if (scan.hedged) return { intent: 'unclear', source: 'hedge_veto' };
     if (scan.kind === 'affirmative') return { intent: 'unclear', source: 'lexicon_veto' };
-    if (v.concern === 'yes') return { intent: 'unclear', source: 'undecided' };
-    return { intent: 'ok', source: 'gemma' };
+    return { intent: 'unclear', source: 'undecided' };
   }
   return { intent: 'unclear', source: 'undecided' };
 }
-export function startSemantic(generate: (signal: AbortSignal) => Promise<string>, c: SemanticContext, budget = 5000): SemanticTask {
+/** Availability budget includes loading, inference, validation and cleanup.
+ * A delayed timer cannot make an expired value fresh again. */
+export function startSemantic(generate: (signal: AbortSignal) => Promise<string>, c: SemanticContext, budget = SEMANTIC_DECISION_MS): SemanticTask {
   const trace = typeof __DEV__ !== 'undefined' && __DEV__ ? responsivenessProbe('warning','Gemma semantic assistance') : () => {};
   const abort = new AbortController(); let value: SemanticResult | null = null, consumed = false, done = false;
+  let complete!: () => void;
+  const completion = new Promise<void>(resolve => { complete = resolve; });
   if (typeof __DEV__ !== 'undefined' && __DEV__) trace('eligibility', { usable: semanticEligible(c), locale: c.language });
-  // settled() is a non-destructive terminal-state probe (Ruling A): any terminal
-  // state — advice recorded, rejection, cancellation, timeout — reports true,
-  // never a still-running attempt. get()/cancel() semantics are unchanged.
-  if (!semanticEligible(c)) return { get: () => null, cancel() {}, settled: () => true };
-  const timer = setTimeout(() => { value = null; done = true; abort.abort(); if (typeof __DEV__ !== 'undefined' && __DEV__) trace('fallback',{reason:'timeout'}); },budget);
-  void Promise.resolve().then(() => { if (abort.signal.aborted) return ''; if (typeof __DEV__ !== 'undefined' && __DEV__) trace('attempted',{locale:c.language}); return generate(abort.signal); })
-    .then(text => { if (!consumed && !abort.signal.aborted) value = validateSemantic(text); if (typeof __DEV__ !== 'undefined' && __DEV__) trace('completed',{usable:!!value, outcome:value?.state, stage:value?.context, reason:value ? 'accepted':'invalid_or_cancelled'}); })
-    .catch(() => { if (typeof __DEV__ !== 'undefined' && __DEV__) trace('fallback',{reason:'unavailable'}); }).finally(() => { done = true; clearTimeout(timer); });
-  return { get() { const result = !consumed && !abort.signal.aborted ? value : null; consumed = true; done = true; clearTimeout(timer); abort.abort(); return result; },
-    cancel() { consumed = true; value = null; done = true; clearTimeout(timer); abort.abort(); },
-    settled: () => done };
+  if (!semanticEligible(c)) return { get: () => null, cancel() {}, settled: () => true, completion: Promise.resolve() };
+  const duration = Number.isFinite(budget) ? Math.max(0, budget) : SEMANTIC_DECISION_MS;
+  const deadline = performance.now() + duration;
+  const finish = () => { done = true; clearTimeout(timer); complete(); };
+  const timer = setTimeout(() => {
+    value = null; abort.abort(); finish();
+    if (typeof __DEV__ !== 'undefined' && __DEV__) trace('fallback',{reason:'timeout'});
+  }, duration);
+  void Promise.resolve().then(() => {
+    if (abort.signal.aborted || performance.now() >= deadline) return '';
+    if (typeof __DEV__ !== 'undefined' && __DEV__) trace('attempted',{locale:c.language});
+    return generate(abort.signal);
+  }).then(text => {
+    if (!consumed && !abort.signal.aborted && performance.now() < deadline) value = validateSemantic(text);
+    if (typeof __DEV__ !== 'undefined' && __DEV__) trace('completed',{usable:!!value, outcome:value?.state, stage:value?.context, reason:value ? 'accepted':'invalid_or_cancelled'});
+  }).catch(() => {
+    if (typeof __DEV__ !== 'undefined' && __DEV__) trace('fallback',{reason:'unavailable'});
+  }).finally(finish);
+  return {
+    get() { const result = !consumed && !abort.signal.aborted && performance.now() < deadline ? value : null; consumed = true; abort.abort(); finish(); return result; },
+    cancel() { consumed = true; value = null; abort.abort(); finish(); },
+    settled: () => done, completion,
+  };
 }

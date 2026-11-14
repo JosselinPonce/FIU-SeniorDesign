@@ -1,9 +1,10 @@
-import { semanticPrompt, type SemanticContext } from '../../lib/assistant/safetySemantic.ts';
+import { SEMANTIC_DECISION_MS, semanticPrompt, type SemanticContext } from '../../lib/assistant/safetySemantic.ts';
 import { TEST_PROMPT, GEMMA_ARTIFACT } from './artifact.ts';
 import { acknowledgmentPrompt, canGenerateAcknowledgment, type AcknowledgmentContext } from '../../lib/assistant/safetyAcknowledgment.ts';
 import type { ProvisionProgress } from './provisioning.ts';
 
 export type Context = { generate(prompt: string): Promise<string>; stop(): Promise<void>; release(): Promise<void> };
+type OperationKind = 'verification' | 'provisioning' | 'loading' | 'inference' | 'unloading';
 export type PocState = { progress: ProvisionProgress | null; phase: string; installed: boolean; loaded: boolean; busy: boolean; response: string; error: string; loadMs: number | null; inferenceMs: number | null; cleanupRequired?: boolean };
 export type PocDeps = {
   verify(signal: AbortSignal, progress?: (bytes: number) => void, force?: boolean): Promise<boolean>;
@@ -24,7 +25,7 @@ export class GemmaPoc {
     await this.context.release();
     this.context = null; this.invalidated = false; this.set({ cleanupRequired: false });
   }
-  private active: { abort: AbortController; done: Promise<void>; inference: boolean } | null = null;
+  private active: { abort: AbortController; done: Promise<void>; kind: OperationKind } | null = null;
   private disposal: Promise<void> | null = null;
   private stopping: Promise<void> = Promise.resolve();
   private listeners = new Set<(state: PocState) => void>();
@@ -34,12 +35,12 @@ export class GemmaPoc {
   subscribe(listener: (state: PocState) => void) { this.listeners.add(listener); listener(this.state); return () => { this.listeners.delete(listener); }; }
   private set(patch: Partial<PocState>) { this.state = { ...this.state, ...patch }; this.listeners.forEach(listener => listener(this.state)); }
 
-  private async operation(phase: string, action: (signal: AbortSignal) => Promise<void>, deadline?: number) {
-    if (this.active || (this.disposal && phase !== 'Unloading model')) throw new Error('Another Gemma operation is still active.');
+  private async operation(kind: OperationKind, phase: string, action: (signal: AbortSignal) => Promise<void>, deadline?: number) {
+    if (this.active || (this.disposal && kind !== 'unloading')) throw new Error('Another Gemma operation is still active.');
     const abort = new AbortController();
     let finish!: () => void;
     const done = new Promise<void>(resolve => { finish = resolve; });
-    this.active = { abort, done, inference: phase === 'Running fixed test' || phase === 'Generating safety acknowledgment' };
+    this.active = { abort, done, kind };
     this.set({ busy: true, error: '', phase });
     const timer = deadline === undefined ? undefined : setTimeout(() => {
       this.set({ error: `${phase} timed out. Waiting for native cleanup.`, phase: 'Stopping' });
@@ -53,7 +54,7 @@ export class GemmaPoc {
       const message = error instanceof Error ? error.message : String(error);
       // Provisioning owns its stage deadlines and bounded cleanup. Surface its
       // final result rather than retaining the earlier "cancellation requested".
-      this.set({ error: phase === 'Downloading and verifying model' ? message : this.state.error || message, phase: 'Error' });
+      this.set({ error: kind === 'provisioning' ? message : this.state.error || message, phase: 'Error' });
     } finally {
       clearTimeout(timer);
       // A native stop may outlive generation. Do not permit release/reuse yet.
@@ -63,19 +64,27 @@ export class GemmaPoc {
       finish();
     }
   }
+  /** Capture this operation, never a future operation that happens to share
+   * the runtime. Advisory task abort callbacks must use this scoped handle. */
+  cancellationHandle(): () => void {
+    const owner = this.active;
+    return () => { if (owner && this.active === owner) this.cancel(); };
+  }
   cancel() {
     if (!this.active || this.active.abort.signal.aborted) return;
     this.active.abort.abort();
     this.set({ phase: 'Stopping', error: this.state.error || 'Cancellation requested. Waiting for native cleanup.' });
-    if (this.active.inference && this.context) this.stopping = this.context.stop().catch(error => {
-      this.set({ error: `Cancellation failed: ${String(error)}. Waiting for native completion.` });
-    });
+    if (this.active.kind === 'inference' && this.context) {
+      const failed = (error: unknown) => this.set({ error: `Cancellation failed: ${String(error)}. Waiting for native completion.` });
+      try { this.stopping = this.context.stop().catch(failed); }
+      catch (error) { failed(error); }
+    }
   }
-  check() { return this.operation('Verifying model', async signal => {
+  check() { return this.operation('verification', 'Verifying model', async signal => {
     this.set({ installed: false });
     this.set({ installed: await this.deps.verify(signal, undefined, true) });
   }, 120000); }
-  provision() { return this.operation('Downloading and verifying model', async signal => {
+  provision() { return this.operation('provisioning', 'Downloading and verifying model', async signal => {
     if (this.context) throw new Error('Unload the model before provisioning.');
     this.set({ installed: false, progress: null });
     await this.deps.provision(signal, progress => {
@@ -84,7 +93,7 @@ export class GemmaPoc {
     if (signal.aborted) throw new Error('Model provisioning cancelled.');
     this.set({ installed: true });
   }); }
-  load(force = false) { return this.operation('Loading model', async signal => {
+  load(force = false) { return this.operation('loading', 'Loading model', async signal => {
     if (this.context) throw new Error('Model is already loaded.');
     this.set({ installed: false, response: '', loadMs: null, progress: null });
     const verifying = Date.now();
@@ -101,7 +110,7 @@ export class GemmaPoc {
     }
     this.set({ loadMs: Date.now() - started });
   }, 30000); }
-  run() { return this.operation('Running fixed test', async signal => {
+  run() { return this.operation('inference', 'Running fixed test', async signal => {
     if (!this.context || this.invalidated) throw new Error('Model cleanup is required before inference.');
     this.set({ response: '', inferenceMs: null });
     const started = Date.now();
@@ -114,7 +123,7 @@ export class GemmaPoc {
   async generateSafetyAcknowledgment(context: AcknowledgmentContext): Promise<string> {
     if (!canGenerateAcknowledgment(context)) return '';
     let selected = '';
-    await this.operation('Generating safety acknowledgment', async signal => {
+    await this.operation('inference', 'Generating safety acknowledgment', async signal => {
       if (!this.context || this.invalidated) throw new Error('Model unavailable or cleanup required.');
       const started = Date.now();
       this.set({ inferenceMs: null });
@@ -125,15 +134,17 @@ export class GemmaPoc {
     }, 1500);
     return selected;
   }
-  async generateSafetySemantic(context: SemanticContext): Promise<string> {
+  async generateSafetySemantic(context: SemanticContext, budget = SEMANTIC_DECISION_MS): Promise<string> {
+    const remaining = Number.isFinite(budget) ? Math.min(SEMANTIC_DECISION_MS, Math.max(0, budget)) : SEMANTIC_DECISION_MS;
+    if (!remaining) return '';
     const prompt = semanticPrompt(context);
     let selected = '';
-    await this.operation('Generating safety semantics', async signal => {
+    await this.operation('inference', 'Generating safety semantics', async signal => {
       if (!this.context || this.invalidated) throw Error('Model unavailable or cleanup required.');
       const started = Date.now();
       try { const text = await this.context.generate(prompt); if (!signal.aborted) selected = text; }
       finally { this.set({ inferenceMs: Date.now() - started }); }
-    }, 3500); // Semantic lane needs the wider band; acknowledgment keeps 1500.
+    }, remaining); // Shared decision deadline; acknowledgment keeps 1500 ms.
     return selected;
   }
   dispose(): Promise<void> {
@@ -141,7 +152,7 @@ export class GemmaPoc {
     this.cancel();
     this.disposal = (async () => {
       await this.active?.done;
-      await this.operation('Unloading model', async () => {
+      await this.operation('unloading', 'Unloading model', async () => {
         await this.releaseContext();
       }, 30000);
     })().finally(() => { this.disposal = null; });

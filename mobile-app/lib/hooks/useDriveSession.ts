@@ -1,5 +1,5 @@
 import type { AnswerScope } from '../voice/voiceCheck';
-import { beginGemmaWarmLease, endGemmaWarmLease, phoneSafetyAcknowledgment, phoneSafetySemantic } from '../../modules/gemma-poc/phone';
+import { beginGemmaWarmLease, phoneSafetyAcknowledgment, phoneSafetySemantic } from '../../modules/gemma-poc/phone';
 import { SENSI_MODE } from '../assistant/mode';
 import { openConfirmedDemoPhoneInterface, hasSystemPhoneConfirmation, openAuthorizedPhoneInterface } from '../voice/phoneHandoff';
 /**
@@ -276,7 +276,6 @@ export function useDriveSession() {
         startAcknowledgment: phoneSafetyAcknowledgment,
         startSemantic: phoneSafetySemantic,
         beginGemmaWarm: beginGemmaWarmLease,
-        endGemmaWarm: endGemmaWarmLease,
         voiceIO: phoneSensiVoiceIO,
         handoffContact: (phone, origin) => {
           // Last platform-boundary check, including transitions ahead of React effects.

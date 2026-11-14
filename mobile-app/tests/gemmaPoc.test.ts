@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { URL as NodeURL } from 'node:url';
+import { SEMANTIC_DECISION_MS } from '../lib/assistant/safetySemantic.ts';
 import { GemmaPoc, type Context } from '../modules/gemma-poc/controller.ts';
 import { GEMMA_ARTIFACT, MODEL_URL, TEST_PROMPT, assertArtifact } from '../modules/gemma-poc/artifact.ts';
 const tick = () => new Promise<void>(resolve => setImmediate(resolve));
@@ -14,6 +15,65 @@ function fixture(overrides: Partial<Context> = {}) {
   const poc = new GemmaPoc({ verify: async () => true, provision: async () => {}, initialize: async () => context }, 10);
   return { poc, context, prompts, releases: () => releases, stops: () => stops };
 }
+const semanticContext = { event: 'bpm_high' as const, language: 'en' as const, statement: 'fatigue this evening' };
+for (const trigger of ['cancel', 'deadline', 'dispose'] as const) test(`semantic ${trigger} stops native generation, discards output and orders release`, async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const output = deferred<string>(), stopped = deferred<void>();
+  let stops = 0;
+  const f = fixture({ generate: () => output.promise, stop: () => { stops++; return stopped.promise; } });
+  await f.poc.load();
+  const running = f.poc.generateSafetySemantic(semanticContext);
+  let disposal: Promise<void> | undefined;
+  if (trigger === 'cancel') f.poc.cancel();
+  if (trigger === 'deadline') t.mock.timers.tick(SEMANTIC_DECISION_MS);
+  if (trigger === 'dispose') disposal = f.poc.dispose();
+  assert.equal(stops, 1);
+  assert.equal(f.poc.state.busy, true);
+  await assert.rejects(f.poc.generateSafetySemantic(semanticContext), /active/);
+  output.resolve('{"state":"OK","context":"none","concern":"no"}');
+  await tick();
+  assert.equal(f.releases(), 0, 'native stop must settle before reuse/release');
+  assert.equal(f.poc.state.busy, true);
+  stopped.resolve();
+  assert.equal(await running, '');
+  await (disposal ?? f.poc.dispose());
+  assert.equal(stops, 1);
+  assert.equal(f.releases(), 1);
+  assert.equal(f.poc.state.loaded, false);
+});
+
+for (const synchronous of [false, true]) test(`semantic stop failure retains ownership until natural completion (sync=${synchronous})`, async () => {
+  const output = deferred<string>();
+  const f = fixture({ generate: () => output.promise, stop: () => {
+    if (synchronous) throw Error('native stop failed');
+    return Promise.reject(Error('native stop failed'));
+  } });
+  await f.poc.load();
+  const running = f.poc.generateSafetySemantic(semanticContext);
+  f.poc.cancel(); await tick();
+  assert.match(f.poc.state.error, /Cancellation failed/);
+  assert.equal(f.poc.state.busy, true);
+  const disposal = f.poc.dispose();
+  await tick(); assert.equal(f.releases(), 0);
+  output.resolve('late'); assert.equal(await running, ''); await disposal;
+  assert.equal(f.releases(), 1);
+});
+
+test('an old cancellation handle cannot stop a newer native operation', async () => {
+  let output = deferred<string>();
+  const f = fixture({ generate: () => output.promise });
+  await f.poc.load();
+  const first = f.poc.generateSafetySemantic(semanticContext);
+  const oldCancel = f.poc.cancellationHandle();
+  output.resolve('first'); await first;
+  output = deferred<string>();
+  const second = f.poc.generateSafetySemantic(semanticContext);
+  oldCancel();
+  assert.equal(f.stops(), 0);
+  assert.equal(f.poc.state.busy, true);
+  output.resolve('second'); assert.equal(await second, 'second');
+  await f.poc.dispose();
+});
 test('approved artifact is revision-pinned and size/hash mismatch is rejected', () => {
   assert.match(MODEL_URL, new RegExp(GEMMA_ARTIFACT.revision));
   assertArtifact(GEMMA_ARTIFACT.bytes, GEMMA_ARTIFACT.sha256);

@@ -24,7 +24,7 @@ function harness() {
   const selected: any[] = [], saved: any[] = [], help: any[] = [];
   let reloads = 0;
   const deps: Record<string, any> = {
-    '@expo/vector-icons/Feather': { __esModule: true, default: 'FeatherIcon' },
+    'expo/node_modules/@expo/vector-icons/Feather': { __esModule: true, default: 'FeatherIcon' },
     react: { createContext: () => ({}), useContext: () => ({ open: (value: unknown) => help.push(value) }),
       useState(initial: any) { const i = cursor++; if (!(i in hooks)) hooks[i] = typeof initial === 'function' ? initial() : initial;
         return [hooks[i], (value: any) => { hooks[i] = typeof value === 'function' ? value(hooks[i]) : value; }]; },

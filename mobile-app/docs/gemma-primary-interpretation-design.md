@@ -1,5 +1,10 @@
 # Design: Gemma-primary interpretation for the safety voice check
 
+> Historical design/plan, superseded by [controlled-remediation.md](controlled-remediation.md).
+> Gemma cannot independently clear uncertainty as OK. SDK 54 is restored and
+> semantic/native availability shares a monotonic 2000 ms maximum budget.
+
+
 Status: draft for approval
 Branch: `samantha/local-ai-prototype`
 Related docs: `docs/safety-testing-sensi-refinement.md`, `docs/phase2c-english-voicecheck-investigation.md`, `lib/assistant/SENSI_GEMMA.md`
