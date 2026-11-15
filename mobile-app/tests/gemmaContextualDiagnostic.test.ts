@@ -53,7 +53,7 @@ test('invalid and empty completions retain raw output, rejection reason and loca
     for (const row of report.rows.filter(row => !row.inferenceSkipped)) {
       assert.equal(row.generatedOutput, text); assert.equal(row.validationAccepted, false); assert.equal(row.validatedText, null);
       assert.equal(row.fallbackReason, text ? 'validator_rejected' : 'empty_output');
-      assert.equal(row.fallbackText, row.language === 'en' ? "I'm sorry to hear that." : 'Lamento que te sientas así.');
+      assert.equal(row.fallbackText, row.language === 'en' ? "Thank you for telling me." : 'Gracias por decírmelo.');
     }
   }
 });

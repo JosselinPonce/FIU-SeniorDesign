@@ -8,8 +8,8 @@ export type AcknowledgmentContext = Readonly<{
 }>;
 
 const GENERIC = {
-  en: ["I'm sorry to hear that.", 'I hear you.', 'Thank you for telling me.', 'That sounds uncomfortable.'],
-  es: ['Lamento que te sientas así.', 'Te escucho.', 'Gracias por decírmelo.', 'Eso suena incómodo.'],
+  en: ['Thank you for telling me.', 'I hear you.', 'That sounds uncomfortable.'],
+  es: ['Gracias por decírmelo.', 'Te escucho.', 'Eso suena incómodo.'],
 } as const;
 // Whole first-person reports only. Unknown, negated, quoted, action-bearing,
 // identifying or instruction-like text is omitted rather than sent to the model.

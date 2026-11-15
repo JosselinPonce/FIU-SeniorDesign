@@ -40,7 +40,7 @@ for (const lang of ['en', 'es'] as const) {
       assert.equal(said[3], guidance[lang].split(/(?<=\.) /)[0]); assert.equal(check.authorizesContact({ outcome: 'not_ok', urgent: false, channel: 'voice', attempts: 1, confidence: null, contactCall: 'accepted_offer' }), false);
       playing.resolve(); const result = await pending;
       assert.equal(said.length, 7, 'one utterance per planned sentence');
-      const fallback = lang === 'en' ? "I'm sorry to hear that." : 'Lamento que te sientas así.';
+      const fallback = lang === 'en' ? "Thank you for telling me." : 'Gracias por decírmelo.';
       assert.deepEqual(said.slice(3), [...guidance[lang].split(/(?<=\.) /), mode === 'ready' ? output[lang] : fallback, lang === 'en' ? 'Would you like me to call Mom?' : '¿Quieres que llame a mamá?']);
       assert.equal(result.outcome, 'not_ok'); assert.equal(result.contactCall, 'declined_offer');
       assert.equal(check.authorizesContact(result), false);

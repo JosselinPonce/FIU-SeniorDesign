@@ -47,7 +47,7 @@ function harness(development: boolean, active = false, theme = light, settings =
     '../lib/assistant/phoneConnectedReadiness': { PHONE_CONNECTED_READINESS: { verified: false } },
     '../lib/assistant/connectedPilotPolicy': { CONNECTED_PILOT_STATUS: 'pilot' },
   };
-  for (const n of ['GemmaModelSettings','SpeechCapabilityStatus','EmergencyDialerDemo','Information','DemoAuthPanel','VoicePicker','CalibrationCard','ThresholdHistory','ResponsivenessDiagnostics','SensiVoicePlaybackDiagnostic']) {
+  for (const n of ['VoiceCheckTesting','SimulationProgress','GemmaModelSettings','SpeechCapabilityStatus','EmergencyDialerDemo','Information','DemoAuthPanel','VoicePicker','CalibrationCard','ThresholdHistory','ResponsivenessDiagnostics','SensiVoicePlaybackDiagnostic']) {
     deps['./'+n] = { [n === 'Information' ? 'InformationButton' : n]: n };
   }
   const compiled = ts.transpileModule(readFileSync(new NodeURL('../components/SettingsView.tsx', import.meta.url), 'utf8'), {
@@ -193,4 +193,27 @@ test('local demonstration preference restores on reopening and survives simulati
   assert.deepEqual([...settings], [[preference.REAL_CONTACT_DEMO_SETTING, '1']]);
   await control(reopened).props.onValueChange(false); await tick(); assert.equal(control(reopened).props.value, false);
   assert.equal(settings.get(preference.REAL_CONTACT_DEMO_SETTING), '0');
+});
+
+
+test('VoiceCheck Testing is a separate child route with no simulation or profile mutation', () => {
+  const f = harness(false);
+  f.render().find(n => n.props?.accessibilityLabel === 'Health & Safety').props.onPress();
+  f.render().find(n => n.props?.title === 'Safety Testing').props.onPress();
+  f.render().find(n => n.props?.title === 'VoiceCheck Testing').props.onPress();
+  const diagnostic = f.render().find(n => n.type === 'VoiceCheckTesting');
+  assert.ok(diagnostic); assert.equal(diagnostic.props.initialLanguage, 'en'); assert.equal(diagnostic.props.blocked, false);
+  assert.deepEqual(f.calls, []);
+  assert.deepEqual(Object.keys(diagnostic.props).sort(), ['blocked', 'initialLanguage', 'onExit']);
+  diagnostic.props.onExit(); assert.ok(f.render().some(n => n.props?.title === 'Low oxygen'));
+});
+
+test('simulation progress receives the same isolated demo object', () => {
+  const f = harness(false);
+  f.render().find(n => n.props?.accessibilityLabel === 'Health & Safety').props.onPress();
+  f.render().find(n => n.props?.title === 'Safety Testing').props.onPress();
+  const demo = Object.freeze({ scenario: 'high_warning', second: 19, value: 120, step: 'fabricated abnormal readings' });
+  (f.props.drive.safety as any).demo = demo;
+  assert.equal(f.render().find(n => n.type === 'SimulationProgress').props.demo, demo);
+  assert.deepEqual(f.calls, []);
 });

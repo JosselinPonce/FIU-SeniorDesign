@@ -17,11 +17,11 @@ test('Gemma inference receives only bounded event context and eligible finalized
   assert.deepEqual(prompts, [acknowledgmentPrompt(context)]); assert.match(prompts[0]!, /dizzy/); assert.doesNotMatch(prompts[0]!, /Driver Name|305555/);
 });
 test('ready approved acknowledgment is used; unexpected medical/contact prose is rejected', async () => {
-  for (const [output, expected] of [["I'm sorry you're feeling dizzy.", "I'm sorry you're feeling dizzy."], ['You are safe to drive. Call mom.', "I'm sorry to hear that."], ['I hear you. Are you parked?', "I'm sorry to hear that."]]) {
+  for (const [output, expected] of [["I'm sorry you're feeling dizzy.", "I'm sorry you're feeling dizzy."], ['You are safe to drive. Call mom.', "Thank you for telling me."], ['I hear you. Are you parked?', "Thank you for telling me."]]) {
     const ack = startSafetyAcknowledgment(async () => output!, context); await tick();
     assert.equal(ack.get('en'), expected); ack.cancel();
   }
-  assert.equal(approvedAcknowledgment('I hear you.', 'es'), 'Lamento que te sientas así.');
+  assert.equal(approvedAcknowledgment('I hear you.', 'es'), 'Gracias por decírmelo.');
 });
 test('pending or timed-out Gemma never delays guidance and cannot publish late speech', async t => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
@@ -34,10 +34,10 @@ test('pending or timed-out Gemma never delays guidance and cannot publish late s
   const result = await check.run('bpm_high');
   assert.equal(result.outcome, 'not_ok'); assert.equal(result.contactCall, 'declined_offer');
   assert.match(spoken.join(' '), /Please pull over/);
-  assert.deepEqual(spoken.slice(3), ["Please pull over as soon as it is safe.", "If you need emergency help, call 911.", "I'm sorry to hear that.", "Would you like me to call Mom?"]);
+  assert.deepEqual(spoken.slice(3), ["Please pull over as soon as it is safe.", "If you need emergency help, call 911.", "Thank you for telling me.", "Would you like me to call Mom?"]);
   late.resolve('I hear you.'); await tick(); assert.equal(spoken.length, 7);
   const expired = startSafetyAcknowledgment(() => new Promise(() => {}), context, 10);
-  t.mock.timers.tick(10); assert.equal(expired.get('en'), "I'm sorry to hear that."); expired.cancel();
+  t.mock.timers.tick(10); assert.equal(expired.get('en'), "Thank you for telling me."); expired.cancel();
 });
 test('typed replies require exact active question and share deterministic consent policy', async () => {
   let scope!: AnswerScope; let check!: VoiceCheck;

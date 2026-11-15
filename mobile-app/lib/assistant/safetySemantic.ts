@@ -1,5 +1,5 @@
 import { responsivenessProbe } from '../voice/responsivenessDiagnostics.ts';
-import { normalise } from '../voice/intent.ts';
+import { normalise } from '../voice/normalise.ts';
 import { assertedWellnessClauses, symptomScan } from '../voice/symptomLexicon.ts';
 export type SemanticContext = Readonly<{ event: 'bpm_high' | 'bpm_low' | 'spo2_low'; language: 'en' | 'es'; statement: string }>;
 export type SemanticResult = Readonly<{ state: 'OK' | 'NOT_OK' | 'UNCERTAIN'; context: 'fatigue' | 'dizziness' | 'discomfort' | 'other' | 'none'; concern: 'yes' | 'no' | 'uncertain' }>;

@@ -61,7 +61,7 @@ test('all omitted/unsupported fixtures and buttons skip the generator and native
     assert.equal(canGenerateAcknowledgment(context), false); assert.equal(context.statement, null);
     assert.throws(() => acknowledgmentPrompt(context), /No eligible/);
     const acknowledgment = startSafetyAcknowledgment(async () => { generated++; await poc.load(); return 'unrelated'; }, context);
-    assert.equal(acknowledgment.get(context.language), context.language === 'en' ? "I'm sorry to hear that." : 'Lamento que te sientas así.');
+    assert.equal(acknowledgment.get(context.language), context.language === 'en' ? "Thank you for telling me." : 'Gracias por decírmelo.');
     acknowledgment.cancel(); assert.equal(acknowledgment.source, 'fallback');
     assert.equal(await poc.generateSafetyAcknowledgment(context), '');
   }
@@ -75,7 +75,7 @@ for (const context of [en, es]) test(`${context.language}: timeout and cancellat
     const task = startSafetyAcknowledgment(s => { signal = s; return new Promise(resolve => { complete = resolve; }); }, context, 10);
     await tick(); if (mode === 'cancel') task.cancel(); else t.mock.timers.tick(10);
     complete(context.language === 'en' ? "I'm sorry you're feeling dizzy." : 'Lamento que te sientas mareada.'); await tick();
-    assert.equal(signal.aborted, true); assert.equal(task.get(context.language), context.language === 'en' ? "I'm sorry to hear that." : 'Lamento que te sientas así.');
+    assert.equal(signal.aborted, true); assert.equal(task.get(context.language), context.language === 'en' ? "Thank you for telling me." : 'Gracias por decírmelo.');
     assert.equal(task.source, 'fallback');
   }
 });

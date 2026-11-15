@@ -1,50 +1,64 @@
 import { SensiGlyph } from './DashboardAssistantEntry';
 import { ScreenHeader } from './ScreenHeader';
 import { LocalizedText as Text } from '../lib/i18n/native';
-import { useEffect, useState } from 'react';
-import { AppState, SafeAreaView, ScrollView, View } from 'react-native';
+import { SafeAreaView, ScrollView, View } from 'react-native';
+import Feather from 'expo/node_modules/@expo/vector-icons/Feather';
 import type { useDriveSession } from '../lib/hooks/useDriveSession';
 import type { AssistantMode } from '../lib/assistant/mode';
-import { standbyReadiness, type GemmaFileStatus } from '../lib/assistant/sensiStandby';
-import { inspectGemmaModelFile } from '../modules/gemma-poc/phone';
+import { systemReadiness, readinessIndicator } from '../lib/assistant/systemReadiness';
+import { useSystemReadiness } from '../lib/assistant/useSystemReadiness';
+import { useAppLanguage } from '../lib/i18n/LanguageProvider';
 import { useTheme } from '../lib/theme/ThemeProvider';
-import { Btn } from './ui';
+import { Btn, Card } from './ui';
 
-/** Safety standby and navigation to the existing simulation; no chat, audio or inference. */
+/** Passive event-only home. Read-only inventory and subscriptions never start safety work. */
 export function SensiStandby({ visible, drive, mode, onClose, onTrySafetyCheck }: {
   visible: boolean; drive: ReturnType<typeof useDriveSession>; mode: AssistantMode | null; onClose(): void; onTrySafetyCheck(): void;
 }) {
   const { tokens: t } = useTheme();
-  const [model, setModel] = useState<GemmaFileStatus>('checking');
-  useEffect(() => {
-    if (!visible) return;
-    let current = true;
-    function refresh() {
-      setModel('checking');
-      void Promise.resolve().then(inspectGemmaModelFile).then(status => { if (current) setModel(status); })
-        .catch(() => { if (current) setModel('unavailable'); });
-    }
-    refresh();
-    const app = AppState.addEventListener('change', state => { if (state === 'active') refresh(); });
-    return () => { current = false; app.remove(); };
-  }, [visible]);
+  const { t: translate } = useAppLanguage();
+  const snapshot = useSystemReadiness(visible, drive?.driver?.language === 'es' ? 'es' : 'en');
   if (!visible) return null;
-  const readiness = standbyReadiness({ hasDriver: !!drive.driver, activeDrive: drive.hasActiveSession,
-    connected: drive.isConnected, voice: drive.voice, model, core: false, monitoring: drive.safety?.monitoring });
+  const readiness = systemReadiness({ hasDriver: !!drive.driver, connection: drive.connection, source: drive.link?.source,
+    relayConnected: drive.relay?.esp, monitoring: drive.safety?.monitoring }, snapshot, drive.driver?.language === 'es' ? 'es' : 'en');
   return <SafeAreaView style={{ flex: 1, backgroundColor: t.background }}>
-      <ScreenHeader title="Sensi" onBack={onClose} />
-      <ScrollView contentContainerStyle={{ flexGrow: 1, padding: 20, gap: 16 }}>
-        <View style={{ width: 64, height: 64, borderRadius: 20, backgroundColor: t.primary, alignItems: 'center', justifyContent: 'center' }}><SensiGlyph color={t.onPrimary} /></View>
-        <Text accessibilityRole="header" style={{ color: t.text, fontSize: 28, fontWeight: '800' }}>Hi, I'm Sensi!</Text>
-        <Text style={{ color: t.textSecondary, fontSize: 17 }}>Your safety companion. When sensors detect unusual readings, I'll check in while DriveSense is open.</Text>
-        <View accessibilityLiveRegion="polite" style={{ padding: 18, gap: 12, borderRadius: 14, backgroundColor: t.surface }}>
-          <Text style={{ color: t.text, fontWeight: '700' }}>Current readiness</Text>
-          {[readiness[0], readiness[2]].map(line => <Text key={line} style={{ color: t.textSecondary }}>{line}</Text>)}
-          <Text style={{ color: t.textSecondary }}>Voice readiness is checked at each safety check. Typed and button responses remain available.</Text>
+    <ScreenHeader title="Sensi" onBack={onClose} />
+    <ScrollView contentContainerStyle={{ padding: 16, gap: 12, paddingBottom: 20 }}>
+      <View style={{ gap: 8 }}>
+        <View style={{ flexDirection: 'row', gap: 12, alignItems: 'center' }}>
+          <View style={{ width: 64, height: 64, flexShrink: 0, borderRadius: 20, backgroundColor: t.primary, alignItems: 'center', justifyContent: 'center' }}><SensiGlyph color={t.onPrimary} /></View>
+          <View style={{ flex: 1, minWidth: 0, gap: 4 }}>
+            <Text accessibilityRole="header" style={{ color: t.text, fontSize: 28, fontWeight: '800' }}>Hi, I'm Sensi!</Text>
+            <Text style={{ color: t.textSecondary, fontSize: 17 }}>Your driving safety companion.</Text>
+          </View>
         </View>
-        <Text style={{ color: t.textSecondary }}>Standing by for sensor events. No open-ended chat.</Text>
-        <Btn title="Try a Safety Check" disabled={drive.hasActiveSession || !!drive.safety?.check || !!drive.safety?.demo} onPress={onTrySafetyCheck} />
-        <Text style={{ color: t.textSecondary }}>Opens Safety Testing. Simulated readings are not saved or uploaded. Real-contact demonstrations require separate approval.</Text>
-      </ScrollView>
-    </SafeAreaView>;
+        <Text style={{ color: t.textSecondary, fontSize: 16, lineHeight: 24 }}>If DriveSense detects unusual health readings, I'll check in to see how you're feeling.</Text>
+      </View>
+      <Card>
+        <View style={{ gap: 8 }}>
+          <Text accessibilityRole="header" style={{ color: t.text, fontSize: 18, fontWeight: '700' }}>System Readiness</Text>
+          <View style={{ alignSelf: 'flex-start', maxWidth: '100%', borderRadius: 10, paddingHorizontal: 10, paddingVertical: 6, backgroundColor: t.surfaceMuted }}>
+            <Text accessibilityLiveRegion="polite" style={{ color: t.text, fontSize: 13, fontWeight: '700', flexShrink: 1 }}>{readiness.overall}</Text>
+          </View>
+          {readiness.items.filter(item => item.id !== 'recognition').map(item => {
+            const status = item.status;
+            const indicator = readinessIndicator(status);
+            const color = { success: t.connected, warning: t.warning, danger: t.danger, neutral: t.textMuted }[indicator.tone];
+            return <View key={item.id} accessible accessibilityLabel={[translate(item.label), translate(status), item.percent === undefined ? '' : `${item.percent}%`].filter(Boolean).join('. ')}
+              style={{ flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', columnGap: 10, rowGap: 4, paddingVertical: 4 }}>
+              <Text style={{ color: t.textSecondary, fontSize: 14, flexGrow: 1, flexShrink: 1, flexBasis: 140 }}>{item.label}</Text>
+              <View style={{ flexDirection: 'row', alignItems: 'center', maxWidth: '100%', minWidth: 0, flexShrink: 1, gap: 6 }}>
+                <Feather name={indicator.icon} size={16} color={color} accessible={false} />
+                <Text style={{ color, fontSize: 14, fontWeight: '600', flexShrink: 1 }}>{status}{item.percent === undefined ? '' : ` · ${item.percent}%`}</Text>
+              </View>
+            </View>;
+          })}
+        </View>
+      </Card>
+      <View style={{ gap: 8 }}>
+        <Btn title="Try Sensi" disabled={drive.hasActiveSession || !!drive.safety?.check || !!drive.safety?.demo} onPress={onTrySafetyCheck} />
+        <Text style={{ color: t.textSecondary, fontSize: 13 }}>Simulated safety check · No live emergency actions</Text>
+      </View>
+    </ScrollView>
+  </SafeAreaView>;
 }

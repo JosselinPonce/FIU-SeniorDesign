@@ -1,3 +1,5 @@
+import { VoiceCheckTesting } from './VoiceCheckTesting';
+import { SimulationProgress } from './SimulationProgress';
 import { getSetting, setSetting } from '../lib/db/repositories';
 import { readRealContactPreference, saveRealContactPreference } from '../lib/voice/realContactPreference';
 import { displayBmi, maskedContactPhone } from '../lib/ui/profileSummary';
@@ -73,7 +75,7 @@ export function SettingsView(props: {
   const positions = useRef<Record<string, number>>({});
   const history = useRef<SettingsPage[]>([]);
   const navigate = (next: SettingsPage) => { history.current.push(page); setPage(next); };
-  const goBack = () => setPage(history.current.length ? history.current.pop()! : page === 'safety_testing' || page === 'thresholds' ? 'safety' : page === 'developer' ? 'advanced' : null);
+  const goBack = () => setPage(history.current.length ? history.current.pop()! : page === 'voicecheck_testing' ? 'safety_testing' : page === 'safety_testing' || page === 'thresholds' ? 'safety' : page === 'developer' ? 'advanced' : null);
   useEffect(() => { if (props.initialPage) setPage(props.initialPage); }, [props.initialPage]);
   useEffect(() => {
     const back = BackHandler.addEventListener('hardwareBackPress', () => {
@@ -141,6 +143,10 @@ export function SettingsView(props: {
       setSyncing(false);
     }
   }
+
+  if (page === 'voicecheck_testing') return <VoiceCheckTesting
+    blocked={d.hasActiveSession || !!sf.check || !!sf.demo || !!sf.conversation && !sf.conversation.finished}
+    initialLanguage={d.driver?.language === 'es' ? 'es' : 'en'} onExit={goBack} />;
 
   return (
     <View style={{ flex: 1 }}>
@@ -434,6 +440,7 @@ export function SettingsView(props: {
 
       </> : null}
       {page === 'safety_testing' ? <>
+      <Btn title="VoiceCheck Testing" disabled={d.hasActiveSession || !!sf.check || !!sf.demo} onPress={() => navigate('voicecheck_testing')} />
       <View onLayout={event => {
         if (props.initialPage === 'safety_testing' && !focusedDemo.current) {
           focusedDemo.current = true;
@@ -477,11 +484,7 @@ export function SettingsView(props: {
           />
           </View>
         ))}
-        {sf.demo ? (
-          <Text style={[st.note, { color: C.warn }]}>
-            Simulated warning in progress…
-          </Text>
-        ) : null}
+        {sf.demo ? <SimulationProgress demo={sf.demo} /> : null}
         {demoResult ? <Text style={st.note}>{demoResult}</Text> : null}
       </Card>
       </View>

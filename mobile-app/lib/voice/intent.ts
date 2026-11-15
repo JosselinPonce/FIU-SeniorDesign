@@ -23,6 +23,9 @@
 import { wellnessLanguage, clearWellnessAffirmation, type WellnessCategory } from './wellnessLanguage.ts';
 import { assertedWellnessClauses, hasAffirmativeUrgentSymptom, statementSegments, symptomScan } from './symptomLexicon.ts';
 import model from './intentModel.ts';
+import { normalise } from './normalise.ts';
+// Preserve the existing public utility export for callers and parity fixtures.
+export { normalise } from './normalise.ts';
 
 export type Intent = 'ok' | 'not_ok' | 'unclear' | 'silent';
 export type Understood = {
@@ -38,22 +41,6 @@ export type Understood = {
 const DIM: number = model.dim;
 const WEIGHTS = new Map<number, number[]>();
 for (const row of model.weights as number[][]) WEIGHTS.set(row[0]!, row.slice(1));
-
-// Accents removed so "sí"/"si" and "está"/"esta" match (as Python's NFD + Mn strip).
-const ACCENTS: Record<string, string> = {
-  á: 'a', à: 'a', â: 'a', ä: 'a', ã: 'a', é: 'e', è: 'e', ê: 'e', ë: 'e', í: 'i', ì: 'i', î: 'i', ï: 'i',
-  ó: 'o', ò: 'o', ô: 'o', ö: 'o', õ: 'o', ú: 'u', ù: 'u', û: 'u', ü: 'u', ñ: 'n', ç: 'c',
-};
-
-export function normalise(text: string): string {
-  let out = '';
-  for (const ch0 of text.toLowerCase().replace(/’/g, "'")) {
-    const ch = ACCENTS[ch0] ?? ch0;
-    const isAlnum = /[a-z0-9]/.test(ch) || (ch.length === 1 && ch.charCodeAt(0) > 127 && ch.toLowerCase() !== ch.toUpperCase());
-    out += isAlnum || ch === "'" ? ch : ' ';
-  }
-  return out.split(' ').filter(Boolean).join(' ');
-}
 
 function utf8(s: string): number[] {
   const out: number[] = [];

@@ -116,7 +116,7 @@ for (const lang of ['en', 'es'] as const) test(`${lang}: immediate sentence guid
 for (const mode of ['missing', 'invalid', 'ineligible'] as const) test(`${mode}: actual production adapter retains verification and validation fallback`, async () => {
   const f = fixture('en', { installed: mode !== 'missing', output: mode === 'invalid' ? 'Call your contact. You are safe.' : undefined });
   const ack = f.startAcknowledgment(acknowledgment.acknowledgmentContext('bpm_high', 'en', mode === 'ineligible' ? 'not okay' : "I'm dizzy"));
-  await tick(); assert.equal(ack.get('en'), "I'm sorry to hear that.");
+  await tick(); assert.equal(ack.get('en'), "Thank you for telling me.");
   assert.equal(f.handoffs, 0); assert.equal(f.downloads, 0);
   if (mode !== 'invalid') assert.equal(f.generations, 0);
 });
@@ -124,7 +124,7 @@ test('production adapter waits for release; late cleanup cannot publish a consum
   const release = deferred<void>(); const f = fixture('es', { release: () => release.promise });
   const ack = f.startAcknowledgment(acknowledgment.acknowledgmentContext('bpm_high', 'es', 'Me siento mareada'));
   await tick(); assert.equal(f.generations, 1); assert.equal(f.releases, 1);
-  assert.equal(ack.get('es'), 'Lamento que te sientas así.'); release.resolve(); await tick();
+  assert.equal(ack.get('es'), 'Gracias por decírmelo.'); release.resolve(); await tick();
   assert.equal(ack.source, 'fallback'); assert.equal(f.runtime.state.loaded, false);
 });
 test('episode cancellation stops independently running inference and retains cleanup ownership', async () => {
@@ -136,9 +136,9 @@ test('episode cancellation stops independently running inference and retains cle
 test('failed native release suppresses valid text and quarantines the native context', async () => {
   let failed = true; const f = fixture('en', { release: async () => { if (failed) throw Error('fixture native release failure'); } });
   const context = acknowledgment.acknowledgmentContext('bpm_high', 'en', "I'm dizzy");
-  const first = f.startAcknowledgment(context); await tick(); assert.equal(first.get('en'), "I'm sorry to hear that.");
+  const first = f.startAcknowledgment(context); await tick(); assert.equal(first.get('en'), "Thank you for telling me.");
   assert.equal(f.runtime.state.loaded, true); assert.equal(f.runtime.cleanupRequired, true);
-  const again = f.startAcknowledgment(context); await tick(); assert.equal(again.get('en'), "I'm sorry to hear that."); assert.equal(f.generations, 1);
+  const again = f.startAcknowledgment(context); await tick(); assert.equal(again.get('en'), "Thank you for telling me."); assert.equal(f.generations, 1);
   failed = false; await f.runtime.dispose(); assert.equal(f.runtime.cleanupRequired, false);
 });
 test('failed coordinated playback keeps typed/button follow-up and cannot grant live authorization', async () => {
@@ -169,7 +169,7 @@ test('production adapter deadline cannot publish late text', async t => {
   const output = deferred<string>(); const f = fixture('en', { generate: () => output.promise });
   const ack = f.startAcknowledgment(acknowledgment.acknowledgmentContext('bpm_high', 'en', "I'm dizzy"));
   await tick(); assert.equal(f.generations, 1); t.mock.timers.tick(5000); await tick();
-  assert.equal(f.stops, 1); assert.equal(ack.get('en'), "I'm sorry to hear that.");
+  assert.equal(f.stops, 1); assert.equal(ack.get('en'), "Thank you for telling me.");
   output.resolve("I'm sorry you're feeling dizzy."); await tick(); assert.equal(f.releases, 1); assert.equal(ack.source, 'fallback');
 });
 

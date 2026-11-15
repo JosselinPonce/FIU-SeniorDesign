@@ -38,6 +38,11 @@ const verifiedModel = new VerifiedModelFile({
   write: receipt => FS.writeAsStringAsync(paths().directory + 'verified-installation.json', JSON.stringify(receipt)),
   hash: (uri, signal, progress) => verifyNativeFile(nativeFileHash(), uri, GEMMA_ARTIFACT, signal, progress),
 }, GEMMA_ARTIFACT);
+/** Read existing integrity evidence only; never hashes or acquires a model context. */
+export async function inspectGemmaInstallation() {
+  try { return await verifiedModel.inspect(paths().model); }
+  catch { return 'unavailable' as const; }
+}
 async function verifyFile(uri: string, signal: AbortSignal, progress?: (bytes: number) => void, force = false) {
   checkCancelled(signal);
   const verified = await verifiedModel.verify(uri, signal, progress, force);

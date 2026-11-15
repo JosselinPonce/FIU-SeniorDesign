@@ -12,7 +12,7 @@
  * re-normalised defensively, so callers may pass raw or already-normalised
  * transcripts.
  */
-import { normalise } from './intent.ts';
+import { normalise } from './normalise.ts';
 
 export type SymptomCategory =
   | 'fatigue' | 'dizziness' | 'cardiovascular' | 'respiratory'

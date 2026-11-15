@@ -5,6 +5,8 @@ import { URL as NodeURL } from 'node:url';
 import { createRequire } from 'node:module';
 import ts from 'typescript';
 import { openSensi, sensiDestination, standbyReadiness, type GemmaFileStatus } from '../lib/assistant/sensiStandby.ts';
+import type { ReadinessSnapshot } from '../lib/assistant/systemReadiness.ts';
+import { systemReadiness, readinessIndicator } from '../lib/assistant/systemReadiness.ts';
 import { light, dark } from '../lib/theme/tokens.ts';
 const require = createRequire(import.meta.url);
 const source = (path: string) => readFileSync(new NodeURL('../' + path, import.meta.url), 'utf8');
@@ -13,7 +15,7 @@ function nodes(tree: any): any[] {
   if (Array.isArray(tree)) return tree.flatMap(nodes);
   return [tree, ...nodes(tree.props?.children)];
 }
-function harness(model: GemmaFileStatus, tokens = light) {
+function harness(model: GemmaFileStatus, tokens = light, observation: Partial<ReadinessSnapshot> = {}) {
   const exports: any = {};
   const deps: Record<string, unknown> = {
     './ScreenHeader': { ScreenHeader: 'ScreenHeader' },
@@ -24,11 +26,15 @@ function harness(model: GemmaFileStatus, tokens = light) {
     '../lib/i18n/native': { LocalizedText: 'Text', LocalizedPressable: 'Pressable' },
     react: { useState: () => [model, () => {}], useEffect() {} },
     'react/jsx-runtime': require('react/jsx-runtime'),
-    'react-native': { Modal: 'Modal', SafeAreaView: 'SafeAreaView', Text: 'Text', View: 'View', Pressable: 'Pressable' },
+    'react-native': { ScrollView: 'ScrollView', Modal: 'Modal', SafeAreaView: 'SafeAreaView', Text: 'Text', View: 'View', Pressable: 'Pressable' },
     '../lib/theme/ThemeProvider': { useTheme: () => ({ tokens }) },
     '../lib/assistant/sensiStandby': { standbyReadiness },
+    '../lib/assistant/systemReadiness': { systemReadiness, readinessIndicator },
+    '../lib/assistant/useSystemReadiness': { useSystemReadiness: () => ({ file: model, runtime: { busy: false, phase: 'Not checked', error: '', installed: false, loaded: false, progress: null }, speech: null, installedLocales: [], responses: 'unknown', foreground: true, ...observation }) },
+    '../lib/i18n/LanguageProvider': { useAppLanguage: () => ({ t: (s: string) => s }) },
+    'expo/node_modules/@expo/vector-icons/Feather': { __esModule: true, default: 'Feather' },
     '../modules/gemma-poc/phone': { inspectGemmaModelFile: () => { throw Error('render must not load or verify a model'); } },
-    './ui': { Btn: 'Btn' },
+    './ui': { Btn: 'Btn', Card: 'Card', Pill: 'Pill' },
   };
   const load = (path: string) => {
     const js = ts.transpileModule(source(path), { compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.ES2022 } }).outputText;
@@ -62,17 +68,23 @@ test('tap with an active VoiceCheck preserves the current conversation and captu
 });
 for (const tokens of [light, dark]) {
   test(`${tokens === light ? 'Warm Pearl' : 'Soft Graphite'}: unavailable Gemma still shows a read-only themed standby with honest readiness`, () => {
-    const ui = harness('missing', tokens); let closed = false;
-    const tree = ui.SensiStandby({ visible: true, mode: 'local', onClose: () => { closed = true; },
-      drive: { driver: { id: 'driver' }, hasActiveSession: false, isConnected: false, voice: null } });
+    const ui = harness('missing', tokens); let closed = false, tried = 0;
+    const tree = ui.SensiStandby({ visible: true, mode: 'local', onClose: () => { closed = true; }, onTrySafetyCheck: () => { tried++; },
+      drive: { driver: { id: 'driver' }, hasActiveSession: false, isConnected: false, connection: 'disconnected', voice: null } });
     const rendered = nodes(tree);
     const text = rendered.filter(node => node.type === 'Text').map(node => node.props.children).flat().join(' ');
-    assert.match(text, /Hi, I'm Sensi!/); assert.match(text, /safety companion/);
-    assert.doesNotMatch(text, /Gemma model/); assert.match(text, /Waiting for.*sensor connection/);
-    assert.match(text, /Voice readiness is checked/);
+    assert.match(text, /Hi, I'm Sensi!/); assert.match(text, /driving safety companion/);
+    assert.match(text, /Sensi AI \(Gemma\)/); assert.match(text, /Sensor connection needed/);
+    assert.match(text, /Checked when a safety check starts/);
+    assert.match(text, /Manual responses/); assert.doesNotMatch(text, /Voice recognition|Typed and button responses\./);
     assert.equal(rendered.find(node => node.type === 'SafeAreaView').props.style.backgroundColor, tokens.background);
     assert.equal(rendered.some(node => /TextInput|TypedResponse|ConversationThread/.test(String(node.type))), false);
-    const buttons = rendered.filter(node => node.type === 'Btn'); assert.deepEqual(buttons.map(node => node.props.title), ['Try a Safety Check']);
+    const buttons = rendered.filter(node => node.type === 'Btn'); assert.deepEqual(buttons.map(node => node.props.title), ['Try Sensi']);
+    buttons[0].props.onPress(); assert.equal(tried, 1);
+    assert.equal(rendered.filter(node => node.type === 'SensiGlyph').length, 1);
+    assert.equal(rendered.filter(node => node.type === 'View' && node.props.accessible && node.props.accessibilityLabel).length, 4);
+    assert.equal(rendered.find(node => node.type === 'ScrollView').props.contentContainerStyle.padding, 16);
+    assert.ok(!rendered.some(node => node.props.numberOfLines));
     rendered.find(node => node.type === 'ScreenHeader').props.onBack(); assert.equal(closed, true);
     assert.equal(ui.SensiStandby({ visible: false }), null);
   });
@@ -93,4 +105,66 @@ test('Settings remains a separate tab; homepage handler cannot start/reset a che
   assert.doesNotMatch(shell, /PHONE_CONNECTED_READINESS|<DriverAssistant/);
   const standby = source('components/SensiStandby.tsx');
   assert.doesNotMatch(standby, /prepareVoice|\.load\(|\.run\(|\.provision\(|TextInput|respondAlert|startSession/);
+});
+
+
+for (const [model, observation, status] of [
+  ['checking', {}, 'Checking model status'],
+  ['missing', {}, 'Not installed'],
+  ['present', {}, 'Installation unverified'],
+  ['unavailable', {}, 'Unavailable'],
+  ['present', { runtime: { busy:true,phase:'Downloading and verifying model',progress:{stage:'download',completed:50,total:100,elapsedMs:1},error:'',installed:false,loaded:false } }, 'Downloading'],
+  ['present', { runtime: { busy:true,phase:'Loading model',progress:null,error:'',installed:true,loaded:false } }, 'Installation unverified'],
+  ['present', { runtime: { busy:false,phase:'Error',progress:null,error:'Initialization failed',installed:true,loaded:false } }, 'Unavailable'],
+  ['present', { runtime: { busy:false,phase:'Ready',progress:null,error:'',installed:true,loaded:true } }, 'Installation unverified'],
+] as const) test(`home renders observed Gemma state honestly: ${model} ${status}`, () => {
+  const ui=harness(model,light,observation as Partial<ReadinessSnapshot>);
+  const tree=ui.SensiStandby({ visible:true,drive:{driver:{id:'driver'},connection:'connected',link:{source:'esp32'},safety:{monitoring:'active'}},onTrySafetyCheck(){},onClose(){} });
+  const rendered=nodes(tree);
+  const row=rendered.find(n=>n.type==='View' && n.props.accessible && n.props.accessibilityLabel?.startsWith('Sensi AI (Gemma).'));
+  assert.ok(row);assert.ok(row.props.accessibilityLabel.includes(status));
+  if(status==='Downloading')assert.match(row.props.accessibilityLabel,/50%/);
+  const text=rendered.filter(n=>n.type==='Text').flatMap(n=>n.props.children).join(' ');
+  assert.match(text,/Safety checks available/);assert.match(text,/Manual responses/);
+});
+
+test('compact home hierarchy has exactly four indicators and no recognition or explanatory row text', () => {
+  const ui=harness('present');
+  const rendered=nodes(ui.SensiStandby({visible:true,drive:{driver:{id:'p'},connection:'connected',link:{source:'esp32'},safety:{monitoring:'active'}},onClose(){},onTrySafetyCheck(){}}));
+  const text=rendered.filter(n=>n.type==='Text').flatMap(n=>n.props.children).join(' ');
+  assert.match(text,/If DriveSense detects unusual health readings, I'll check in to see how you're feeling\./);
+  assert.match(text,/Simulated safety check · No live emergency actions/);
+  assert.doesNotMatch(text,/Meet Sensi|Experience a simulated safety check|Voice recognition|Integrity and runtime availability|playback is checked|Opens Safety Testing/);
+  const headers=rendered.filter(n=>n.props.accessibilityRole==='header').map(n=>n.props.children);
+  assert.deepEqual(headers,["Hi, I'm Sensi!",'System Readiness']);
+  const rows=rendered.filter(n=>n.type==='View'&&n.props.accessible&&n.props.accessibilityLabel);
+  assert.deepEqual(rows.map(n=>n.props.accessibilityLabel.split('. ')[0]),['Steering-wheel sensors','Sensi AI (Gemma)','Voice responses','Manual responses']);
+  assert.equal(rendered.filter(n=>n.type==='Feather').length,4);
+  assert.match(rows[1].props.accessibilityLabel,/Installation unverified/);
+  assert.equal(rendered.filter(n=>n.type==='SensiGlyph').length,1);
+});
+
+test('compact name/status rows wrap without fixed text heights or truncation', () => {
+  const ui=harness('present');const rendered=nodes(ui.SensiStandby({visible:true,drive:{driver:{id:'p'},connection:'disconnected',safety:{}},onClose(){},onTrySafetyCheck(){}}));
+  const rows=rendered.filter(n=>n.type==='View'&&n.props.accessible&&n.props.accessibilityLabel);
+  for(const row of rows){
+    assert.equal(row.props.style.flexDirection,'row');assert.equal(row.props.style.flexWrap,'wrap');
+    const contents=nodes(row);const label=contents.find(n=>n.type==='Text');
+    assert.equal(label.props.style.flexGrow,1);assert.equal(label.props.style.flexShrink,1);
+    assert.ok(contents.some(n=>n.type==='View'&&n.props.style?.maxWidth==='100%'));
+    for(const node of contents.filter(n=>n.type==='Text')){assert.equal(node.props.numberOfLines,undefined);assert.equal(node.props.style.height,undefined);assert.notEqual(node.props.allowFontScaling,false);}
+  }
+});
+
+for (const tokens of [light, dark]) test(`home applies shared semantic color to each status and icon in ${tokens === light ? 'light' : 'dark'} mode`, () => {
+  const ui = harness('present', tokens, { installation: 'installed', responses: 'available' });
+  const rendered = nodes(ui.SensiStandby({ visible: true, drive: { driver: { id: 'p' }, connection: 'connecting', safety: {} }, onClose() {}, onTrySafetyCheck() {} }));
+  const rows = rendered.filter(n => n.type === 'View' && n.props.accessible && n.props.accessibilityLabel);
+  for (const [i, status, color] of [[0, 'Connecting', tokens.warning], [1, 'Installed', tokens.connected], [2, 'Available', tokens.connected], [3, 'Available', tokens.connected]] as const) {
+    const row = rows[i]; assert.ok(row.props.accessibilityLabel.includes(status));
+    const contents = nodes(row); assert.equal(contents.find(n => n.type === 'Feather').props.color, color);
+    const text = contents.find(n => n.type === 'Text' && Array.isArray(n.props.children) && n.props.children[0] === status);
+    assert.ok(text); assert.equal(text.props.style.color, color);
+  }
+  assert.ok(rendered.some(n => n.type === 'Text' && n.props.children === 'Connecting sensors'));
 });

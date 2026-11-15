@@ -467,6 +467,67 @@ export const spanish: Record<string, string> = {
   'Speech is processed on this phone. Audio follows the current speaker or Bluetooth route and the device volume. Use Voice to choose an installed system voice. Optional Premium or Enhanced voices can be downloaded in iPhone Settings → Accessibility → Read & Speak → Voices. VoiceCheck recognition remains offline; no models are downloaded during a check.': 'El teléfono procesa la voz. El audio usa el altavoz o Bluetooth y respeta el volumen del dispositivo. En Voz puedes elegir una voz instalada. Las voces Premium o mejoradas se pueden descargar en Ajustes del iPhone → Accesibilidad → Lectura y voz → Voces. VoiceCheck sigue funcionando sin conexión; no descarga modelos durante una revisión.',
 };
 
+// User-invoked, isolated VoiceCheck testing and simulation presentation.
+Object.assign(spanish, {
+  'Elapsed simulated seconds:': 'Segundos simulados transcurridos:',
+  'Urgent symptoms recognized': 'Síntomas urgentes reconocidos',
+  'VoiceCheck Testing': 'Pruebas de VoiceCheck',
+  'Diagnostic only. No sensor events, saved episodes, uploads or phone calls. Park before testing.': 'Solo diagnóstico. Sin eventos de sensores, episodios guardados, cargas ni llamadas. Estaciónate antes de probar.',
+  'Start recognition test': 'Iniciar prueba de reconocimiento',
+  'Testing paused while a safety workflow or recording is active.': 'Prueba en pausa mientras hay una revisión de seguridad o grabación activa.',
+  'Recognized transcript': 'Transcripción reconocida',
+  'Unconfirmed transcript — not used for interpretation.': 'Transcripción sin confirmar: no se usa para interpretar.',
+  'Typed diagnostic response': 'Respuesta escrita de diagnóstico',
+  'Test interpretation': 'Probar interpretación',
+  'Response preview — no action is authorized': 'Vista previa de respuesta: no autoriza ninguna acción',
+  'Play response preview': 'Reproducir vista previa',
+  'Cancel test': 'Cancelar prueba', 'Exit testing': 'Salir de las pruebas',
+  'No final response was confirmed. Try again or type a response.': 'No se confirmó una respuesta final. Inténtalo de nuevo o escribe una respuesta.',
+  'Voice unavailable. Use typed input or try again.': 'Voz no disponible. Escribe una respuesta o inténtalo de nuevo.',
+  'SIMULATED': 'SIMULADO', 'Elapsed simulated seconds: {seconds}': 'Segundos simulados transcurridos: {seconds}',
+  'Fabricated readings — separate from live sensors.': 'Lecturas ficticias, separadas de los sensores reales.',
+  'normal readings': 'lecturas normales', 'fabricated abnormal readings': 'lecturas anormales ficticias',
+  'warning flag (warning) — confirming': 'advertencia: confirmando', 'warning flag (critical) — confirming': 'alerta crítica: confirmando',
+  'emergency confirmed — voice check': 'evento confirmado: revisión por voz',
+  'idle': 'inactivo', 'preparing': 'preparando', 'listening': 'escuchando', 'finalizing': 'finalizando', 'playing': 'reproduciendo', 'cancelling': 'cancelando',
+});
+
+// Passive Sensi home: system state, not an inference or microphone session.
+Object.assign(spanish, {
+  'Available': 'Disponible', 'Connected': 'Conectado', 'Connecting': 'Conectando', 'Not connected': 'Sin conexión',
+  'Meet Sensi': 'Conoce a Sensi', 'Your driving safety companion.': 'Tu acompañante de seguridad al conducir.',
+  "I'm here to help keep you safe. If DriveSense detects unusual health readings while you're driving, I'll check in to see how you're feeling.": 'Estoy aquí para ayudarte a mantenerte a salvo. Si DriveSense detecta lecturas de salud inusuales mientras conduces, te preguntaré cómo te sientes.',
+  'System Readiness': 'Disponibilidad del sistema', 'Try Sensi': 'Probar Sensi',
+  'Experience a simulated safety check.': 'Experimenta una revisión de seguridad simulada.',
+  'Steering-wheel sensors': 'Sensores del volante', 'Sensi AI (Gemma)': 'IA de Sensi (Gemma)',
+  'Voice recognition': 'Reconocimiento de voz', 'Voice responses': 'Respuestas habladas', 'Manual responses': 'Respuestas manuales',
+  'Connection unavailable': 'Conexión no disponible', 'Connection not verified': 'Conexión sin verificar',
+  'Relay connected; wheel sensors disconnected.': 'Retransmisor conectado; sensores del volante desconectados.',
+  'Waiting for the relay sensor-link status.': 'Esperando el estado del enlace con los sensores.',
+  'Not downloaded': 'Sin descargar', 'Downloading': 'Descargando', 'Readiness check in progress': 'Comprobando disponibilidad',
+  'Installed': 'Instalado', 'Not installed': 'Sin instalar', 'Installation unverified': 'Instalación sin verificar',
+  'Checking model status': 'Comprobando estado del modelo', 'Downloaded — not verified': 'Descargado, sin verificar',
+  'Model status could not be verified.': 'No se pudo verificar el estado del modelo.',
+  'Integrity and runtime availability are checked before use.': 'La integridad y disponibilidad del modelo se comprueban antes de usarlo.',
+  'Fixed safety responses remain available.': 'Las respuestas de seguridad predefinidas siguen disponibles.',
+  'Checked when a safety check starts': 'Se comprueba al iniciar una revisión de seguridad',
+  'Typed and button responses remain available.': 'Las respuestas escritas y por botones siguen disponibles.',
+  'Permission required': 'Permiso necesario', 'Capability reported; microphone capture is checked at use.': 'Capacidad disponible; el micrófono se comprueba al usarlo.',
+  'Installed voice found; playback is checked at use.': 'Voz instalada; la reproducción se comprueba al usarla.',
+  'Typed and button responses.': 'Respuestas escritas y por botones.',
+  'Readiness not verified': 'Disponibilidad sin verificar', 'Connecting sensors': 'Conectando sensores',
+  'Sensor connection needed': 'Se necesita conectar los sensores', 'Awaiting valid readings': 'Esperando lecturas válidas',
+  'Safety checks available': 'Revisiones de seguridad disponibles', 'Safety monitoring unavailable': 'Monitoreo de seguridad no disponible',
+  'Select a driver': 'Selecciona un conductor',
+});
+
+// Compact home labels; underlying readiness and simulation policies are unchanged.
+Object.assign(spanish, {
+  "If DriveSense detects unusual health readings, I'll check in to see how you're feeling.": 'Si DriveSense detecta lecturas de salud inusuales, te preguntaré cómo te sientes.',
+  'Downloaded · Unverified': 'Descargado · Sin verificar',
+  'Simulated safety check · No live emergency actions': 'Revisión de seguridad simulada · Sin acciones de emergencia reales',
+});
+
 // Complete system-generated simulation summaries. These never contain driver transcripts.
 for (const answer of ['you are OK', 'you are NOT OK']) for (const urgent of ['', ' (urgent words heard)']) for (const channel of ['voice', 'button', 'typed']) {
   spanish[`Understood: ${answer}${urgent} — via ${channel}.`] = `Respuesta: ${answer === 'you are OK' ? 'estás bien' : 'no estás bien'}${urgent ? ' (se oyeron palabras de urgencia)' : ''} — por ${channel === 'voice' ? 'voz' : channel === 'button' ? 'botón' : 'texto'}.`;

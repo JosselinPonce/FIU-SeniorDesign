@@ -16,6 +16,23 @@ export class VerifiedModelFile {
     return a.size === b.size && typeof a.modified === 'number' && Number.isFinite(a.modified)
       && a.modified === b.modified && a.created === b.created;
   }
+  private matchesReceipt(uri: string, identity: FileIdentity, receipt: any) {
+    return receipt?.version === 1 && receipt.uri === uri && receipt.sha256 === this.artifact.sha256
+      && receipt.revision === this.artifact.revision && this.same(identity, receipt);
+  }
+  /** Passive evidence only. Missing metadata/receipt never triggers hashing or writes. */
+  async inspect(uri: string): Promise<'installed' | 'missing' | 'unverified' | 'unavailable'> {
+    try {
+      const before = this.deps.identity(uri);
+      if (!before) return 'missing';
+      if (before.size !== this.artifact.bytes) return 'unavailable';
+      let receipt: unknown;
+      try { receipt = await this.deps.read(); } catch { return 'unverified'; }
+      const after = this.deps.identity(uri);
+      if (!after) return 'missing';
+      return this.same(before, after) && this.matchesReceipt(uri, after, receipt) ? 'installed' : 'unverified';
+    } catch { return 'unavailable'; }
+  }
   async remember(uri: string) {
     const identity = this.deps.identity(uri);
     if (!identity || identity.size !== this.artifact.bytes || identity.modified === null) return;
@@ -30,8 +47,7 @@ export class VerifiedModelFile {
     let receipt: any;
     try { receipt = await this.deps.read(); } catch { /* Native verification below. */ }
     check();
-    if (!force && receipt?.version === 1 && receipt.uri === uri && receipt.sha256 === this.artifact.sha256
-        && receipt.revision === this.artifact.revision && this.same(before, receipt)) {
+    if (!force && this.matchesReceipt(uri, before, receipt)) {
       progress?.(before.size); return true;
     }
     // A forced verification failure must never leave an earlier receipt trusted.

@@ -16,6 +16,9 @@ export type WellnessCategory = 'fatigue' | 'dizziness' | 'discomfort' | 'other' 
 export function clearWellnessAffirmation(t: string, original = t): boolean {
   // A punctuated first-person/Spanish discourse answer is distinct from unpunctuated no bien.
   if (/^no,\s*(?:estoy|me siento|me encuentro|todo|muy|bien|i'm|i am|i feel)\b/i.test(original)) t = t.replace(/^no /, '');
+  // Conversational no may precede a complete English first-person affirmation.
+  // The whole-answer grammar below and the final symptom veto still apply.
+  t = t.replace(/^no (?=(?:i'm|im|i am|i feel) )/, '');
   if (/^(?:yes|yeah|yep|yup|sure|si|claro)(?: please| thanks| gracias)?$/.test(t)) return true;
   const prefix = "(?:(?:yes|yeah|yep|yup|sure|absolutely|mm hmm|of course|si|claro) )*";
   const positive = "(?:(?:(?:i'm|im|i am|i feel|i'm feeling|i am feeling|i'm doing|i am doing) )?(?:(?:really|very|totally|perfectly|absolutely) )?(?:okay|ok|fine|good|well|great|alright|all right)|all good|everything(?:'s| is) (?:okay|ok|fine|all right)|(?:(?:estoy|me siento|me encuentro) )?(?:muy |perfectamente )?bien|todo (?:esta )?bien|not bad|fine fine|(?:no )?(?:i )?(?:don't|dont|do not) need (?:any )?(?:help|anything)|no necesito (?:ayuda|nada))";

@@ -8,7 +8,7 @@ import { light } from '../lib/theme/tokens.ts';
 import { safetyButtonText, simulationCompletion } from '../lib/assistant/safetyConversation.ts';
 import { contactHandoffMessage } from '../modules/local-foundation-models/conversationPolicy.ts';
 const require=createRequire(import.meta.url);
-function harness() {
+function harness(height = 844) {
   const source=readFileSync(new NodeURL('../components/SensiSafetyConversation.tsx',import.meta.url),'utf8');
   const compiled=ts.transpileModule(source,{compilerOptions:{module:ts.ModuleKind.CommonJS,jsx:ts.JsxEmit.ReactJSX,target:ts.ScriptTarget.ES2022}}).outputText;
   const exports:any={};
@@ -23,7 +23,7 @@ function harness() {
     './VoiceCheckListeningIndicator':{VoiceCheckListeningIndicator:'ListeningIndicator'},
     react:{useRef:()=>({current:false}),useState:()=>[false,()=>{}],useEffect:(fn:()=>void)=>fn()},
     'react/jsx-runtime':require('react/jsx-runtime'),
-    'react-native':{Platform:{OS:'ios'},KeyboardAvoidingView:'KeyboardAvoidingView',Modal:'Modal',SafeAreaView:'SafeAreaView',Text:'Text',View:'View'},
+    'react-native':{ScrollView:'ScrollView',useWindowDimensions:()=>({width:390,height}),Platform:{OS:'ios'},KeyboardAvoidingView:'KeyboardAvoidingView',Modal:'Modal',SafeAreaView:'SafeAreaView',Text:'Text',View:'View'},
     '../lib/assistant/safetyConversation':{safetyButtonText,simulationCompletion},
     '../modules/local-foundation-models/conversationPolicy':{contactHandoffMessage},
     '../lib/theme/ThemeProvider':{useTheme:()=>({tokens:light})},
@@ -99,14 +99,19 @@ test('live consent never exposes the fictional dialer demo', () => {
   assert.equal(walk(tree).some(n => n.type === 'EmergencyDialerDemo'), false);
 });
 
-test('compact header and status are outside the only scrollable thread; response controls are in its footer', () => {
+test('response composer is outside transcript scrolling and remains bounded with keyboard avoidance', () => {
   const render = harness();
   const tree = render({ drive: { safety: { conversation: { episodeId:'e', messages:[], simulation:true, realContactDemo:true, finished:false },
     check: { episode:{id:'e'}, captureId:'c', question:'wellness', phase:'listening' } } }, onContinue() {} });
   const walk = (n: any): any[] => !n || typeof n !== 'object' ? [] : Array.isArray(n) ? n.flatMap(walk) : [n,...walk(n.props?.children),...walk(n.props?.footer)];
   const nodes = walk(tree); assert.equal(nodes.filter(n => n.type === 'Thread').length,1);
-  assert.equal(nodes.filter(n => n.type === 'ScrollView').length,0,'no competing outer/footer scroller');
-  const thread = nodes.find(n => n.type === 'Thread'); assert.ok(thread.props.footer);
+  assert.equal(nodes.filter(n => n.type === 'ScrollView').length,1,'one independent bounded composer');
+  const thread = nodes.find(n => n.type === 'Thread'); assert.equal(thread.props.footer, undefined);
+  const composer = nodes.find(n => n.type === 'ScrollView');
+  assert.equal(composer.props.keyboardShouldPersistTaps, 'handled');
+  assert.equal(composer.props.style.maxHeight, 844 * 0.48);
+  assert.ok(walk(composer).some(n => n.type === 'TypedResponse'));
+  assert.equal(walk(composer).filter(n => n.type === 'Btn').length, 2);
   const header = nodes.find(n => n.type === 'Text' && n.props.accessibilityRole === 'header'); assert.equal(header.props.style.fontSize,18);
   assert.equal(nodes.filter(n => n.type === 'KeyboardAvoidingView').length,1); assert.equal(nodes.filter(n => n.type === 'SafeAreaView').length,1);
 });

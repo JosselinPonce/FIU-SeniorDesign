@@ -4,7 +4,7 @@ import { traceVoiceCheckUI } from '../lib/voice/responsivenessDiagnostics';
 import { LocalizedText as Text } from '../lib/i18n/native';
 import { SafetyTypedResponse } from './SafetyTypedResponse';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { Modal, SafeAreaView, View, KeyboardAvoidingView, Platform } from 'react-native';
+import { Modal, SafeAreaView, View, KeyboardAvoidingView, Platform, ScrollView, useWindowDimensions } from 'react-native';
 import type { useDriveSession } from '../lib/hooks/useDriveSession';
 import type { AssistantMode } from '../lib/assistant/mode';
 import { safetyButtonText, simulationCompletion } from '../lib/assistant/safetyConversation';
@@ -21,6 +21,7 @@ export function SensiSafetyConversation({ drive, onContinue, standby, onStandbyC
   standby?: ReactNode; onStandbyClose?(): void;
 }) {
   const { tokens: t } = useTheme();
+  const { height } = useWindowDimensions();
   const dialogue = drive.safety.conversation;
   const check = drive.safety.check;
   const diagnosticCheck = drive.safety.check;
@@ -69,7 +70,10 @@ export function SensiSafetyConversation({ drive, onContinue, standby, onStandbyC
       {dialogue.simulation ? <Text style={{ color: t.textSecondary, fontSize: 12 }}>{dialogue.realContactDemo ? 'Real-contact demo · iOS confirmation required' : 'Noncalling simulation'}</Text> : null}
       </View>
 
-      <SensiConversationThread messages={dialogue.simulation ? dialogue.messages.filter(message => !(message.role === 'system' && /^(?:Simulation complete\.|Noncalling simulation complete\.|Contact consent received\.)/.test(message.text))) : dialogue.messages} provisional="" compactPlayback footer={controls} />
+      <SensiConversationThread messages={dialogue.simulation ? dialogue.messages.filter(message => !(message.role === 'system' && /^(?:Simulation complete\.|Noncalling simulation complete\.|Contact consent received\.)/.test(message.text))) : dialogue.messages} provisional="" compactPlayback />
+      <ScrollView keyboardShouldPersistTaps="handled" style={{ flexGrow: 0, flexShrink: 1, maxHeight: height * 0.48, borderTopWidth: 1, borderTopColor: t.border }} contentContainerStyle={{ padding: 12, gap: 8 }}>
+        {controls}
+      </ScrollView>
 
     </KeyboardAvoidingView>
     </SafeAreaView>

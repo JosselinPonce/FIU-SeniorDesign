@@ -11,7 +11,7 @@ test('literal Spanish placeholder is rejected and never repaired into an accepte
     'Lamento que te sientas sensación.', 'Lamento que te sientas ${feeling}.']) {
     assert.equal(validateAcknowledgment(text, context), null);
     const task = startSafetyAcknowledgment(async () => text, context); await tick();
-    assert.equal(task.get('es'), 'Lamento que te sientas así.'); assert.equal(task.source, 'fallback');
+    assert.equal(task.get('es'), 'Gracias por decírmelo.'); assert.equal(task.source, 'fallback');
   }
 });
 
@@ -62,7 +62,7 @@ test('same six ineligible fixtures continue to skip generation instead of using 
     assert.equal(current.statement, null); assert.equal(canGenerateAcknowledgment(current), false);
     assert.throws(() => acknowledgmentPrompt(current), /No eligible/);
     const task = startSafetyAcknowledgment(async () => { calls++; return 'must not generate'; }, current);
-    assert.equal(task.get(fixture.language), fixture.language === 'en' ? "I'm sorry to hear that." : 'Lamento que te sientas así.');
+    assert.equal(task.get(fixture.language), fixture.language === 'en' ? "Thank you for telling me." : 'Gracias por decírmelo.');
     task.cancel();
   }
   await tick(); assert.equal(calls, 0);
@@ -75,6 +75,6 @@ test('Spanish example does not override timeout or cancellation for a late other
     const task = startSafetyAcknowledgment(s => { signal = s; return new Promise<string>(r => { resolve = r; }); }, context, 10);
     await tick(); if (action === 'cancel') task.cancel(); else t.mock.timers.tick(10);
     resolve('Lamento que te sientas mareada.'); await tick();
-    assert.equal(signal.aborted, true); assert.equal(task.get('es'), 'Lamento que te sientas así.'); assert.equal(task.source, 'fallback');
+    assert.equal(signal.aborted, true); assert.equal(task.get('es'), 'Gracias por decírmelo.'); assert.equal(task.source, 'fallback');
   }
 });

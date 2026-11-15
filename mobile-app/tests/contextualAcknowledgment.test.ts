@@ -49,16 +49,16 @@ test('timeout, cancellation, unavailable generation and consumed results always 
     await tick();
     if (mode === 'timeout') t.mock.timers.tick(10);
     if (mode === 'cancel') ack.cancel();
-    assert.equal(ack.get('en'), "I'm sorry to hear that.");
+    assert.equal(ack.get('en'), "Thank you for telling me.");
     assert.equal(signal.aborted, true);
     late.resolve("I'm sorry you're feeling dizzy."); await tick();
-    assert.equal(ack.get('en'), "I'm sorry to hear that."); assert.equal(ack.source, 'fallback');
+    assert.equal(ack.get('en'), "Thank you for telling me."); assert.equal(ack.source, 'fallback');
   }
   const unavailable = startSafetyAcknowledgment(async () => { throw Error('missing runtime'); }, context);
-  await tick(); assert.equal(unavailable.get('en'), "I'm sorry to hear that.");
+  await tick(); assert.equal(unavailable.get('en'), "Thank you for telling me.");
   const ready = startSafetyAcknowledgment(async () => "I'm sorry you're feeling dizzy.", context);
   await tick(); assert.equal(ready.get('en'), "I'm sorry you're feeling dizzy."); assert.equal(ready.source, 'gemma');
-  assert.equal(ready.get('en'), "I'm sorry to hear that.");
+  assert.equal(ready.get('en'), "Thank you for telling me.");
 });
 
 for (const fixture of [safetyAcknowledgmentFixtures[0], safetyAcknowledgmentFixtures[2]]) {
@@ -180,6 +180,6 @@ for (const stage of ['start', 'read'] as const) test(`throwing presentation ${st
     acknowledgment: () => { if (stage === 'read') throw Error('failed'); return 'invalid output'; },
   });
   const result = await check.run('bpm_high');
-  assert.equal(spoken.length, 7); assert.equal(spoken[5], "I'm sorry to hear that."); assert.match(spoken[6]!, /^Would you like/);
+  assert.equal(spoken.length, 7); assert.equal(spoken[5], "Thank you for telling me."); assert.match(spoken[6]!, /^Would you like/);
   assert.equal(result.outcome, 'not_ok'); assert.equal(result.contactCall, 'declined_offer'); assert.equal(check.authorizesContact(result), false);
 });

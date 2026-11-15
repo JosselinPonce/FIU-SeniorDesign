@@ -16,7 +16,7 @@ test('runtime empathy diagnostics are opt-in, Debug-only, metadata-only and dist
       const ready = startSafetyAcknowledgment(async () => "I'm sorry you're feeling dizzy.", context);
       await tick(); assert.equal(ready.get('en'), "I'm sorry you're feeling dizzy.");
       const invalid = startSafetyAcknowledgment(async () => 'Call someone.', context);
-      await tick(); assert.equal(invalid.get('en'), "I'm sorry to hear that.");
+      await tick(); assert.equal(invalid.get('en'), "Thank you for telling me.");
       const records = responsiveness.snapshot();
       if (!debug || !enabled) { assert.equal(records.length, 0); continue; }
       const events = records.flatMap(r => r.events);
