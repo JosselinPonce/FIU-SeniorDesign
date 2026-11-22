@@ -8,6 +8,7 @@ type OperationKind = 'verification' | 'provisioning' | 'loading' | 'inference' |
 export type PocState = { progress: ProvisionProgress | null; phase: string; installed: boolean; loaded: boolean; busy: boolean; response: string; error: string; loadMs: number | null; inferenceMs: number | null; cleanupRequired?: boolean };
 export type PocDeps = {
   verify(signal: AbortSignal, progress?: (bytes: number) => void, force?: boolean): Promise<boolean>;
+  inspectVerified?(): Promise<boolean>;
   provision(signal: AbortSignal, progress: (value: ProvisionProgress) => void): Promise<void>;
   initialize(): Promise<Context>;
 };
@@ -35,7 +36,7 @@ export class GemmaPoc {
   subscribe(listener: (state: PocState) => void) { this.listeners.add(listener); listener(this.state); return () => { this.listeners.delete(listener); }; }
   private set(patch: Partial<PocState>) { this.state = { ...this.state, ...patch }; this.listeners.forEach(listener => listener(this.state)); }
 
-  private async operation(kind: OperationKind, phase: string, action: (signal: AbortSignal) => Promise<void>, deadline?: number) {
+  private async operation(kind: OperationKind, phase: string, action: (signal: AbortSignal) => Promise<void>, deadline?: number, onTimeout?: () => void) {
     if (this.active || (this.disposal && kind !== 'unloading')) throw new Error('Another Gemma operation is still active.');
     const abort = new AbortController();
     let finish!: () => void;
@@ -43,6 +44,7 @@ export class GemmaPoc {
     this.active = { abort, done, kind };
     this.set({ busy: true, error: '', phase });
     const timer = deadline === undefined ? undefined : setTimeout(() => {
+      onTimeout?.();
       this.set({ error: `${phase} timed out. Waiting for native cleanup.`, phase: 'Stopping' });
       this.cancel();
     }, deadline);
@@ -51,7 +53,7 @@ export class GemmaPoc {
       if (abort.signal.aborted) throw new Error('Gemma operation cancelled.');
       this.set({ phase: this.context ? 'Ready' : 'Unloaded' });
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = kind === 'inference' ? 'Gemma inference unavailable.' : error instanceof Error ? error.message : String(error);
       // Provisioning owns its stage deadlines and bounded cleanup. Surface its
       // final result rather than retaining the earlier "cancellation requested".
       this.set({ error: kind === 'provisioning' ? message : this.state.error || message, phase: 'Error' });
@@ -75,7 +77,7 @@ export class GemmaPoc {
     this.active.abort.abort();
     this.set({ phase: 'Stopping', error: this.state.error || 'Cancellation requested. Waiting for native cleanup.' });
     if (this.active.kind === 'inference' && this.context) {
-      const failed = (error: unknown) => this.set({ error: `Cancellation failed: ${String(error)}. Waiting for native completion.` });
+      const failed = (_error: unknown) => this.set({ error: 'Cancellation failed. Waiting for native completion.' });
       try { this.stopping = this.context.stop().catch(failed); }
       catch (error) { failed(error); }
     }
@@ -93,11 +95,14 @@ export class GemmaPoc {
     if (signal.aborted) throw new Error('Model provisioning cancelled.');
     this.set({ installed: true });
   }); }
-  load(force = false) { return this.operation('loading', 'Loading model', async signal => {
+  load(force = false, receiptOnly = false) { return this.operation('loading', 'Loading model', async signal => {
     if (this.context) throw new Error('Model is already loaded.');
     this.set({ installed: false, response: '', loadMs: null, progress: null });
     const verifying = Date.now();
-    if (!await this.deps.verify(signal, completed => this.set({ phase: 'Verifying SHA-256', progress: { stage: 'verify', completed, total: GEMMA_ARTIFACT.bytes, elapsedMs: Date.now() - verifying } }), force)) throw new Error('Model is missing. Provision it first.');
+    const verified = receiptOnly
+      ? await this.deps.inspectVerified?.()
+      : await this.deps.verify(signal, completed => this.set({ phase: 'Verifying SHA-256', progress: { stage: 'verify', completed, total: GEMMA_ARTIFACT.bytes, elapsedMs: Date.now() - verifying } }), force);
+    if (!verified) throw new Error(receiptOnly ? 'Verified model receipt is unavailable.' : 'Model is missing. Provision it first.');
     if (signal.aborted) throw new Error('Model loading cancelled.');
     this.set({ installed: true, phase: 'Loading model' });
     const started = Date.now();
@@ -120,7 +125,7 @@ export class GemmaPoc {
     } finally { this.set({ inferenceMs: Date.now() - started }); }
   }, this.deadlineMs); }
   /** Bounded event-scoped empathy task; never an arbitrary chat prompt. */
-  async generateSafetyAcknowledgment(context: AcknowledgmentContext): Promise<string> {
+  async generateSafetyAcknowledgment(context: AcknowledgmentContext, variant: 'baseline' | 'conversational' = 'baseline', onTimeout?: () => void): Promise<string> {
     if (!canGenerateAcknowledgment(context)) return '';
     let selected = '';
     await this.operation('inference', 'Generating safety acknowledgment', async signal => {
@@ -128,10 +133,10 @@ export class GemmaPoc {
       const started = Date.now();
       this.set({ inferenceMs: null });
       try {
-        const text = await this.context.generate(acknowledgmentPrompt(context));
+        const text = await this.context.generate(acknowledgmentPrompt(context, variant));
         if (!signal.aborted) selected = text;
       } finally { this.set({ inferenceMs: Date.now() - started }); }
-    }, 1500);
+    }, 1500, onTimeout);
     return selected;
   }
   async generateSafetySemantic(context: SemanticContext, budget = SEMANTIC_DECISION_MS): Promise<string> {

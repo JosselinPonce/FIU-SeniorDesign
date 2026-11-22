@@ -21,9 +21,14 @@ test('pill stays visible without timers or dismissal and never receives touches'
   const p = greetingPosition({x:60,y:100},180,300,130,32);
   assert.ok(p.y + 32 < 100, 'uses space above when neither side fits');
 });
-test('monitoring details initialize expanded, reset for driver changes only, and keep manual toggle', () => {
-  const text=readFileSync(new NodeURL('../components/DriveView.tsx',import.meta.url),'utf8');
-  assert.match(text,/\[details, setDetails\] = useState\(true\)/);
-  assert.match(text,/useEffect\(\(\) => \{ setDetails\(true\); \}, \[d.driver\?\.id\]\)/);
-  assert.match(text,/onPress=\{\(\) => setDetails\(value => !value\)\}/);
+test('Monitoring Details follows the active drive ID and keeps its manual state above Home navigation', () => {
+  const screen = readFileSync(new NodeURL('../components/SmartWheelScreen.tsx', import.meta.url), 'utf8');
+  const view = readFileSync(new NodeURL('../components/DriveView.tsx', import.meta.url), 'utf8');
+  assert.match(screen, /const activeDriveId = drive.hasActiveSession \? drive.session\?\.id : undefined/);
+  assert.match(screen, /useState\(\(\) => activeDriveId !== undefined\)/);
+  assert.match(screen, /useEffect\(\(\) => \{ setMonitoringDetailsExpanded\(activeDriveId !== undefined\); \}, \[activeDriveId\]\)/);
+  assert.match(screen, /<DriveView[^>]+monitoringDetailsExpanded=\{monitoringDetailsExpanded\}/);
+  assert.match(screen, /onToggleMonitoringDetails=\{\(\) => setMonitoringDetailsExpanded\(value => !value\)\}/);
+  assert.match(view, /const details = props.monitoringDetailsExpanded/);
+  assert.match(view, /accessibilityState=\{\{ expanded: details \}\} onPress=\{props.onToggleMonitoringDetails\}/);
 });

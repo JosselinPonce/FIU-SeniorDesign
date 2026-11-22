@@ -36,7 +36,9 @@ const LEXICON: Readonly<Record<SymptomCategory, readonly string[]>> = {
   dizziness: ['dizzy', 'lightheaded', 'mareada', 'mareado', 'mareo'],
   cardiovascular: ['chest pain', 'chest hurts', 'heart racing', 'heart pounding', 'taquicardia', 'dolor en el pecho', 'me duele el pecho'],
   respiratory: ["can't breathe", 'cant breathe', 'short of breath', 'hard to breathe', 'no puedo respirar', 'me falta el aire'],
-  neural: ['headache', 'head hurts', 'numb', 'blurry vision', "can't see well", 'cant see well', 'dolor de cabeza', 'me duele la cabeza', 'entumecida', 'entumecido', 'vision borrosa'],
+  neural: ['headache', 'head hurts', 'numb', 'blurry vision', "can't see well", 'cant see well', 'dolor de cabeza', 'me duele la cabeza', 'entumecida', 'entumecido', 'vision borrosa',
+    "can't focus", 'cant focus', 'cannot focus', "can't concentrate", 'cannot concentrate',
+    'vision just went dark', 'vision went dark', 'no puedo concentrarme', 'se me oscurecio la vista'],
   pain: ['pain', 'hurts', 'ache', 'my arm hurts', 'dolor', 'duele', 'dolor de'],
   nausea: ['nauseous', 'sick to my stomach', 'throw up', 'nauseas', 'vomitar'],
   other: ['weak', 'unwell', 'under the weather', 'not feeling myself', 'weird', 'debil', 'enferma', 'enfermo', 'me siento mal'],
@@ -46,8 +48,8 @@ const LEXICON: Readonly<Record<SymptomCategory, readonly string[]>> = {
 // symptom or clause connector ("not dizzy but weak" still reports weakness).
 const NEGATION_CUES: readonly string[] = ['not', 'no', 'no longer', "don't feel", 'dont feel', 'do not feel',
   "don't have", 'dont have', 'do not have', 'not have', 'without',
-  'no estoy', 'no me siento', 'no tengo', 'no siento', 'no me duele', 'sin'];
-const NEGATION_GAP = /^(?:a|any|really|very|so|quite|feeling|having|much|un|una|ningun|ninguna|nada|muy|tan|poco)$/;
+  'no estoy', 'no me siento', 'no tengo', 'no siento', 'no me duele', 'no me', 'sin'];
+const NEGATION_GAP = /^(?:a|any|really|very|so|quite|feeling|having|much|chest|el|un|una|ningun|ninguna|nada|muy|tan|poco)$/;
 
 function tokenPattern(token: string): RegExp {
   const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -88,6 +90,15 @@ export function wellnessClauses(text: string): readonly string[] {
     .map(clause => normalise(clause)).filter(Boolean);
 }
 
+// Only this reviewed auxiliary construction is exempt from English "he"
+// reporting detection. Other pronouns still use the existing scope rules.
+export const SPANISH_LONG_DAY = '(?:solo |solamente )?(?:tuve|he tenido|ha sido) un dia (largo|dificil)';
+const spanishLongDayAuxiliary = /\bhe(?= tenido un dia (?:largo|dificil)\b)/g;
+
+export function withoutSpanishLongDayAuxiliary(text: string) {
+  return text.replace(spanishLongDayAuxiliary, '');
+}
+
 export type StatementSegment = Readonly<{
   text: string;
   ownership: 'driver' | 'quoted' | 'reported' | 'unresolved';
@@ -99,13 +110,16 @@ export type StatementSegment = Readonly<{
 export function statementSegments(text: string): readonly StatementSegment[] {
   const segments: StatementSegment[] = [];
   let scope: 'driver' | 'reported' | 'unresolved' = 'driver';
-  const reporting = /\b(?:she|he|they|someone|my (?:wife|husband|partner|friend|mom|dad)|said|says|told|ella|ellos|mi (?:esposa|esposo|pareja|amig[oa]|mama|papa)|dice|dijo|dijeron)\b/;
-  const hypothetical = /\b(?:if|what if|si estuviera)\b/;
+  const reporting = /\b(?:she|he|they|someone|my (?:wife|husband|partner|friend|mom|dad|brother|sister|son|daughter)|said|says|told|ella|ellos|mi (?:esposa|esposo|pareja|amig[oa]|mama|papa|herman[oa]|hij[oa])|dice|dijo|dijeron)\b/;
+  const hypothetical = /\b(?:if|what if|si estuviera|que (?:pasaria|hago) si|(?:no se|no estoy segur[oa](?: de)?) si|en caso de que)\b/;
+  // Preserve the distinction between Spanish conditional si and affirmative sí.
+  const conditionalSpanish = /^\s*[¿¡]?si\s+(?:me (?:est[aá]|sigue|duele|cuesta)|no puedo|apenas puedo|estoy luchando|se me|tengo|siento|esto fuera|estuviera|tuviera|sintiera|me doliera|no pudiera)(?=\s|$)/iu;
   const boundary = /[,.!?;:—–-]+|\b(?:but|however|yet|pero|sin embargo)\b|\b(?:and|y)\b/giu;
   const emit = (raw: string) => {
     const t = normalise(raw);
     if (!t) return;
-    const ownership = hypothetical.test(t) ? 'unresolved' : reporting.test(t) ? 'reported'
+    const ownership = hypothetical.test(t) || conditionalSpanish.test(raw) ? 'unresolved'
+      : reporting.test(withoutSpanishLongDayAuxiliary(t)) ? 'reported'
       : scope === 'driver' ? 'driver' : 'unresolved';
     segments.push({ text: t, ownership });
     scope = ownership;
@@ -145,22 +159,54 @@ export function assertedWellnessClauses(text: string): readonly string[] {
   return statementSegments(text).filter(segment => segment.ownership === 'driver').map(segment => segment.text);
 }
 
-// Only existing urgent physical terms are used here. Breathing words require
-// a complaint form so help refusal plus "I can breathe" is not newly urgent.
-const URGENT_SYMPTOM = /\b(?:chest (?:pain|hurts?|is hurting)|pain in (?:my|the) chest|dolor en el pecho|me duele (?:el )?pecho|heart attack|stroke|pass out|passing out|faint|dying|infarto|desmay\w*|(?:can't|cant|cannot|unable to|hard to) breathe|(?:trouble|difficulty) breathing|(?:no puedo|dificultad para) respirar)\b/g;
-export function hasAffirmativeUrgentSymptom(text: string): boolean {
-  // This helper only narrows the help-refusal exception. It must not turn
-  // quoted/reported or past mentions into a new urgent symptom assertion.
-  return assertedWellnessClauses(text).some(clause => {
-    if (/\b(?:she|he|they|someone|said|says|told|ella|ellos|dice|dijo|dijeron)\b/.test(clause)
-        || /\b(?:yesterday|ayer|last (?:week|year|night)|used to)\b/.test(clause)
-          && !/\b(?:now|ahora|today|hoy|since|desde)\b/.test(clause)) return false;
+const URGENT_PHYSICAL_MENTION = /\b(?:chest|breathe|breathing|breath|heart attack|stroke|pass out|passing out|faint|fainted|dying|pecho|respirar|infarto|desmay\w*|me falta el aire)\b/;
+const URGENT_PHYSICAL_COMPLAINT = /\b(?:chest (?:pain|hurts?|is hurting|feels tight|tightness)|pain in (?:my|the) chest|dolor (?:en el|de) pecho|me (?:duele|esta doliendo|sigue doliendo) (?:el )?pecho|heart attack|stroke|pass out|passing out|fainted|(?:i'm|im|i am|feel|feeling|felt|might|may|could|going to|about to) faint|dying|infarto|desmay\w*|(?:can't|cant|cannot|unable to|hard to) breathe|(?:can't|cant|cannot) catch (?:my|a) breath|short of breath|(?:trouble|difficulty) breathing|(?:no puedo|dificultad para) respirar|me falta el aire)\b|^faint$/g;
+const PAST_URGENT = /\b(?:yesterday|ayer|last (?:week|year|night|month)|(?:days?|weeks?|months?|years?) ago|used to|anoche|la semana pasada|hace (?:dias|semanas|meses|anos))\b/;
+const CURRENT_TIME = /\b(?:now|ahora|still|todavia)\b/;
+const CURRENT_TIME_AFTER_SYMPTOM = /^\s*(?:now|ahora|still|todavia)\b/;
+const CONTINUING_TIME = /\b(?:since|desde)\b/;
+
+/** A keyword mention is insufficient without a current, locally asserted complaint. */
+export function urgentPhysicalEvidence(asserted: readonly string[]): 'current' | 'unconfirmed' | 'none' {
+  let mentioned = false;
+  for (const clause of asserted) {
+    if (!URGENT_PHYSICAL_MENTION.test(clause)) continue;
+    mentioned = true;
     const words = clause.split(' '), starts = wordStarts(words);
-    for (const match of clause.matchAll(URGENT_SYMPTOM)) {
-      if (!isNegated(words, wordIndexAt(starts, match.index))) return true;
+    for (const match of clause.matchAll(URGENT_PHYSICAL_COMPLAINT)) {
+      const before = clause.slice(0, match.index);
+      const after = clause.slice(match.index + match[0].length);
+      // A later "now" must not turn an earlier historical symptom into a current one.
+      const historical = !CONTINUING_TIME.test(clause) && !CURRENT_TIME_AFTER_SYMPTOM.test(after) && (
+        (PAST_URGENT.test(before) && !CURRENT_TIME.test(before.split(PAST_URGENT).at(-1) ?? ''))
+        || (PAST_URGENT.test(after) && !CURRENT_TIME.test(before))
+      );
+      if (!historical && !isNegated(words, wordIndexAt(starts, match.index))) return 'current';
     }
-    return false;
-  });
+  }
+  return mentioned ? 'unconfirmed' : 'none';
+}
+
+// Require a complete current first-person impairment. These are stronger
+// than being tired or having had a long day, but use the ordinary NOT OK path.
+const DROWSINESS_TIMING = / (?:right now|now|while driving|mientras conduzco|ahora mismo|ahora|al volante)$/;
+const DROWSINESS = [
+  /^(?:i(?:'m|m| am) )?(?:barely able to|(?:really )?(?:struggling|fighting) to) (?:stay awake|keep my eyes open)$/,
+  /^i (?:barely|can barely|(?:can't|cant|cannot)(?: seem to)?) (?:stay awake|keep my eyes open)$/,
+  /^(?:i keep (?:nodding off|falling asleep)|(?:i have|i'm having|i am having) (?:trouble|difficulty) staying awake)$/,
+  /^(?:me cuesta(?: mucho)?|me esta costando(?: mucho)?|apenas puedo|no puedo) (?:mantenerme despiert[oa]|mantener los ojos abiertos)$/,
+  /^(?:(?:estoy luchando|lucho) por mantenerme despiert[oa]|se me (?:cierran|estan cerrando) los ojos|me estoy quedando dormid[oa])$/,
+];
+const NEGATED_DROWSINESS = [
+  /^(?:i(?:'m| am) )?(?:not|no longer) (?:struggling|fighting) to (?:stay awake|keep my eyes open)$/,
+  /^i (?:can stay awake|can keep my eyes open)$/,
+  /^(?:(?:no me cuesta|no me esta costando) (?:mantenerme despiert[oa]|mantener los ojos abiertos)|(?:no estoy luchando|no lucho) por mantenerme despiert[oa]|no se me cierran los ojos)$/,
+];
+
+export function drowsinessEvidence(clauses: readonly string[]): 'current' | 'negated' | 'none' {
+  const reports = clauses.map(clause => clause.replace(DROWSINESS_TIMING, ''));
+  if (reports.some(clause => DROWSINESS.some(pattern => pattern.test(clause)))) return 'current';
+  return reports.some(clause => NEGATED_DROWSINESS.some(pattern => pattern.test(clause))) ? 'negated' : 'none';
 }
 
 export function symptomScan(normalised: string): SymptomScan {
@@ -177,8 +223,8 @@ export function symptomScan(normalised: string): SymptomScan {
         const pattern = tokenPattern(token);
         for (let m = pattern.exec(clause); m; m = pattern.exec(clause)) {
           const before = clause.slice(0, m.index);
-          const past = /\b(?:yesterday|ayer|last (?:week|year|night)|used to)\b/.test(clause)
-            && !/\b(?:since|desde)\b/.test(clause)
+          const past = PAST_URGENT.test(clause)
+            && !CONTINUING_TIME.test(clause)
             && /\b(?:had|was|were|felt|used to|tuve|tenia|estaba|sentia)\b/.test(before)
             && !/\b(?:now|ahora|today|hoy)\b/.test(before.split(/\b(?:had|was|were|felt|tuve|tenia|estaba|sentia)\b/).at(-1)!);
           if (isNegated(words, wordIndexAt(starts, m.index))) negated.add(category);

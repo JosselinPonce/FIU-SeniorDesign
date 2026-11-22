@@ -47,7 +47,7 @@ export type VoiceChoice = { id: string; name: string; language: string; tier: 'P
 const rank = (v: Speech.Voice) => {
   const id = v.identifier.toLowerCase();
   if (id.includes('speech.synthesis') || id.includes('eloquence')) return 0; // novelty / robotic voices
-  if (id.includes('.premium.')) return 3;
+  if (id.includes('.premium.') || String(v.quality) === 'Premium') return 3;
   if (id.includes('.enhanced.') || String(v.quality) === 'Enhanced') return 2;
   return 1;
 };
@@ -100,8 +100,7 @@ async function bestVoice(lang: Lang, strict = false): Promise<string | undefined
   if (strict) {
     const installed = await listVoices(lang);
     const selected = preferred[lang];
-    if (selected && !installed.some(voice => voice.id === selected)) throw new Error('Selected safety voice is unavailable. Choose an installed voice in Settings.');
-    const voice = selected || installed[0]?.id;
+    const voice = installed.find(voice => voice.id === selected)?.id ?? installed[0]?.id;
     if (!voice) throw new Error('No installed safety voice is available. Use the on-screen response buttons.');
     return voice;
   }
@@ -140,6 +139,7 @@ let releaseSafetyAudio: (() => void) | null = null;
 let safetyReleasePending: Promise<void> = Promise.resolve();
 
 let nativeRecognitionPending: Promise<unknown> = Promise.resolve();
+let preGuidanceStop: Promise<void> | undefined;
 
 async function bounded<T>(pending: Promise<T>, ms = 2500): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -152,6 +152,7 @@ async function bounded<T>(pending: Promise<T>, ms = 2500): Promise<T> {
 
 async function waitForSpeechIdle() {
   await bounded(nativeRecognitionPending);
+  if (preGuidanceStop) await bounded(preGuidanceStop);
   for (let attempt = 0; attempt < 40; attempt++) {
     const [speaking, recognition] = await bounded(Promise.all([
       Speech.isSpeakingAsync(), ExpoSpeechRecognitionModule.getStateAsync(),
@@ -200,6 +201,7 @@ function createPhoneVoiceIO(strictSelectedVoice: boolean): VoiceIO {
   let cancelListen: (() => void) | null = null;
   let cancelEpoch = 0;
   let cleanupNeeded = false;
+  let promptVoice: { lang: Lang; id: string } | undefined;
   let prepared: { id: string; lang: Lang; pending?: Promise<void>; session?: Promise<boolean>; timing: ReturnType<typeof responsivenessProbe> } | null = null;
   async function acquire() {
     const epoch = cancelEpoch;
@@ -232,9 +234,14 @@ function createPhoneVoiceIO(strictSelectedVoice: boolean): VoiceIO {
       prepared = { id: captureId, lang, timing: responsivenessProbe('warning', 'capture preparation') };
       prepared.timing('prewarm registered', { locale: LOCALE[lang], captureId });
     },
-    async speak(text, lang) {
+    async speak(text, lang, delivery) {
       const timing = responsivenessProbe('warning', 'playback');
       const epoch = cancelEpoch;
+      const beforeGuidance = delivery === 'pre_guidance_acknowledgment';
+      // Optional speech never starts an audio session or attempts recovery.
+      if (beforeGuidance && (!releaseSafetyAudio || safetyOwner !== owner || cleanupNeeded || cleanupFailed || promptVoice?.lang !== lang)) {
+        return { status: 'unavailable' as const };
+      }
       await acquire();
       timing('audio ownership acquired');
       const preparation = prepared;
@@ -260,7 +267,7 @@ function createPhoneVoiceIO(strictSelectedVoice: boolean): VoiceIO {
       const aligned = await preparation?.session ?? false;
       if (epoch !== cancelEpoch) throw new Error("Voice check cancelled");
       let voice: string | undefined;
-      try { voice = await bestVoice(lang, strictSelectedVoice); }
+      try { voice = beforeGuidance ? promptVoice?.id : await bestVoice(lang, strictSelectedVoice); }
       catch (error) {
         if (!strictSelectedVoice) throw error;
         timing('selected voice unavailable; retaining deterministic button and recognition path');
@@ -268,13 +275,14 @@ function createPhoneVoiceIO(strictSelectedVoice: boolean): VoiceIO {
       }
       timing('voice selected', { voiceId: voice ?? undefined, locale: LOCALE[lang] });
       if (epoch !== cancelEpoch) throw new Error("Voice check cancelled");
+      if (!beforeGuidance) promptVoice = voice ? { lang, id: voice } : undefined;
       if (!aligned) promptAudio();
       timing('playback session setup returned');
       try { await bounded(new Promise<void>((resolve, reject) => {
         Speech.speak(voiceCheckSpokenText(text, lang), {
           language: LOCALE[lang],
           voice,
-          rate: 0.95,
+          rate: Platform.OS === 'ios' && delivery === 'acknowledgment' ? 0.92 : 0.95,
           volume: 1.0,
           useApplicationAudioSession: true,
           onStart: () => { timing('playback started'); preparation?.timing('TTS started (JS callback)'); },
@@ -282,10 +290,14 @@ function createPhoneVoiceIO(strictSelectedVoice: boolean): VoiceIO {
           onStopped: () => { timing('playback stopped'); reject(new Error('Prompt playback stopped')); },
           onError: () => { timing('playback error'); reject(new Error('Prompt playback failed')); },
         });
-      }), 15000); }
+      }), beforeGuidance ? 2500 : 15000); }
       catch (error) {
         cleanupNeeded = true;
-        void Speech.stop().catch(() => {});
+        const stopping = Speech.stop().catch(() => {});
+        if (beforeGuidance) {
+          preGuidanceStop = stopping;
+          void stopping.then(() => { if (preGuidanceStop === stopping) preGuidanceStop = undefined; });
+        }
         throw error;
       }
     },
@@ -293,10 +305,26 @@ function createPhoneVoiceIO(strictSelectedVoice: boolean): VoiceIO {
     async listen(lang, ms, hints, captureId, onPhase) {
       const timing = responsivenessProbe('warning', 'recognition');
       const epoch = cancelEpoch;
+      const traceEarlyExit = (reason: string, adapterStatus: string) => {
+        if (Platform.OS === 'ios' && typeof __DEV__ !== 'undefined' && __DEV__) {
+          timing('capture summary', { captureId, recognitionSummary: {
+            generation: epoch, language: LOCALE[lang], activation: 'not_started', engineStarted: false,
+            nativeFinalCallback: false, usableNativeFinal: false, terminalReason: reason, adapterStatus,
+          } });
+        }
+      };
       try { await acquire(); }
-      catch (error) { timing('adapter acquisition rejected', { captureId, stage: 'ownership', current: epoch === cancelEpoch }); throw error; }
+      catch (error) {
+        traceEarlyExit('ownership_rejected', epoch === cancelEpoch ? 'error' : 'stale');
+        timing('adapter acquisition rejected', { captureId, stage: 'ownership', current: epoch === cancelEpoch });
+        throw error;
+      }
       timing('audio ownership acquired', { captureId });
-      if (epoch !== cancelEpoch) { timing('adapter cancelled before capture', { captureId, current: false }); return null; }
+      if (epoch !== cancelEpoch) {
+        traceEarlyExit('cancelled_before_capture', 'stale');
+        timing('adapter cancelled before capture', { captureId, current: false });
+        return null;
+      }
       if (Platform.OS === 'ios') {
         cancelListen = () => {
           void cancelOfflineListening(captureId).catch(() => {});
@@ -308,7 +336,11 @@ function createPhoneVoiceIO(strictSelectedVoice: boolean): VoiceIO {
           if (prepared && (prepared.id !== captureId || prepared.lang !== lang)) throw new Error('Stale preparation.');
           stage = 'preparation_acknowledgment';
           await prepared?.pending;
-          if (epoch !== cancelEpoch) { timing('adapter cancelled before capture', { captureId, current: false }); return null; }
+          if (epoch !== cancelEpoch) {
+            traceEarlyExit('cancelled_before_capture', 'stale');
+            timing('adapter cancelled before capture', { captureId, current: false });
+            return null;
+          }
           stage = 'progress_subscription';
           prepared?.timing('native capture activation requested');
           onPhase?.('preparing');
@@ -320,7 +352,11 @@ function createPhoneVoiceIO(strictSelectedVoice: boolean): VoiceIO {
           const pending = listenOffline(LOCALE[lang], captureId, ms);
           nativeRecognitionPending = pending.catch(() => {});
           const result = await pending;
-          if (!result) { timing('adapter missing native result', { captureId }); return null; }
+          if (!result) {
+            traceEarlyExit('missing_native_result', 'missing');
+            timing('adapter missing native result', { captureId });
+            return null;
+          }
           prepared?.timing('native capture and cleanup completed');
           if (result.nativeTimingMs) timing('native monotonic milestones', { nativeTimingMs: result.nativeTimingMs, captureId });
           timing('native recognition completed', { captureId, status: result.status, reason: result.reason,
@@ -336,6 +372,23 @@ function createPhoneVoiceIO(strictSelectedVoice: boolean): VoiceIO {
           const evidence = recognitionEvidence(captureId, { ...result,
             status: result.locale === LOCALE[lang] && result.requiresOnDeviceRecognition === true ? result.status : 'error',
           }, epoch === cancelEpoch);
+          if (typeof __DEV__ !== 'undefined' && __DEV__) {
+            const marks = result.nativeTimingMs ?? {};
+            timing('capture summary', { captureId, recognitionSummary: {
+              generation: epoch, language: LOCALE[lang], native: result.captureDiagnostics,
+              preparationError: result.captureNativeError,
+              activation: marks.sessionActivationCompleted !== undefined ? 'completed'
+                : marks.alignedSessionReused !== undefined ? 'reused'
+                  : marks.sessionActivationStarted !== undefined ? 'failed_or_interrupted' : 'not_started',
+              engineStarted: marks.engineStartReturned !== undefined,
+              firstPartialMs: result.firstPartialTimeMs,
+              nativeFinalCallback: marks.finalResultReceived !== undefined || result.finalResultReceived === true,
+              usableNativeFinal: !!result.finalTranscript?.trim() && result.isFinal,
+              nativeStatus: result.status,
+              terminalReason: result.captureTerminalReason ?? 'native_summary_unavailable',
+              adapterStatus: evidence.status,
+            } });
+          }
           timing('adapter outcome', { captureId, status: evidence.status, current: epoch === cancelEpoch,
             usable: evidence.status === 'success' && !evidence.cancelled && evidence.isFinal === true
               && evidence.finalResultReceived === true && !!evidence.finalTranscript?.trim()
@@ -343,6 +396,7 @@ function createPhoneVoiceIO(strictSelectedVoice: boolean): VoiceIO {
             transcriptsMatch: evidence.transcript?.trim() === evidence.finalTranscript?.trim() });
           return evidence;
         } catch {
+          traceEarlyExit('native_adapter_failed', epoch === cancelEpoch ? 'error' : 'stale');
           timing('adapter outcome', { captureId, stage, status: epoch === cancelEpoch ? 'error' : 'stale', reason: 'native_adapter_failed', current: epoch === cancelEpoch });
           return recognitionEvidence(captureId, { status: 'error', reason: 'native_adapter_failed', transcript: '', isFinal: false }, epoch === cancelEpoch);
         } finally {

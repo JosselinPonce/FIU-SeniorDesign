@@ -8,10 +8,13 @@ import { GEMMA_TERMS_TEXT, GEMMA_POLICY_TEXT } from '../lib/onboarding/gemmaTerm
 import { GEMMA_ARTIFACT } from '../modules/gemma-poc/artifact';
 import { prepareVoice } from '../lib/voice/speechIO';
 import { BrandMark } from './BrandMark';
-import { DashboardAssistantEntry } from './DashboardAssistantEntry';
+import { SettingsGroup, SettingsRow } from './SettingsGroup';
 import { VoicePicker } from './VoicePicker';
 import { Btn } from './ui';
 import { LanguageMenu } from './LanguageMenu';
+import { CloudPrivacyInfo } from './CloudPrivacyInfo';
+import { RESPONSE_MODE_SUBTITLES } from '../lib/ui/sensiPresentation';
+import { SENSI_PROVIDERS } from '../lib/assistant/sensiPreferences';
 import * as repo from '../lib/db/repositories';
 
 const TITLES = ['Welcome to DriveSense', 'How DriveSense Works', 'Safety and Privacy', 'Meet Sensi', 'Gemma License and Download', 'Setup Complete'];
@@ -69,13 +72,13 @@ export function Onboarding({ onDone, onChooseDriver, controller, review = false 
   const go = (next: number) => { if (review) setReviewPage(next); else void controller.go(next); };
   const nextDisabled = state.busy || (!review && ((page === 2 && !state.notices) || (page === 4 && !state.modelReady)));
   return <SafeAreaView style={{ flex: 1, backgroundColor: t.background }}>
-    <View style={{ paddingHorizontal: 24, paddingVertical: 12, gap: 10 }}>
+    <View style={{ paddingHorizontal: 20, paddingVertical: 6, gap: 6 }}>
       <LanguageMenu />
       <Text style={{ color: t.textSecondary }}>DriveSense setup · {page + 1} of 6{review ? ' · Review' : ''}</Text>
       <View accessible={false} style={{ flexDirection: 'row', gap: 6 }}>{TITLES.map((title, i) => <View key={title} style={{ height: 4, flex: 1, borderRadius: 2, backgroundColor: i <= page ? t.accent : t.border }} />)}</View>
     </View>
-    <ScrollView key={page} contentContainerStyle={{ padding: 24, paddingTop: 12, gap: 18, flexGrow: 1 }}>
-      <Text accessibilityRole="header" style={{ color: t.text, fontSize: 29, lineHeight: 36, fontWeight: '800' }}>{page === 1 && education > 0 ? education === 1 ? 'Monitoring That’s Personal to You' : 'Understanding Your Safety Alerts' : TITLES[page]}</Text>
+    <ScrollView key={page} contentContainerStyle={{ padding: 20, paddingTop: 12, gap: 16, flexGrow: 1 }}>
+      <Text accessibilityRole="header" style={{ color: t.text, fontSize: 26, fontWeight: '800' }}>{page === 1 && education > 0 ? education === 1 ? 'Monitoring That’s Personal to You' : 'Understanding Your Safety Alerts' : TITLES[page]}</Text>
       {page === 0 ? <>
         <View style={{ alignSelf: 'center', width: '100%', maxWidth: 390, paddingVertical: 20 }}>
           <View style={{ alignItems: 'center', marginBottom: 20 }}><BrandLogo /></View>
@@ -101,19 +104,19 @@ export function Onboarding({ onDone, onChooseDriver, controller, review = false 
         {point('A prototype, not a diagnosis', 'DriveSense is a prototype driver-safety system, not a medical device or diagnostic service. Measurements may be inaccurate or temporarily unavailable.')}
         {point('Road safety comes first', 'Prioritize the road. Pull over somewhere safe before interacting with the screen.')}
         {point('Calls require your authorization', 'Emergency-contact phone handoff requires your explicit request or agreement. Opening the iPhone dialer does not guarantee a connected call.')}
-        {point('On-device inference, connected application features', 'Gemma inference runs locally on your device. Other features may use Supabase for authentication, storage or synchronization. Not all application data stays on-device.')}
+        {point('On-device inference, connected application features', 'Gemma inference runs on your device. Optional, authorized OpenAI acknowledgments send a short safety-check response to the cloud. Other features may use Supabase for authentication, storage or synchronization. Not all data stays on-device.')}
         {point('Your profile and recordings', 'Your profile helps set your starting range. Start Drive records a trip: vitals only by default, or optional full waveform. Existing recording, synchronization and deletion controls remain in Settings.')}
         <Text style={[text, { fontSize: 13 }]}>These are prototype safety and privacy notices, not a legally reviewed agreement.</Text>
         {acknowledgment('notices', 'I have read and acknowledge these DriveSense safety and privacy notices.')}
       </> : null}
       {page === 3 ? <>
-        <View pointerEvents="none" accessibilityElementsHidden importantForAccessibility="no-hide-descendants" style={{ alignSelf: 'center', padding: 12 }}>
-          <DashboardAssistantEntry mode="local" language="en" disabled={false} error="" onPress={() => {}} />
-        </View>
-        <Text style={[heading, { fontSize: 24 }]}>Hi, I'm Sensi!</Text>
-        <Text style={text}>I'm your offline safety assistant. I respond to concerning sensor readings, not general chat. You can answer by voice, typed response or the available buttons.</Text>
-        {point('A brief acknowledgment', 'Gemma helps select brief, approved acknowledgments. Safety decisions, pull-over guidance, contact offers and call authorization follow fixed rules.')}
-        {point('A familiar voice', 'Sensi uses the system voices installed on your device. Premium voices can be selected when available.')}
+        <Text style={text}>Sensi checks how you feel after a confirmed sensor event. Answer by voice, typing or buttons. Core safety guidance and calling consent follow fixed rules in every mode.</Text>
+        <SettingsGroup>
+          {SENSI_PROVIDERS.map((provider, index) => <SettingsRow key={provider.id} divider={index > 0}
+            title={provider.label} subtitle={provider.id === 'automatic' ? 'Uses available providers in order' : RESPONSE_MODE_SUBTITLES[provider.id]} />)}
+        </SettingsGroup>
+        <CloudPrivacyInfo />
+        <Text style={text}>Choose a mode in Sensi Assistant settings. Sign-in and cloud consent are optional, separate choices.</Text>
         {!review ? <Btn title={voice === 'granted' ? 'Voice permission allowed' : voice === 'denied' ? 'Retry voice permission' : 'Allow voice responses (optional)'}
           disabled={voice === 'granted'} onPress={() => { void prepareVoice().then(result => setVoice(result.granted ? 'granted' : 'denied')); }} /> : null}
         {voice === 'denied' ? <Text style={text}>Voice access is unavailable. Typed and button responses remain available; permission can be changed in system Settings.</Text> : null}
@@ -128,7 +131,8 @@ export function Onboarding({ onDone, onChooseDriver, controller, review = false 
         <VoicePicker lang={voiceLanguage} driverName="" />
       </> : null}
       {page === 4 ? <>
-        <Text style={text}>Gemma 3 270M Instruct · QAT Q4_0 GGUF · approximately 241 MB. Download once, then use offline. Existing verified installations are reused.</Text>
+        {!review ? <Btn title="Continue Without Gemma" kind="ghost" disabled={state.busy || !state.notices} onPress={() => { void controller.continueWithoutGemma().then(done => { if (done) onDone(); }); }} /> : null}
+        <Text style={text}>Gemma 3 270M Instruct · QAT Q4_0 GGUF · approximately 241 MB. Optional download: at least 483 MB free storage required. Download once, then use offline. Existing verified installations are reused.</Text>
         <Text style={text}>Gemma is subject to Google's Gemma Terms of Use and Prohibited Use Policy. By accepting, you agree to comply with those terms and use restrictions.</Text>
         <Btn title="Read Gemma Terms of Use" kind="ghost" onPress={() => setLegal('terms')} />
         <Btn title="Read Gemma Prohibited Use Policy" kind="ghost" onPress={() => setLegal('policy')} />
@@ -150,9 +154,9 @@ export function Onboarding({ onDone, onChooseDriver, controller, review = false 
         </> : <Text style={text}>Setup was completed. Gemma is checked before use. Fixed safety responses remain available if the model cannot run.</Text>}
       </> : null}
       {page === 5 ? <>
-        {point(review ? 'Setup previously completed' : 'Sensi’s offline model is ready', review
+        {point(review ? 'Setup previously completed' : state.modelReady ? 'Sensi’s offline model is ready' : 'DriveSense is ready', review
           ? 'Readiness is checked on launch. Safety interactions retain fixed fallback acknowledgments if inference becomes unavailable.'
-          : 'The approved model passed integrity verification and initialized successfully on this device. Setup did not start a safety conversation.')}
+          : state.modelReady ? 'The approved model passed integrity verification and initialized successfully on this device. Setup did not start a safety conversation.' : 'Basic safety responses are available without Gemma. You can install the optional model later in Settings.')}
         <Text style={text}>Continue to select an existing driver or create your driver profile. Existing profiles and recordings are preserved.</Text>
       </> : null}
       {review ? <>

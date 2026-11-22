@@ -1,5 +1,6 @@
+import { VOICECHECK_BASIC_OFFLINE } from '../voice/basicOfflineAcknowledgment';
 import type { AnswerScope } from '../voice/voiceCheck';
-import { beginGemmaWarmLease, phoneSafetyAcknowledgment, phoneSafetySemantic } from '../../modules/gemma-poc/phone';
+import { phoneSensiAcknowledgment, sensiPreferences } from '../assistant/phoneSensiRouting';
 import { SENSI_MODE } from '../assistant/mode';
 import { openConfirmedDemoPhoneInterface, hasSystemPhoneConfirmation, openAuthorizedPhoneInterface } from '../voice/phoneHandoff';
 /**
@@ -267,15 +268,15 @@ export function useDriveSession() {
   const measuring = useRef<{ until: number; bpm: number[]; spo2: number[]; done: (r: { bpm: number[]; spo2: number[] }) => void } | null>(null);
   // Serialises database writes so back-to-back frames cannot interleave.
   const queue = useRef<Promise<void>>(Promise.resolve());
+  const supportedScreen = useRef(false);
   // Flags → voice check. Created once; reports its state into the reducer.
   const safety = useMemo(
     () =>
       new SafetyController({
         interactionCurrent: () => AppState.currentState === 'active' && supportedScreen.current,
         assistantMode: () => SENSI_MODE,
-        startAcknowledgment: phoneSafetyAcknowledgment,
-        startSemantic: phoneSafetySemantic,
-        beginGemmaWarm: beginGemmaWarmLease,
+        basicOfflineAcknowledgments: VOICECHECK_BASIC_OFFLINE,
+        startAcknowledgment: VOICECHECK_BASIC_OFFLINE ? undefined : phoneSensiAcknowledgment,
         voiceIO: phoneSensiVoiceIO,
         handoffContact: (phone, origin) => {
           // Last platform-boundary check, including transitions ahead of React effects.
@@ -309,7 +310,6 @@ export function useDriveSession() {
 
   // Foreground safety lifecycle is independent of optional recording ownership.
   const foreground = useRef(AppState.currentState === 'active');
-  const supportedScreen = useRef(false);
   const updateMonitoring = useCallback(() => {
     safety.setMonitoringContext(connected.current, foreground.current, supportedScreen.current);
   }, [safety]);
@@ -515,6 +515,10 @@ export function useDriveSession() {
   // In the car nobody should have to tap "connect": as soon as a driver is
   // chosen the app keeps a link to the Pi up, reconnecting on its own.
   const driverId = state.driver?.id;
+  useEffect(() => {
+    void sensiPreferences.boot();
+    void sensiPreferences.selectDriver(driverId ?? null);
+  }, [driverId]);
   useEffect(() => {
     if (driverId) connection.start();
   }, [driverId, connection]);

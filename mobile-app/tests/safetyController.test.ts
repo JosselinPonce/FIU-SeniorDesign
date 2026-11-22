@@ -49,7 +49,7 @@ test('demo: low oxygen with silence → no response', async () => {
 });
 
 
-function callController(answers: (string | null)[], phone: string | null = '+1 (305) 555-0123', openFails = false, recognition: (r: CoreRecognition) => CoreRecognition = r => r) {
+function callController(answers: (string | null)[], phone: string | null = '+1 (305) 555-0123', openFails = false, recognition: (r: CoreRecognition) => CoreRecognition = r => r, basicOffline = false) {
   const saved: { id: string; kind: string; response: string | null; session_id: string }[] = [];
   const dialed: string[] = [];
   const states: SafetyState[] = [];
@@ -60,6 +60,8 @@ function callController(answers: (string | null)[], phone: string | null = '+1 (
   let nextId = 0;
   let second = 0;
   const c = new SafetyController({
+    assistantMode: basicOffline ? () => 'gemma' : undefined,
+    basicOfflineAcknowledgments: basicOffline,
     voiceIO: () => ({ speak: async text => { said.push(text); }, listen: async (_lang, _ms, _hints, captureId) => { onListen(); const text = answers.shift(); return text == null ? null : recognition(recognitionEvidence(captureId, { status: 'success', transcript: text, finalTranscript: text, isFinal: true, finalResultReceived: true })); }, cancel: () => {} }),
     save: async row => { saved.push(row); if (row.response) await onSave(); },
     saveAck: async () => {}, haptic: () => {},
@@ -502,4 +504,24 @@ test('UI phases follow capture progress; completed and cancelled question callba
   await pending;
   captures[1]!.resolve(null); await tick();
   assert.equal(state.check, null); assert.equal(state.last?.result.outcome, 'ok');
+});
+
+test('Basic Offline publishes the same acknowledgment and guidance order it speaks', async () => {
+  const f = callController(["I'm feeling dizzy", 'no thanks'], undefined, false, undefined, true);
+  f.c.endSession();
+  const result = await f.c.rehearse();
+  const messages = [...f.states].reverse().find(state => state.conversation)?.conversation?.messages;
+  const driver = messages?.findIndex(message => message.role === 'driver') ?? -1;
+  const reply = messages?.slice(driver + 1, driver + 5);
+  assert.deepEqual(reply?.map(message => message.text), [
+    "I'm sorry you're feeling dizzy.",
+    'Please pull over as soon as it is safe.',
+    'If you need emergency help, call 911.',
+    'Would you like me to call Mom?',
+  ]);
+  assert.deepEqual(f.said.slice(-4), reply?.map(message => message.text));
+  assert.equal(reply?.[0]?.acknowledgmentSource, 'fallback');
+  assert.ok(reply?.every(message => message.playback === 'completed'));
+  assert.equal(result.contactCall, 'declined_offer');
+  assert.deepEqual(f.dialed, []);
 });

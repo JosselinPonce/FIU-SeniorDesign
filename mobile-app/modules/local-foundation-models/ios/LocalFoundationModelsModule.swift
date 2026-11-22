@@ -153,6 +153,9 @@ struct SpanishTranscriberResponse {
 // END SPANISH RESPONSE STATE
 
 private final class SpanishSpeechMeter: @unchecked Sendable {
+#if DEBUG
+  let pcmDiagnostics = CapturePCMDiagnostics()
+#endif
   private let lock = NSLock()
   private var state = OfflineEndpointState()
   private var gate = VoiceListeningGate()
@@ -169,7 +172,13 @@ private final class SpanishSpeechMeter: @unchecked Sendable {
   }
   func stop() { lock.lock(); gate.stop(); lock.unlock() }
   func receive(_ buffer: AVAudioPCMBuffer) -> Bool {
-    guard let channels = buffer.floatChannelData, buffer.frameLength > 0 else { return false }
+    let hasBytes = hasDeclaredPCMData(UnsafeMutableAudioBufferListPointer(buffer.mutableAudioBufferList))
+    let channels = buffer.floatChannelData
+    let valid = buffer.frameLength > 0 && hasBytes && channels != nil
+#if DEBUG
+    pcmDiagnostics.observeTap(frames: buffer.frameLength, hasBytes: hasBytes, valid: valid)
+#endif
+    guard valid, let channels else { return false }
     var power = 0.0
     var count = 0
     for channel in 0..<Int(buffer.format.channelCount) {
@@ -223,6 +232,11 @@ final class SpanishOfflineRecognition {
     var finalizingStarted: TimeInterval?
     let responseWindowMs: Double?
     let meter = SpanishSpeechMeter()
+#if DEBUG
+    var captureAudio: [String: Any] = [:]
+    var firstPartialCallbackMs: Double?
+    var conversionError: [String: Any]?
+#endif
     var response = SpanishTranscriberResponse()
     var speechReceived = false
     var details: [String: Any] = [:]
@@ -377,6 +391,17 @@ final class SpanishOfflineRecognition {
     report["hasFinalTranscript"] = confirmed
     report["finalTranscript"] = confirmed ? capture.response.text : ""
     report["partialTranscript"] = ""
+#if DEBUG
+    var nativeError = capture.conversionError ?? [:]
+    if nativeError.isEmpty, let failure = report["error"] as? [String: Any],
+       let domain = failure["domain"] as? String, let code = failure["code"] as? Int {
+      nativeError = ["domain": domain, "code": code]
+    }
+    report["captureDiagnostics"] = [
+      "audio": capture.captureAudio, "pcm": capture.meter.pcmDiagnostics.report(started: capture.started),
+      "nativeError": nativeError, "firstPartialCallbackMs": capture.firstPartialCallbackMs as Any? ?? NSNull()
+    ]
+#endif
     capture.timings.mark("captureCleanupCompleted")
     report["nativeTimingMs"] = capture.timings.events
     active = nil
@@ -479,6 +504,9 @@ final class SpanishOfflineRecognition {
     capture.timings.mark("microphoneSetupStarted")
     let input = capture.engine.inputNode
     let natural = input.outputFormat(forBus: 0)
+#if DEBUG
+    capture.captureAudio = captureAudioFormat(natural, session: session)
+#endif
     guard natural.sampleRate > 0, natural.channelCount > 0,
           let converter = AVAudioConverter(from: natural, to: format) else { throw fail("Microphone audio format cannot be converted.") }
     let (stream, continuation) = AsyncStream<AnalyzerInput>.makeStream(bufferingPolicy: .bufferingOldest(64))
@@ -486,6 +514,11 @@ final class SpanishOfflineRecognition {
     capture.results = Task {
       for try await result in transcriber.results {
         try Task.checkCancellation()
+#if DEBUG
+        if !result.isFinal, capture.firstPartialCallbackMs == nil {
+          capture.firstPartialCallbackMs = (ProcessInfo.processInfo.systemUptime - capture.started) * 1000
+        }
+#endif
         let text = String(result.text.characters)
         if !capture.speechReceived, text.rangeOfCharacter(from: .alphanumerics) != nil {
           capture.speechReceived = true
@@ -528,14 +561,24 @@ final class SpanishOfflineRecognition {
       }
       if let error = conversionError {
         Task { @MainActor in
+#if DEBUG
+          capture.conversionError = ["domain": error.domain, "code": error.code]
+#endif
           capture.details["conversionError"] = error.localizedDescription
           self.requestStop(capture, reason: "audio_conversion_failed")
         }
       } else if status == .error {
         Task { @MainActor in self.requestStop(capture, reason: "audio_conversion_failed") }
-      } else if converted.frameLength > 0 {
-        if case .dropped = continuation.yield(AnalyzerInput(buffer: converted)) {
+      } else if converted.frameLength > 0, hasDeclaredPCMData(UnsafeMutableAudioBufferListPointer(converted.mutableAudioBufferList)) {
+        switch continuation.yield(AnalyzerInput(buffer: converted)) {
+        case .enqueued:
+#if DEBUG
+          capture.meter.pcmDiagnostics.forwarded()
+#endif
+          break
+        case .dropped:
           Task { @MainActor in self.requestStop(capture, reason: "audio_buffer_overflow") }
+        default: break
         }
       }
     }
@@ -679,9 +722,12 @@ public final class LocalFoundationModelsModule: Module {
       do { prepared = try await VoiceRecognitionPreparation.shared.consume(locale, id: requestId) }
       catch {
 #if DEBUG
+        let native = error as NSError
+        let errorMetadata = ["domain": native.domain, "code": native.code] as [String: Any]
         let errors = await VoiceCheckSessionAlignment.shared.restore(requestId)
         if !errors.isEmpty {
           return ["status": "error", "reason": "audio_cleanup_failed", "cleanupErrors": errors, "transcript": "", "isFinal": false,
+                  "captureTerminalReason": "audio_cleanup_failed", "captureNativeError": errorMetadata,
                   "sessionAlignment": await VoiceCheckSessionAlignment.shared.diagnostics(requestId) ?? [:]]
         }
 #endif
@@ -689,6 +735,8 @@ public final class LocalFoundationModelsModule: Module {
                 "requiresOnDeviceRecognition": true, "transcript": "", "isFinal": false, "finalResultReceived": false,
                 "nativeTimingMs": (error as NSError).userInfo["nativeTimingMs"] ?? [:]]
 #if DEBUG
+        failure["captureTerminalReason"] = native.domain == "VoiceRecognitionPreparation" ? native.localizedDescription : "preparation_failed"
+        failure["captureNativeError"] = errorMetadata
         if let alignment = await VoiceCheckSessionAlignment.shared.diagnostics(requestId) { failure["sessionAlignment"] = alignment }
 #endif
         return failure
@@ -718,6 +766,7 @@ public final class LocalFoundationModelsModule: Module {
       let errors = await VoiceCheckSessionAlignment.shared.restore(requestId)
       if let alignment = await VoiceCheckSessionAlignment.shared.diagnostics(requestId) { report["sessionAlignment"] = alignment }
       if !errors.isEmpty { report["status"] = "error"; report["reason"] = "audio_cleanup_failed"; report["cleanupErrors"] = (report["cleanupErrors"] as? [String] ?? []) + errors }
+      report["captureTerminalReason"] = report["reason"]
 #endif
       return report
     }

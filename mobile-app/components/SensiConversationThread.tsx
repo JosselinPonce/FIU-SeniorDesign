@@ -20,16 +20,19 @@ export function SensiConversationThread({ messages, provisional, compactPlayback
     onLayout={() => { if (follow.current) scroll.current?.scrollToEnd({ animated: false }); }}
     scrollEventThrottle={32} onContentSizeChange={() => { if (follow.current) scroll.current?.scrollToEnd({ animated: false }); }}>
     {messages.length === 0 ? <Text style={{ color: t.textSecondary, lineHeight: 22 }}>Hi, I’m Sensi. I respond during safety checks.</Text> : null}
-    {messages.map(message => {
+    {messages.map((message, index) => {
       const driver = message.role === 'driver';
       const system = message.role === 'system';
       const label = playbackLabel(message.playback, compactPlayback);
-      return <View key={message.id} style={{ alignSelf: system ? 'center' : driver ? 'flex-end' : 'flex-start', maxWidth: '88%',
-        borderRadius: 20, borderBottomLeftRadius: driver || system ? 20 : 6, borderBottomRightRadius: driver ? 6 : 20,
-        backgroundColor: system ? t.surfaceMuted : driver ? t.graphite : t.surface, paddingHorizontal: 12, paddingVertical: 10, gap: 4,
+      const joinsPrevious = message.role === 'assistant' && messages[index - 1]?.role === 'assistant';
+      const joinsNext = message.role === 'assistant' && messages[index + 1]?.role === 'assistant';
+      return <View key={message.id} style={{ alignSelf: system ? 'center' : driver ? 'flex-end' : 'flex-start', maxWidth: '92%',
+        marginTop: joinsPrevious ? -6 : 0, borderRadius: 18, borderTopLeftRadius: joinsPrevious ? 6 : 18,
+        borderBottomLeftRadius: joinsNext ? 6 : 18, borderBottomRightRadius: driver ? 6 : 18,
+        backgroundColor: system ? t.surfaceMuted : driver ? t.graphite : t.surface, paddingHorizontal: 12, paddingVertical: 8, gap: 3,
         borderWidth: driver || system ? 0 : 1, borderColor: t.border }}>
-        <Text style={{ color: driver ? t.pearl : t.textSecondary, fontSize: 12, fontWeight: '700' }}>{system ? 'Status' : driver ? 'You' : 'Sensi'}</Text>
-        <Text localize={!driver} selectable style={{ color: driver ? t.pearl : t.text, fontSize: 16, lineHeight: 23 }}>{message.text}</Text>
+        {!joinsPrevious ? <Text style={{ color: driver ? t.pearl : t.textSecondary, fontSize: 12, fontWeight: '700' }}>{system ? 'Status' : driver ? 'You' : 'Sensi'}</Text> : null}
+        <Text localize={!driver} selectable style={{ color: driver ? t.pearl : t.text, fontSize: 15 }}>{message.text}</Text>
         {label ? <Text style={{ color: t.textSecondary, fontSize: 12 }}>{label}</Text> : null}
       </View>;
     })}

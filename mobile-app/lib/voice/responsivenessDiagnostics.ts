@@ -1,5 +1,25 @@
+import type { CaptureDiagnostics } from '../../modules/local-foundation-models';
+
+type RecognitionSummary = {
+  generation: number;
+  language: string;
+  native?: CaptureDiagnostics;
+  preparationError?: CaptureDiagnostics['nativeError'];
+  activation: 'completed' | 'reused' | 'failed_or_interrupted' | 'not_started';
+  engineStarted: boolean;
+  firstPartialMs?: number | null;
+  nativeFinalCallback: boolean;
+  usableNativeFinal: boolean;
+  nativeStatus?: string;
+  terminalReason: string;
+  adapterStatus: string;
+  finalVoiceCheckPhase?: string;
+  answerChannel?: string;
+};
+
 /** Opt-in, bounded RAM only. No transcript, prompt, reply, contact or error text. */
 export type TimingDetails = {
+  recognitionSummary?: RecognitionSummary;
   englishFinalization?: import('../../modules/local-foundation-models').EnglishFinalizationDiagnostics;
   captureId?: string;
   question?: string; phase?: string; source?: string; channel?: string; outcome?: string;
@@ -45,7 +65,31 @@ export class ResponsivenessRecorder {
     this.begin('warning', 'VoiceCheck UI publication')('state published', next);
   }
   snapshot(): TimingRecord[] {
-    return this.records.map(r => ({ ...r, events: r.events.map(e => ({ ...e, details: { ...e.details } })) }));
+    const phases = new Map<string, string>();
+    const answers = new Map<string, string>();
+    const latestCommits = new Map<string, string>();
+    for (const record of this.records) {
+      for (const { point, details } of record.events) {
+        if (!details.captureId) continue;
+        if (point === 'state published' && details.phase && details.phase !== 'cleared')
+          phases.set(details.captureId, details.phase);
+        if (point === 'state committed' && details.phase)
+          latestCommits.set(details.captureId, details.phase);
+        if (point === 'answer selected' && details.channel)
+          answers.set(details.captureId, details.channel);
+      }
+    }
+    return this.records.map(record => ({
+      ...record, events: record.events.map(event => {
+        const details = { ...event.details };
+        if (details.recognitionSummary && details.captureId) {
+          details.recognitionSummary = { ...details.recognitionSummary,
+            finalVoiceCheckPhase: phases.get(details.captureId) ?? latestCommits.get(details.captureId),
+            answerChannel: answers.get(details.captureId) };
+        }
+        return { ...event, details };
+      }),
+    }));
   }
   begin(lane: TimingRecord['lane'], operation: string) {
     const epoch = this.epoch;
@@ -65,6 +109,7 @@ export class ResponsivenessRecorder {
   }
 }
 export const responsiveness = new ResponsivenessRecorder();
+export const SENSI_ACKNOWLEDGMENT_PRESENTATION = 'Sensi acknowledgment presentation';
 export function responsivenessProbe(lane: TimingRecord['lane'], operation: string) {
   return typeof __DEV__ !== 'undefined' && __DEV__ ? responsiveness.begin(lane, operation) : (_point: string, _details?: TimingDetails) => {};
 }

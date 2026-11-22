@@ -8,6 +8,8 @@ export type ConversationPhase = 'idle' | 'checking' | 'speaking question' | 'lis
   | 'interpreting' | 'speaking response' | 'contact offer' | 'phone interface' | 'complete' | 'stopping' | 'cancelled' | 'error';
 export const CONVERSATION_REVISION = 'driving-safety-conversation-v5-2026-10-12';
 export type ConversationMessage = { id: string; role: 'assistant' | 'driver' | 'system'; text: string;
+  /** Transient presentation provenance for optional acknowledgments only. */
+  acknowledgmentSource?: 'openai' | 'gemma' | 'fallback' | 'unknown';
   playback?: 'pending' | 'playing' | 'completed' | 'interrupted' | 'failed' };
 export type Turn = { driver: string; assistant: string; fallback?: boolean; fallbackReason?: string };
 export type DecisionDiagnostic = { acceptedFinalTranscript: string; normalizedText: string; direct: boolean; reason: string;

@@ -210,7 +210,19 @@ export type EnglishFinalizationDiagnostics = {
   shadowAudio?: EnglishShadowAudioDiagnostics;
 };
 
+export type CaptureDiagnostics = {
+  audio: Partial<{ sampleRate: number; channels: number; commonFormat: number; interleaved: boolean;
+    category: string; mode: string; inputRoute: string[]; outputRoute: string[] }>;
+  pcm: { tapBuffers: number; zeroFrameBuffers: number; zeroByteBuffers: number;
+    validPCM: number; forwardedPCM: number; firstForwardedMs: number | null };
+  nativeError: Partial<{ domain: string; code: number }>;
+  firstPartialCallbackMs?: number | null;
+};
+
 export type OfflineTranscription = {
+  captureDiagnostics?: CaptureDiagnostics;
+  captureTerminalReason?: string;
+  captureNativeError?: CaptureDiagnostics['nativeError'];
   englishFinalizationDebug?: EnglishFinalizationDiagnostics;
   nativeTimingMs?: Record<string, number>;
   sessionAlignment?: Record<string, unknown>;

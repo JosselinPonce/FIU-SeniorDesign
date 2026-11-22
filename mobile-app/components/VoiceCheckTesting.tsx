@@ -7,6 +7,7 @@ import { VoiceCheckDiagnostic, type DiagnosticState } from '../lib/voice/voiceCh
 import { phoneVoiceCheckDiagnostic } from '../lib/voice/phoneVoiceCheckDiagnostic';
 import type { Lang } from '../lib/voice/voiceCheck';
 import { Btn } from './ui';
+import { DiagnosticDetails, DiagnosticResult } from './DiagnosticUI';
 import { ScreenHeader, ScreenHeading } from './ScreenHeader';
 import { SpeechCapabilityStatus } from './SpeechCapabilityStatus';
 
@@ -36,27 +37,28 @@ export function VoiceCheckTesting({ blocked, initialLanguage, onExit }: { blocke
       <ScreenHeader title="VoiceCheck Testing" backLabel="Safety Testing" onBack={onExit} />
       <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={{ padding: 16, gap: 12 }}>
         <ScreenHeading title="VoiceCheck Testing" />
-        <Text>Diagnostic only. No sensor events, saved episodes, uploads or phone calls. Park before testing.</Text>
+        <Text style={{ color: t.textSecondary, lineHeight: 21 }}>Diagnostic only. No sensor events, saved episodes, uploads or phone calls. Park before testing.</Text>
         <View accessibilityRole="radiogroup" style={{ flexDirection: 'row', gap: 12 }}>
           {(['en', 'es'] as const).map(language => <Btn key={language} title={language === 'en' ? 'English' : 'Español'}
             kind={lang === language ? 'primary' : 'ghost'} disabled={busy} onPress={() => { setLang(language); setText(''); tester.current?.clear(); }} />)}
         </View>
         <SpeechCapabilityStatus language={lang} blocked={busy || unavailable} />
-        {unavailable ? <Text>Testing paused while a safety workflow or recording is active.</Text> : null}
+        {unavailable ? <Text style={{ color: t.textSecondary, lineHeight: 21 }}>Testing paused while a safety workflow or recording is active.</Text> : null}
         <Btn title="Start recognition test" disabled={busy || unavailable} onPress={() => void tester.current?.listen(lang)} />
-        <Text accessibilityLiveRegion="polite">{state.phase}</Text>
-        <Text>Recognized transcript</Text>
-        <Text localize={false} selectable>{state.transcript || '—'}</Text>
-        {state.transcript && !state.confirmed ? <Text>Unconfirmed transcript — not used for interpretation.</Text> : null}
-        {state.error ? <Text accessibilityRole="alert">{state.error}</Text> : null}
-        <TextInput accessibilityLabel="Typed diagnostic response" placeholder="Type a response" value={text} onChangeText={setText} maxLength={500}
+        <Text accessibilityLiveRegion="polite" style={{ color: t.text }}>{state.phase}</Text>
+        <DiagnosticResult title="Response confirmation" status={state.error ? 'FAIL' : busy ? 'RUNNING' : state.confirmed ? 'PASS' : 'NOT TESTED'} />
+        <Text style={{ color: t.textSecondary, lineHeight: 21 }}>Recognized transcript</Text>
+        <Text style={{ color: t.text }} localize={false} selectable>{state.transcript || '—'}</Text>
+        {state.transcript && !state.confirmed ? <Text style={{ color: t.textSecondary, lineHeight: 21 }}>Unconfirmed transcript — not used for interpretation.</Text> : null}
+        {state.error ? <Text accessibilityRole="alert" style={{ color: t.danger }}>{state.error}</Text> : null}
+        <TextInput accessibilityLabel="Typed diagnostic response" placeholder="Type a response" placeholderTextColor={t.textMuted} value={text} onChangeText={setText} maxLength={500}
           style={{ color: t.text, borderWidth: 1, borderColor: t.textSecondary, borderRadius: 10, padding: 12 }} />
         <Btn title="Test interpretation" disabled={!text.trim() || unavailable} onPress={() => void tester.current?.interpret(text, lang).catch(() => {})} />
         {state.result ? <>
-          <Text localize={false} accessibilityLiveRegion="polite">{state.result.interpretation}</Text>
-          {state.result.urgent ? <Text>Urgent symptoms recognized</Text> : null}
-          <Text>Response preview — no action is authorized</Text>
-          <Text localize={false}>{state.result.response}</Text>
+          <DiagnosticResult title="Interpretation" status={state.result.interpretation === 'UNCERTAIN' ? 'WARNING' : 'PASS'}><Text style={{ color: t.text }} localize={false} accessibilityLiveRegion="polite">{state.result.interpretation}</Text></DiagnosticResult>
+          {state.result.urgent ? <Text style={{ color: t.textSecondary, lineHeight: 21 }}>Urgent symptoms recognized</Text> : null}
+          <Text style={{ color: t.textSecondary, lineHeight: 21 }}>Response preview — no action is authorized</Text>
+          <DiagnosticDetails title="Response preview"><Text style={{ color: t.text }} localize={false} selectable>{state.result.response}</Text></DiagnosticDetails>
           <Btn title="Play response preview" disabled={busy || unavailable} onPress={() => void tester.current?.play(lang)} />
         </> : null}
       </ScrollView>

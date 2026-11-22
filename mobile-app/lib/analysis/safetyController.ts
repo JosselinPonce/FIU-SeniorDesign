@@ -1,3 +1,5 @@
+import { FIRST_ABNORMAL_SIMULATION_SECOND, simulationReading, type DemoScenario } from './simulationReadings.ts';
+export type { DemoScenario } from './simulationReadings.ts';
 import type { SemanticContext, SemanticTask } from '../assistant/safetySemantic.ts';
 import { RealContactDemoPermit } from '../voice/realContactDemo.ts';
 import { responsivenessProbe, traceVoiceCheckPublication } from '../voice/responsivenessDiagnostics.ts';
@@ -73,10 +75,9 @@ export type SafetyState = {
   /** Warning lines moved by the driver's own "I'm OK" answers. */
   ack: Ack;
   /** Demo mode: fabricated readings are being played through the engine. */
-  demo: { scenario: DemoScenario; second: number; value: number; step: string } | null;
+  demo: { scenario: DemoScenario; second: number; value: number; step: string; bpm: number; spo2: number } | null;
 };
 
-export type DemoScenario = 'high_critical' | 'high_warning' | 'low' | 'spo2';
 
 export const initialSafety: SafetyState = {
   monitoring: 'disconnected',
@@ -99,7 +100,8 @@ type Deps = {
   interactionCurrent?: () => boolean;
   assistantMode?: () => AssistantMode;
   startSemantic?: (context: SemanticContext, budget?: number) => SemanticTask;
-  startAcknowledgment?: (context: AcknowledgmentContext) => SafetyAcknowledgment;
+  basicOfflineAcknowledgments?: boolean;
+  startAcknowledgment?: (context: AcknowledgmentContext, scope?: Readonly<{ driverId: string | null; simulation: boolean; cloudSimulation?: boolean; current(): boolean }>) => SafetyAcknowledgment;
   /** Opens the phone interface only; resolution does not mean a connected call. */
   handoffContact?: (phone: string, origin: PhoneHandoffOrigin) => Promise<unknown>;
   demoSystemConfirmation?: boolean;
@@ -275,12 +277,6 @@ export class SafetyController {
     if (realContact && this.profile && contact.phone) this.realDemoIntent = { owner, generation: this.generation,
       profileId: this.profile.id, revision: this.profile.updated_at, phone: contact.phone, name: this.profile.emergency_name ?? null };
     const generation = this.generation;
-    const value =
-      scenario === 'high_critical' ? th.highCrit + 9
-      : scenario === 'high_warning' ? Math.min(th.highCrit - 1, th.highWarn + 6)
-      : scenario === 'low' ? th.lowCrit - 3
-      : th.spo2Crit - 2;
-    const oxygen = scenario === 'spo2';
     const engine = new FlagEngine(th, () => `demo-${Date.now()}`);
     const t0 = Date.now();
     const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -288,12 +284,11 @@ export class SafetyController {
     for (let s = 0; s < 90 && !emergency; s += 1) {
       if (this.simulationOwner !== owner) return null;
       if (generation !== this.generation) { this.set({ demo: null, tracking: null }); return null; }
-      const abnormal = s >= 10; // 10 normal seconds first, like a real drive
-      const jitter = ((s * 7) % 5) - 2;
+      const abnormal = s >= FIRST_ABNORMAL_SIMULATION_SECOND;
+      const readings = simulationReading(th, scenario, s);
       const r: Reading = {
         t: t0 + s * 1000,
-        bpm: !abnormal || oxygen ? 74 + jitter : value + jitter,
-        spo2: abnormal && oxygen ? value + (s % 2) : 98,
+        ...readings,
         quality: 85,
         finger: true,
       };
@@ -307,8 +302,8 @@ export class SafetyController {
           step = 'emergency confirmed — voice check';
         }
       }
-      const shown = oxygen ? (r.spo2 ?? 0) : (r.bpm ?? 0);
-      this.set({ demo: { scenario, second: s, value: shown, step } });
+      const shown = scenario === 'spo2' ? readings.spo2 : readings.bpm;
+      this.set({ demo: { scenario, second: s, value: shown, step, ...readings } });
       await sleep(250);
     }
     if (this.simulationOwner !== owner) return null;
@@ -558,7 +553,7 @@ export class SafetyController {
     const current = () => generation === this.generation && profileId === this.profile?.id
       && (this.deps.interactionCurrent?.() ?? true);
     const selected = this.deps.assistantMode?.() ?? 'core';
-    const dialogue: SafetyConversation = { episodeId: ep.id, mode: selected, messages: [], finished: false, simulation: mode !== 'live', language: this.lang, realContactDemo: mode === 'demo' && !!this.realDemoIntent };
+    const dialogue: SafetyConversation = { episodeId: ep.id, mode: selected, messages: [], finished: false, simulation: mode !== 'live', cloudSimulation: mode === 'demo', language: this.lang, realContactDemo: mode === 'demo' && !!this.realDemoIntent };
     const publishDialogue = () => {
       try {
         if (current() && selected !== 'core') this.set({ conversation: { ...dialogue, messages: dialogue.messages.map(message => ({ ...message })) } });
@@ -570,6 +565,7 @@ export class SafetyController {
     let question: CheckQuestion = 'wellness';
     let captureId = '';
     let acknowledgment: SafetyAcknowledgment | null = null;
+    let pendingAcknowledgmentDisplay: { text: string; source: 'openai' | 'gemma' | 'fallback' } | null = null;
     publishDialogue();
     this.deps.haptic('warning');
     const base = this.deps.voiceIO();
@@ -577,22 +573,32 @@ export class SafetyController {
     // has nothing to release and cannot unload a diagnostic or another check.
     let warmLease: Readonly<{ release(): void }> | null = null;
     if (selected !== 'core') {
-      try { warmLease = this.deps.beginGemmaWarm?.() ?? null; }
+      try { warmLease = this.deps.basicOfflineAcknowledgments ? null : this.deps.beginGemmaWarm?.() ?? null; }
       catch { /* Fixed dialogue remains available without a model. */ }
     }
     // Report what the voice check is doing so the screen can show it.
     const io: VoiceIO = {
       pause: () => base.pause?.() ?? Promise.resolve(),
       prepareRecognition: (lang, id) => { if (current()) base.prepareRecognition?.(lang, id); },
-      speak: async (text, lang) => {
+      speak: async (text, lang, delivery) => {
         if (current()) this.set({ check: { episode: ep, phase: 'speaking', question, captureId } });
         const operation = { interrupted: false }; activeSpeech = operation;
         const sentenceTrace = typeof __DEV__ !== 'undefined' && __DEV__ ? responsivenessProbe('warning', 'Sensi sentence playback') : () => {};
         if (typeof __DEV__ !== 'undefined' && __DEV__) sentenceTrace('started', { captureId, question, locale: lang });
         const message = { id: `${ep.id}-${++messageSequence}`, role: 'assistant' as const, text, playback: 'playing' as 'playing' | 'completed' | 'failed' | 'interrupted' };
+        // Display metadata only: the next spoken acknowledgment must match the
+        // selected text; never label mandatory guidance from a preference.
+        if (this.deps.basicOfflineAcknowledgments && (delivery === 'acknowledgment' || delivery === 'pre_guidance_acknowledgment')) {
+          dialogue.acknowledgmentSource = 'fallback';
+          Object.assign(message, { acknowledgmentSource: 'fallback' });
+          responsivenessProbe('warning', 'Sensi acknowledgment selection')('selected', { captureId, question, source: 'fallback', locale: lang });
+        } else if (pendingAcknowledgmentDisplay) {
+          Object.assign(message, { acknowledgmentSource: text === pendingAcknowledgmentDisplay.text ? pendingAcknowledgmentDisplay.source : 'unknown' });
+          pendingAcknowledgmentDisplay = null;
+        }
         dialogue.messages.push(message); publishDialogue();
         try {
-          const playback = await base.speak(text, lang);
+          const playback = await base.speak(text, lang, delivery);
           message.playback = operation.interrupted || !current() ? 'interrupted' : playback?.status === 'unavailable' ? 'failed' : 'completed';
           if (current() && !operation.interrupted && playback?.status === 'unavailable') this.set({ check: { episode: ep, phase: 'speaking', question, captureId, fallbackText: text } });
           return playback;
@@ -632,20 +638,23 @@ export class SafetyController {
       cancel: () => { recognitionEpoch++; if (activeSpeech) activeSpeech.interrupted = true; base.cancel(); },
     };
     const voice = new VoiceCheck(io, this.lang, this.name, {
-      startSemantic: (context, budget) => { if (!current() || selected === 'core' || !this.deps.startSemantic) return { get: () => null, cancel() {} }; return this.deps.startSemantic(context, budget); },
+      basicOfflineAcknowledgments: this.deps.basicOfflineAcknowledgments,
       contactAvailable: contact.phone !== null,
       onQuestion: (q, id) => { question = q; captureId = id; },
       contactName: selected !== 'core' ? profile?.emergency_name ?? undefined : undefined,
       cancelAcknowledgment: () => acknowledgment?.cancel(),
       startAcknowledgment: context => {
         if (!current() || selected === 'core') return;
-        try { acknowledgment = this.deps.startAcknowledgment?.(context) ?? null; } catch { /* Fixed fallback. */ }
+        try { acknowledgment = this.deps.startAcknowledgment?.(context, { driverId: profileId ?? null, simulation: mode !== 'live', cloudSimulation: mode === 'demo', current }) ?? null; } catch { /* Fixed fallback. */ }
         this.acknowledgment = acknowledgment;
       },
       acknowledgment: context => {
         if (!current()) return approvedAcknowledgment(null, this.lang, context);
         const text = acknowledgment?.get(this.lang) ?? approvedAcknowledgment(null, this.lang);
         dialogue.acknowledgmentSource = acknowledgment?.source ?? 'fallback';
+        const displayedAcknowledgment = approvedAcknowledgment(text, this.lang, context);
+        pendingAcknowledgmentDisplay = { text: displayedAcknowledgment,
+          source: displayedAcknowledgment === text ? dialogue.acknowledgmentSource : 'fallback' };
         if (typeof __DEV__ !== 'undefined' && __DEV__) responsivenessProbe('warning', 'Sensi acknowledgment selection')('selected', { captureId, question, source: dialogue.acknowledgmentSource, fallbackText: dialogue.acknowledgmentSource === 'fallback', locale: this.lang });
         publishDialogue();
         return text;

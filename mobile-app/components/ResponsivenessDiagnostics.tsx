@@ -1,13 +1,16 @@
 import { useTheme } from '../lib/theme/ThemeProvider';
 import { useState } from 'react';
 import { Text, View } from 'react-native';
-import { responsiveness } from '../lib/voice/responsivenessDiagnostics';
+import { responsiveness, SENSI_ACKNOWLEDGMENT_PRESENTATION } from '../lib/voice/responsivenessDiagnostics';
 import { checkSpanishTranscriberCapability, spanishTranscriberReadiness, type SpanishTranscriberCapability } from '../modules/local-foundation-models';
+import type { ConversationMessage } from '../modules/local-foundation-models/assistantConversation';
+import { VoiceCheckProviderStatus } from './VoiceCheckProviderStatus';
 import { Btn } from './ui';
+import { DiagnosticDetails, DiagnosticResult } from './DiagnosticUI';
 import { SpanishTranscriberMicrophoneDiagnostic } from './SpanishTranscriberMicrophoneDiagnostic';
 
 /** Explicit refresh avoids rendering or subscriber work in audio callbacks. */
-export function ResponsivenessDiagnostics({ blocked = false }: { blocked?: boolean }) {
+export function ResponsivenessDiagnostics({ blocked = false, messages = [] }: { blocked?: boolean; messages?: readonly ConversationMessage[] }) {
   const { tokens } = useTheme();
   const [snapshot, setSnapshot] = useState(() => responsiveness.snapshot());
   const [checkingTranscriber, setCheckingTranscriber] = useState(false);
@@ -24,6 +27,8 @@ export function ResponsivenessDiagnostics({ blocked = false }: { blocked?: boole
   }
   if (!__DEV__) return null;
   const enabled = responsiveness.isEnabled();
+  const recordedSource = snapshot.slice().reverse().find(record => record.operation === SENSI_ACKNOWLEDGMENT_PRESENTATION)
+    ?.events.find(event => event.point === 'displayed')?.details.source;
   const update = () => setSnapshot(responsiveness.snapshot());
   return <View style={{ gap: 8 }}>
     <Text style={{ color: tokens.textSecondary }}>Developer responsiveness comparison · {enabled ? 'recording' : 'off'}</Text>
@@ -31,13 +36,18 @@ export function ResponsivenessDiagnostics({ blocked = false }: { blocked?: boole
     <Btn title={enabled ? 'Stop timing capture (clear)' : 'Start timing capture'} kind="ghost" onPress={() => { responsiveness.setEnabled(!enabled); update(); }} />
     <Btn title="Refresh timing snapshot" kind="ghost" onPress={update} />
     <Btn title="Clear timing snapshot" kind="ghost" onPress={() => { responsiveness.clear(); update(); }} />
+    <DiagnosticDetails title="Response provider">
+      <VoiceCheckProviderStatus messages={messages} recordedSource={recordedSource} />
+    </DiagnosticDetails>
+    <DiagnosticDetails title="Timing evidence">
     <Text style={{ color: tokens.textSecondary }}>Times are milliseconds. startedMs is relative to capture/reset; event elapsedMs is relative to its operation. Missing events are unknown, not zero. Microphone events report native capture startup, not proof of the first usable audio sample. Return times include bridge and cleanup.</Text>
-    <Text selectable style={{ color: tokens.textSecondary }}>{JSON.stringify(snapshot, null, 2)}</Text>
+    <Text selectable style={{ color: tokens.textSecondary }}>{JSON.stringify(snapshot, null, 2)}</Text></DiagnosticDetails>
+    <DiagnosticResult title="Spanish recognition capability" status={checkingTranscriber ? 'RUNNING' : transcriberError ? 'FAIL' : transcriber ? transcriber.deviceAvailable ? 'WARNING' : 'UNAVAILABLE' : 'NOT TESTED'}><Text style={{ color: tokens.textSecondary }}>Capability inventory only; microphone operation is a separate test.</Text></DiagnosticResult>
     <Btn title="Check Spanish SpeechTranscriber support" kind="ghost" busy={checkingTranscriber} onPress={() => void checkTranscriber()} />
     <Text style={{ color: tokens.textSecondary }}>iOS 26 on-device engine · Read-only; no audio, permission requests, or asset downloads.</Text>
     {checkingTranscriber ? <Text accessibilityLiveRegion="polite" style={{ color: tokens.textSecondary }}>Checking SpeechTranscriber…</Text> : null}
     {transcriberError ? <Text selectable style={{ color: tokens.textSecondary }}>{transcriberError}</Text> : null}
-    {transcriber ? <View style={{ gap: 4 }}>
+    {transcriber ? <DiagnosticDetails title="Recognition capability details"><View style={{ gap: 4 }}>
       <Text style={{ color: tokens.textSecondary }}>iOS: {transcriber.osVersion}</Text>
       <Text style={{ color: tokens.textSecondary }}>Device compatibility: {transcriber.status === 'requires_ios_26' ? 'Requires iOS 26 or later' : transcriber.deviceAvailable ? 'Available' : 'Hardware/capabilities unavailable'}</Text>
       <Text style={{ color: tokens.textSecondary }}>App-reserved locales: {transcriber.reservedLocales?.join(', ') || 'None'} · Maximum reservations: {transcriber.maximumReservedLocales ?? 'Unknown (rebuild Debug app)'}</Text>
@@ -47,7 +57,7 @@ export function ResponsivenessDiagnostics({ blocked = false }: { blocked?: boole
         {transcriber.requestedLocales.map(row => <Text key={row.locale} style={{ color: tokens.textSecondary }}>{row.locale}: {row.exactSupported ? 'Exact locale supported' : 'Exact locale unsupported'} · Equivalent: {row.equivalentLocale ?? 'None'}</Text>)}
         {transcriber.assets.map(row => <Text key={row.locale} style={{ color: tokens.textSecondary }}>{row.locale}: raw AssetInventory status: {row.assetStatus} · Installed-locale list: {row.installedLocale ? 'Yes' : 'No'} · {spanishTranscriberReadiness(row)}</Text>)}
       </> : null}
-    </View> : null}
+    </View></DiagnosticDetails> : null}
     <SpanishTranscriberMicrophoneDiagnostic blocked={blocked} />
   </View>;
 }

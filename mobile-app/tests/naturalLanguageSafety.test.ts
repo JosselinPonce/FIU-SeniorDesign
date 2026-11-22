@@ -74,7 +74,7 @@ for (const [language, statement] of [['en', 'I am suffocating'], ['es', 'estoy c
       listen: async (_l, _m, _h, id) => final(id, ++captures === 1 ? statement : language === 'es' ? 'qué' : 'what'),
     }, language, '', { startSemantic: context => { consults++; return startSemantic(async () => JSON.stringify({ state: 'OK', context: 'none', concern }), context); } });
     const result = await check.run('bpm_high');
-    assert.equal(consults, 1);
+    assert.equal(consults, 0);
     assert.equal(captures, 2);
     assert.equal(result.outcome, 'no_response');
     assert.equal(check.authorizesContact(result), false);
@@ -128,19 +128,19 @@ test('invalid advice stays undecided', () =>
 test('digit-only noise never escalates', () =>
   assert.deepEqual(semanticCombinedDecision(c0, { state: 'NOT_OK', context: 'other', concern: 'yes' }),
     { intent: 'unclear', source: 'undecided' }));
-for(const mode of ['accepted','wrong_context','ai_ok','invalid','unavailable','late'] as const) test(`mocked semantic assistance during clarification: ${mode}`,async()=>{
+for(const mode of ['accepted','wrong_context','ai_ok','invalid','unavailable','late'] as const) test(`retired semantic assistance is never invoked during clarification: ${mode}`,async()=>{
   const playing=deferred<void>(),generation=deferred<string>(); const spoken:string[]=[]; let n=0,attempts=0;
   const check=new VoiceCheck({cancel(){},speak:async text=>{spoken.push(text); if(text==="I didn't catch that.") await playing.promise;},
     listen:async(_l,_m,_h,id)=>final(id,++n===1?c.statement:n===2?'perhaps':'no thanks')},'en','',{
     contactAvailable:true,startSemantic:context=>startSemantic(async()=>{attempts++; if(mode==='unavailable') throw Error('missing'); if(mode==='late') return generation.promise;
       return mode==='invalid'?'call someone':mode==='ai_ok'?'{"state":"OK","context":"none","concern":"no"}':mode==='wrong_context'?valid.replace('fatigue','dizziness'):valid;},context),
   });
-  const pending=check.run('bpm_high'); await tick(); assert.equal(attempts,1);
-  // Only independently grounded advice may skip clarification.
-  assert.equal(n,mode==='accepted'?2:1,'no second capture before the re-ask playback completes');
+  const pending=check.run('bpm_high'); await tick(); assert.equal(attempts,0);
+  // No generative advice can skip clarification, even when independently grounded.
+  assert.equal(n,1,'no second capture before the re-ask playback completes');
   playing.resolve(); const result=await pending;
-  assert.equal(result.outcome,mode==='accepted'?'not_ok':'no_response'); assert.equal(check.authorizesContact(result),false);
-  generation.resolve(valid); await tick(); assert.equal(result.outcome,mode==='accepted'?'not_ok':'no_response');
+  assert.equal(result.outcome,'no_response'); assert.equal(check.authorizesContact(result),false);
+  generation.resolve(valid); await tick(); assert.equal(result.outcome,'no_response');
   assert.ok(spoken.every(t=>!t.includes('call someone')));
 });
 test('semantic timeout and cancellation consume once and suppress late results',async t=>{
@@ -232,7 +232,7 @@ for(const consent of [false,true])test(`Spanish semantic advice still needs inde
     listen:async(_l,_m,_h,id)=>final(id,++captures===1?'me siento cansada desde ayer':captures===2?'qué':consent?'sí, por favor':'no')},'es','',{
       contactAvailable:true,contactName:'Mom',startSemantic:context=>{assert.equal(context.language,'es');assert.equal(context.statement,'me siento cansada desde ayer');return startSemantic(async()=>{attempts++;return valid;},context);},
     });
-  const pending=check.run('bpm_high');await tick();assert.equal(attempts,1);gate.resolve();const result=await pending;
-  assert.equal(result.outcome,'not_ok');assert.equal(result.contactCall,consent?'accepted_offer':'declined_offer');assert.equal(check.authorizesContact(result),consent);
-  assert.ok(said.includes('¿Quieres que llame a Mom?'));assert.ok(said.every(s=>!/Please|Would you|I'm sorry/.test(s)));
+  const pending=check.run('bpm_high');await tick();assert.equal(attempts,0);gate.resolve();const result=await pending;
+  assert.equal(result.outcome,'no_response');assert.equal(result.contactCall,'not_requested');assert.equal(check.authorizesContact(result),false);
+  assert.ok(!said.includes('¿Quieres que llame a Mom?'));assert.ok(said.every(s=>!/Please|Would you|I'm sorry/.test(s)));
 });

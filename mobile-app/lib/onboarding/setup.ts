@@ -1,11 +1,12 @@
 import { GEMMA_ARTIFACT } from '../../modules/gemma-poc/artifact.ts';
 import type { PocState } from '../../modules/gemma-poc/controller.ts';
-export const SETUP_KEY = 'drivesense:setup:v1';
+export const LEGACY_SETUP_KEY = 'drivesense:setup:v1';
+export const SETUP_KEY = 'drivesense:setup:v2';
 export const NOTICE_VERSION = 'prototype-notices-2026-10-25';
 export const GEMMA_TERMS_URL = 'https://ai.google.dev/gemma/terms';
 export const GEMMA_POLICY_URL = 'https://ai.google.dev/gemma/prohibited_use_policy';
 export const GEMMA_TERMS_VERSION = 'gemma-2026-04-01:policy-2024-02-21';
-type RecordState = { version: 1; noticeVersion: string; termsVersion: string; artifact: string;
+type RecordState = { version: 1 | 2; noticeVersion: string; termsVersion: string; artifact: string;
   page: number; notices: boolean; terms: boolean; completed: boolean };
 export type SetupState = { booted: boolean; busy: boolean; ready: boolean; modelReady: boolean;
   page: number; notices: boolean; terms: boolean; recovery: boolean; error: string };
@@ -33,7 +34,7 @@ export class SensiSetup {
   subscribe(fn: (s: SetupState) => void) { this.listeners.add(fn); fn(this.state); return () => { this.listeners.delete(fn); }; }
   private set(patch: Partial<SetupState>) { this.state = { ...this.state, ...patch }; this.listeners.forEach(fn => fn(this.state)); }
   private persist(completed = false) {
-    const data: RecordState = { version: 1, noticeVersion: NOTICE_VERSION, termsVersion: GEMMA_TERMS_VERSION,
+    const data: RecordState = { version: 2, noticeVersion: NOTICE_VERSION, termsVersion: GEMMA_TERMS_VERSION,
       artifact: GEMMA_ARTIFACT.sha256, page: this.state.page, notices: this.state.notices,
       terms: this.state.terms, completed };
     this.writes = this.writes.catch(() => {}).then(async () => { await this.store.setSetting(SETUP_KEY, JSON.stringify(data)); });
@@ -42,17 +43,17 @@ export class SensiSetup {
   boot() {
     return this.booting ??= (async () => {
       try {
-        const raw = await this.store.getSetting(SETUP_KEY);
+        const raw = await this.store.getSetting(SETUP_KEY) ?? await this.store.getSetting(LEGACY_SETUP_KEY);
         const saved = raw ? JSON.parse(raw) as RecordState : null;
-        if (saved?.version === 1 && saved.noticeVersion === NOTICE_VERSION && saved.termsVersion === GEMMA_TERMS_VERSION
-            && saved.artifact === GEMMA_ARTIFACT.sha256) {
-          const notices = saved.notices === true, terms = saved.terms === true;
+        if ((saved?.version === 1 || saved?.version === 2) && saved.noticeVersion === NOTICE_VERSION) {
+          const notices = saved.notices === true, terms = saved.terms === true && saved.termsVersion === GEMMA_TERMS_VERSION;
           const page = Number.isInteger(saved.page) ? Math.max(0, Math.min(4, saved.page)) : 0;
           this.set({ notices, terms, page: !notices ? Math.min(page, 2) : !terms ? Math.min(page, 4) : page });
-          if (saved.completed === true && notices && terms) {
+          if (saved.completed === true && notices) {
             // Admission is persisted consent/completion, never runtime readiness.
             this.set({ ready: true, modelReady: false, page: 5, recovery: false, error: '' });
           }
+          if (saved.version === 1) await this.persist(this.state.ready);
         }
       } catch (error) { this.set({ error: `Could not restore setup: ${String(error)}. You can review and retry.` }); }
       this.set({ booted: true });
@@ -65,9 +66,9 @@ export class SensiSetup {
     try { await this.persist(); } catch (error) { this.set({ error: `Could not save setup progress: ${String(error)}` }); }
   }
   async acknowledge(kind: 'notices' | 'terms', accepted: boolean) {
-    if (this.state.busy || this.state.ready) return;
+    if (this.state.busy || this.state.ready && kind !== 'terms') return;
     this.set({ [kind]: accepted, error: '', modelReady: kind === 'terms' && !accepted ? false : this.state.modelReady });
-    try { await this.persist(); } catch (error) { this.set({ [kind]: false, error: `Could not save acknowledgment: ${String(error)}` }); }
+    try { await this.persist(this.state.ready); } catch (error) { this.set({ [kind]: false, error: `Could not save acknowledgment: ${String(error)}` }); }
   }
   cancel() {
     if (!this.state.busy) return;
@@ -122,6 +123,15 @@ export class SensiSetup {
       this.set({ page: maintenance ? this.state.page : 4, modelReady: false, recovery: true, error: error instanceof Error ? error.message : String(error) });
       try { await this.runtime.dispose(); } catch { /* Retained native ownership requires an explicit cleanup retry. */ }
     } finally { this.set({ busy: false }); }
+  }
+  /** Basic admission requires notices only, never auth, network, or model work. */
+  async continueWithoutGemma() {
+    if (this.state.busy || !this.state.notices) return false;
+    try {
+      await this.persist(true);
+      this.set({ ready: true, page: 5, recovery: false, error: '' });
+      return true;
+    } catch { this.set({ error: 'Could not save setup completion. Please retry.' }); return false; }
   }
   async complete() {
     if (this.state.busy || !this.state.modelReady || !this.state.notices || !this.state.terms) return false;

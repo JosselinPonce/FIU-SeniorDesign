@@ -32,7 +32,7 @@ test('information UI declares accessible labels, focus, dismissal and themed mod
   assert.match(ui, /accessibilityViewIsModal/);
   assert.match(ui, /setAccessibilityFocus/);
   assert.match(ui, /onRequestClose=\{state.close\}/);
-  assert.match(ui, /title="Close" onPress=\{state.close\}/);
+  assert.match(ui, /title="Done" onPress=\{state.close\}/);
   assert.match(ui, /visible=\{!blocked && content !== null\}/);
   assert.match(ui, /backgroundColor: tokens.surface/);
   assert.match(ui, /if \(value !== 'active'\) state.close\(\)/);

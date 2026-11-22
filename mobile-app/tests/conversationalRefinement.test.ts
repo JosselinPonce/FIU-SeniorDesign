@@ -1,3 +1,4 @@
+import * as sensiPresentation from '../lib/ui/sensiPresentation.ts';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -86,7 +87,7 @@ test('compact safety thread retains separate guidance and contact bubbles plus f
   const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX } }).outputText;
   const deps: Record<string, unknown> = { react: { useRef: (current: unknown) => ({ current }), useEffect() {} },
     'react/jsx-runtime': require('react/jsx-runtime'), 'react-native': { ScrollView: 'ScrollView', View: 'View' },
-    '../lib/i18n/native': { LocalizedText: 'Text' }, '../lib/theme/ThemeProvider': { useTheme: () => ({ tokens: {} }) },
+    '../lib/i18n/native': { LocalizedText: 'Text' }, '../lib/ui/sensiPresentation': sensiPresentation, '../lib/theme/ThemeProvider': { useTheme: () => ({ tokens: {} }) },
     '../lib/assistant/threadPresentation': { nearThreadBottom, playbackLabel } };
   const exports: any = {};
   new Function('require', 'exports', compiled)((name: string) => { assert.ok(name in deps, name); return deps[name]; }, exports);

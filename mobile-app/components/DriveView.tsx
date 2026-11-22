@@ -3,7 +3,7 @@ import { traceVoiceCheckUI } from '../lib/voice/responsivenessDiagnostics';
 import { LocalizedPressable as Pressable, LocalizedText as Text } from '../lib/i18n/native';
 import { SafetyTypedResponse } from './SafetyTypedResponse';
 import { monitoringMessage } from '../lib/analysis/sensorContinuity';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef } from 'react';
 import { CompactVitalCard } from './CompactVitalCard';
 import { InformationButton } from './Information';
 import { useTheme } from '../lib/theme/ThemeProvider';
@@ -78,12 +78,11 @@ function Chain(props: { drive: Drive }) {
   );
 }
 
-export function DriveView(props: { drive: Drive; busy: boolean; guard: (fn: () => Promise<unknown>) => void; onOpenVitals(): void; onVitalsAnchor?(anchor: { y: number; height: number }): void }) {
+export function DriveView(props: { drive: Drive; busy: boolean; guard: (fn: () => Promise<unknown>) => void; monitoringDetailsExpanded: boolean; onToggleMonitoringDetails(): void; onOpenVitals(): void; onVitalsAnchor?(anchor: { y: number; height: number }): void }) {
   const { colors: C, tokens } = useTheme();
   const st = makeStyles(tokens);
   const d = props.drive;
-  const [details, setDetails] = useState(true);
-  useEffect(() => { setDetails(true); }, [d.driver?.id]);
+  const details = props.monitoringDetailsExpanded;
   const heading = useRef({ y: 0, height: 58 });
   const scrollOffset = useRef(0);
   const reportHeading = () => props.onVitalsAnchor?.({ y: heading.current.y - scrollOffset.current, height: heading.current.height });
@@ -178,7 +177,7 @@ export function DriveView(props: { drive: Drive; busy: boolean; guard: (fn: () =
           connected={d.isConnected} lastRx={d.lastRx} now={now} seconds={CHART_SECONDS} min={85} max={100} warningBounds={th ? { low: th.spo2Warn } : undefined} />
       </View>
       <Btn title="View Detailed Vitals" kind="ghost" onPress={props.onOpenVitals} />
-      <Pressable accessibilityRole="button" accessibilityState={{ expanded: details }} onPress={() => setDetails(value => !value)} style={{ minHeight: 44, justifyContent: 'center' }}>
+      <Pressable accessibilityRole="button" accessibilityState={{ expanded: details }} onPress={props.onToggleMonitoringDetails} style={{ minHeight: 44, justifyContent: 'center' }}>
         <Text style={{ color: tokens.textSecondary, fontWeight: '600' }}>{details ? '−' : '+'} Monitoring details</Text>
       </Pressable>
       {details ? <Card>

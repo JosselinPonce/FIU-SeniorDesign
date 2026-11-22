@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { AppState, Platform, Text, View } from 'react-native';
 import { useTheme } from '../lib/theme/ThemeProvider';
-import { Btn, Card, SectionTitle } from './ui';
+import { Btn } from './ui';
+import { SettingsRow } from './SettingsGroup';
+import { DiagnosticDetails, DiagnosticResult } from './DiagnosticUI';
 import { appAudio } from '../lib/voice/audioOwnership';
 import { getSetting } from '../lib/db/repositories';
 import { listLocalVoices, speakLocal, cancelLocalSpeech, listenOffline, cancelOfflineListening,
@@ -13,11 +15,9 @@ import { createSensiVoicePlaybackTest, SENSI_VOICE_TRANSCRIPT, SENSI_VOICE_RESPO
 export function SensiVoicePlaybackDiagnostic(props: { blocked: boolean }) {
   const [open, setOpen] = useState(false);
   if (!__DEV__) return null;
-  return <Card>
-    <SectionTitle>Developer — Sensi voice fixture</SectionTitle>
-    {open ? <PlaybackPanel blocked={props.blocked} onClose={() => setOpen(false)} />
-      : <Btn title="Open Sensi voice playback test" disabled={props.blocked} onPress={() => setOpen(true)} />}
-  </Card>;
+  return open
+    ? <View style={{ paddingHorizontal: 14, paddingBottom: 12 }}><PlaybackPanel blocked={props.blocked} onClose={() => setOpen(false)} /></View>
+    : <SettingsRow divider title="Sensi voice playback" disabled={props.blocked} onPress={() => setOpen(true)} />;
 }
 
 function PlaybackPanel(props: { blocked: boolean; onClose(): void }) {
@@ -94,8 +94,11 @@ function PlaybackPanel(props: { blocked: boolean; onClose(): void }) {
   }
   const turn = state?.turns.at(-1);
   return <View style={{ gap: 10 }}>
-    <Text style={{ color: C.ink }}>Test while parked. No backend, contacts or calls. Standard playback uses a synthetic transcript. The microphone test uses strict on-device recognition after the opening question; say “stop” or the fixture transcript.</Text>
-    <Text selectable style={{ color: C.ink }}>Transcript: {SENSI_VOICE_TRANSCRIPT}{'\n'}Response: {SENSI_VOICE_RESPONSE}</Text>
+    <Text style={{ color: C.ink }}>Park before testing. No backend, contacts or calls. Microphone tests use on-device recognition.</Text>
+    <DiagnosticDetails title="Playback instructions">
+      <Text style={{ color: C.ink }}>Test while parked. No backend, contacts or calls. Standard playback uses a synthetic transcript. The microphone test uses strict on-device recognition after the opening question; say “stop” or the fixture transcript.</Text>
+    </DiagnosticDetails>
+    <DiagnosticDetails title="Fixture details"><Text selectable style={{ color: C.ink }}>Transcript: {SENSI_VOICE_TRANSCRIPT}{'\n'}Response: {SENSI_VOICE_RESPONSE}</Text></DiagnosticDetails>
     <Text style={{ color: C.ink }}>Voice: {voice ? `${voice.name} · ${voice.quality} · ${voice.language} · ${voice.id}` : 'Checked on Start using your saved English voice preference.'}</Text>
     <Btn title="Start fixture playback" disabled={busy || closing || props.blocked} onPress={() => void start()} />
     <Btn title="Test prompt then microphone (offline)" disabled={busy || closing || props.blocked} onPress={() => void start(true)} />
@@ -104,6 +107,7 @@ function PlaybackPanel(props: { blocked: boolean; onClose(): void }) {
     <Btn title={closing ? 'Closing after cleanup…' : 'Close voice test'} disabled={closing} onPress={() => void stop(true)} />
     <Text accessibilityLiveRegion="polite" style={{ color: C.ink }}>{state?.phase ?? 'idle'} · {state?.message ?? notice}</Text>
     <Text style={{ color: C.ink }}>{notice}</Text>
-    <Text selectable style={{ color: C.ink }}>Policy: connected · usedFallback: {turn ? String(turn.fallback) : 'pending'}{'\n'}Final transcript: {turn?.driver ?? state?.transcript ?? 'pending'}{'\n'}Final reply: {turn?.assistant ?? 'pending'}{'\n'}Native result: {playback}</Text>
+    <DiagnosticResult title="Playback test" status={busy ? 'RUNNING' : state?.phase === 'error' ? 'FAIL' : state?.phase === 'complete' ? 'WARNING' : 'NOT TESTED'} />
+    <DiagnosticDetails title="Playback evidence"><Text selectable style={{ color: C.ink }}>Policy: connected · usedFallback: {turn ? String(turn.fallback) : 'pending'}{'\n'}Final transcript: {turn?.driver ?? state?.transcript ?? 'pending'}{'\n'}Final reply: {turn?.assistant ?? 'pending'}{'\n'}Native result: {playback}</Text></DiagnosticDetails>
   </View>;
 }

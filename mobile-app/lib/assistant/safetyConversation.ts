@@ -3,7 +3,7 @@ import type { AssistantMode } from './mode.ts';
 import type { CheckQuestion, CheckResult } from '../voice/voiceCheck.ts';
 
 /** Transient display state only. Never persist this or derive consent from it. */
-export type SafetyConversation = { episodeId: string; language?: 'en' | 'es'; mode: AssistantMode; messages: ConversationMessage[]; finished: boolean; simulation?: boolean; realContactDemo?: boolean; acknowledgmentSource?: 'gemma' | 'fallback' };
+export type SafetyConversation = { episodeId: string; language?: 'en' | 'es'; mode: AssistantMode; messages: ConversationMessage[]; finished: boolean; simulation?: boolean; cloudSimulation?: boolean; realContactDemo?: boolean; acknowledgmentSource?: 'openai' | 'gemma' | 'fallback' };
 export function canOfferSafetyContinuation(result: CheckResult): boolean {
   return result.outcome === 'ok' && result.contactCall === 'not_requested';
 }

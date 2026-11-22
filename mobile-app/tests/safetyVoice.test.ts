@@ -6,8 +6,8 @@ import ts from 'typescript';
 import { AudioOwnership } from '../lib/voice/audioOwnership.ts';
 import { recognitionEvidence } from '../lib/voice/coreRecognition.ts';
 import { voiceCheckSpokenText } from '../lib/voice/voiceCheckPresentation.ts';
-function harness(options: { deactivate?: () => void; idle?: () => Promise<boolean>; native?: Record<string, unknown>; aligned?: boolean; development?: boolean } = {}) {
-  const audio=new AudioOwnership();const spoken: string[]=[]; const categories: any[]=[];
+function harness(options: { deactivate?: () => void; idle?: () => Promise<boolean>; native?: Record<string, unknown>; aligned?: boolean; development?: boolean; playback?: (text: string, options: { onDone(): void }) => void; stop?: () => Promise<void> } = {}) {
+  const audio=new AudioOwnership();const spoken: string[]=[]; const categories: any[]=[]; const rates: number[]=[];
   const timings: { point: string; details: any }[] = [];
   const source=readFileSync(new NodeURL('../lib/voice/speechIO.ts',import.meta.url),'utf8');
   const compiled=ts.transpileModule(source,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText;
@@ -17,17 +17,26 @@ function harness(options: { deactivate?: () => void; idle?: () => Promise<boolea
     './audioOwnership':{appAudio:audio},'./responsivenessDiagnostics':{responsivenessProbe:()=>(point: string, details: any)=>timings.push({ point, details }),responsiveness:{},debugSessionAlignmentEnabled:()=>!!options.aligned},
     'react-native':{Platform:{OS:'ios'}},
     'expo-speech':{getAvailableVoicesAsync:async()=>[{identifier:'installed.premium.voice',name:'Fixture',language:'en-US',quality:'Premium'}],
-      speak:(_text:string,options:any)=>{spoken.push(options.voice);options.onDone();},stop:async()=>{},isSpeakingAsync: options.idle ?? (async()=>false)},
+      speak: (text: string, utterance: any) => {
+        spoken.push(utterance.voice); rates.push(utterance.rate);
+        if (options.playback) options.playback(text, utterance); else utterance.onDone();
+      }, stop: options.stop ?? (async () => {}),isSpeakingAsync: options.idle ?? (async()=>false)},
     'expo-speech-recognition':{ExpoSpeechRecognitionModule:{getStateAsync:async()=>'inactive',setCategoryIOS(value: any){ categories.push(value); },setAudioSessionActiveIOS(active: boolean){ if (!active) options.deactivate?.(); }}},
     '../../modules/local-foundation-models':options.native ?? {},'./coreRecognition':{recognitionEvidence},
   };
   new Function('require','exports','__DEV__',compiled)((name:string)=>{assert.ok(name in deps,name);return deps[name];},exports,!!options.development);
-  return {exports,spoken,audio,timings,categories};
+  return {exports,spoken,audio,timings,categories,rates};
 }
-test('Sensi safety mode does not replace an unavailable saved voice and returns button/recognition fallback status',async()=>{
-  const f=harness();f.exports.setPreferredVoice('en','removed.voice');
-  assert.deepEqual(await f.exports.phoneSensiVoiceIO().speak('Are you okay?','en'),{status:'unavailable'});
-  assert.deepEqual(f.spoken,[]);f.exports.releaseAudio();
+test('Sensi falls back to an installed voice in the requested language and adjusts only acknowledgment delivery', async () => {
+  const f = harness();
+  f.exports.setPreferredVoice('en', 'removed.voice');
+  const io = f.exports.phoneSensiVoiceIO();
+  await io.speak('Are you okay?', 'en');
+  await io.speak("I'm sorry you're feeling dizzy.", 'en', 'acknowledgment');
+  assert.deepEqual(f.spoken, ['installed.premium.voice', 'installed.premium.voice']);
+  assert.deepEqual(f.rates, [0.95, 0.92]);
+  assert.deepEqual(await io.speak('¿Estás bien?', 'es'), { status: 'unavailable' });
+  f.exports.releaseAudio();
 });
 test('Sensi safety uses the exact installed premium identifier; CORE retains existing automatic fallback',async()=>{
   const sensi=harness();sensi.exports.setPreferredVoice('en','installed.premium.voice');
@@ -216,6 +225,42 @@ for (const language of ['en', 'es']) test(`${language}: listening follows native
   f.exports.releaseAudio();
 });
 
+test('iOS capture diagnostics distinguish native error, no-speech timeout, and adapter remapping', async () => {
+  for (const { status, reason, locale, mapped } of [
+    { status: 'error', reason: 'recognition_failed', locale: 'en-US', mapped: 'error' },
+    { status: 'timeout', reason: 'no_speech_timeout', locale: 'en-US', mapped: 'timeout' },
+    { status: 'timeout', reason: 'no_speech_timeout', locale: 'es-US', mapped: 'error' },
+  ]) {
+    const nativeSummary = {
+      audio: { sampleRate: 48000, channels: 1, inputRoute: ['BuiltInMic'] },
+      pcm: { tapBuffers: 8, zeroFrameBuffers: 1, zeroByteBuffers: 1, validPCM: 7, forwardedPCM: 3, firstForwardedMs: 20 },
+      nativeError: status === 'error' ? { domain: 'SpeechFixture', code: 1 } : {},
+    };
+    const f = harness({ development: true, native: {
+      subscribeOfflineSpeechProgress: () => ({ remove() {} }),
+      listenOffline: async () => ({
+        status, reason, locale, requiresOnDeviceRecognition: true,
+        transcript: 'private fixture text', message: 'private fixture error', isFinal: false,
+        captureDiagnostics: nativeSummary, captureTerminalReason: reason,
+        nativeTimingMs: { sessionActivationCompleted: 2, engineStartReturned: 3 }, firstPartialTimeMs: null,
+      }),
+    } });
+    const result = await f.exports.phoneVoiceIO().listen('en', 6000, [], 'capture');
+    assert.equal(result.status, mapped);
+    const summaries = f.timings.filter(event => event.point === 'capture summary');
+    assert.equal(summaries.length, 1);
+    assert.equal(summaries[0]!.details.captureId, 'capture');
+    assert.deepEqual(summaries[0]!.details.recognitionSummary, {
+      generation: 0, language: 'en-US', native: nativeSummary, preparationError: undefined,
+      activation: 'completed', engineStarted: true, firstPartialMs: null,
+      nativeFinalCallback: false, usableNativeFinal: false, nativeStatus: status,
+      terminalReason: reason, adapterStatus: mapped,
+    });
+    assert.doesNotMatch(JSON.stringify(summaries), /private fixture/);
+    f.exports.releaseAudio();
+  }
+});
+
 test('cancelling native preparation/cue ignores later listening events and final speech', async () => {
   let progress!: (event: any) => void;
   let complete!: (result: any) => void;
@@ -368,4 +413,31 @@ for (const mode of ['debug', 'mismatched_capture', 'release'] as const) test(`En
   assert.equal(details.englishFinalization, mode === 'debug' ? debug : undefined);
   assert.equal(JSON.stringify(f.timings).includes('PRIVATE PARTIAL'), false);
   f.exports.releaseAudio();
+});
+
+test('pre-guidance speech is bounded and mandatory playback waits for the native stop before speaking', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const spoken: string[] = [];
+  let stop!: () => void;
+  const f = harness({
+    playback(text, options) {
+      spoken.push(text);
+      if (text !== 'Context') options.onDone();
+    },
+    stop: () => new Promise<void>(resolve => { stop = resolve; }),
+  });
+  const io = f.exports.phoneSensiVoiceIO();
+  await io.speak('Wellness question', 'en');
+  const optional = assert.rejects(io.speak('Context', 'en', 'pre_guidance_acknowledgment'), /timed out/);
+  await tick();
+  t.mock.timers.tick(2500);
+  await optional;
+  const mandatory = io.speak('Safety guidance', 'en');
+  await tick();
+  assert.deepEqual(spoken, ['Wellness question', 'Context']);
+  stop();
+  await mandatory;
+  assert.deepEqual(spoken, ['Wellness question', 'Context', 'Safety guidance']);
+  f.exports.releaseAudio();
+  await tick();
 });

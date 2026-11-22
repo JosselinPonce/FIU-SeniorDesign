@@ -1,3 +1,4 @@
+import { abortable } from '../_shared/abort.ts';
 /** Backend-only contract. No provider output is an action or consent signal. */
 export const MAX_BODY_BYTES = 12_288;
 export const MAX_TRANSCRIPT_CHARS = 2048;
@@ -40,7 +41,7 @@ export function validateRequest(value: unknown): AssistantRequest {
   return { requestId: value.requestId.toLowerCase(), transcript, history };
 }
 /** Counts actual streamed bytes, not a caller-controlled Content-Length header. */
-export async function boundedJson(body: ReadableStream<Uint8Array> | null, maxBytes: number, timeoutMs = 4000): Promise<unknown> {
+export async function boundedJson(body: ReadableStream<Uint8Array> | null, maxBytes: number, timeoutMs = 4000, signal?: AbortSignal): Promise<unknown> {
   if (!body) throw new SafeError(400, 'invalid_request');
   const reader = body.getReader();
   const chunks: Uint8Array[] = [];
@@ -51,7 +52,8 @@ export async function boundedJson(body: ReadableStream<Uint8Array> | null, maxBy
   });
   try {
     while (true) {
-      const chunk = await Promise.race([reader.read(), timeout]);
+      const read = Promise.race([reader.read(), timeout]);
+      const chunk = await (signal ? abortable(read, signal) : read);
       if (chunk.done) break;
       bytes += chunk.value.byteLength;
       if (bytes > maxBytes) throw new SafeError(413, 'request_too_large');

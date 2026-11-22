@@ -1,9 +1,10 @@
 import { LocalizedPressable as Pressable, LocalizedText as Text } from '../lib/i18n/native';
 import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
-import { AccessibilityInfo, AppState, findNodeHandle, Modal, ScrollView, View } from 'react-native';
+import { AccessibilityInfo, AppState, findNodeHandle, Modal, SafeAreaView, ScrollView, View } from 'react-native';
+import { useAppLanguage } from '../lib/i18n/LanguageProvider';
 import { useTheme } from '../lib/theme/ThemeProvider';
 import { createInformationState } from '../lib/ui/information';
-import { Btn } from './ui';
+import { SettingsRow } from './SettingsGroup';
 
 const InformationContext = createContext<ReturnType<typeof createInformationState> | null>(null);
 function useInformation() {
@@ -20,6 +21,10 @@ export function InformationHost({ blocked }: { blocked: boolean }) {
   const state = useInformation();
   const content = useSyncExternalStore(state.subscribe, state.getSnapshot, state.getSnapshot);
   const { tokens } = useTheme();
+  const { t } = useAppLanguage();
+  const body = content?.body ?? '';
+  const translated = t(body);
+  const displayBody = translated === body ? body.split('\n').map(t).join('\n') : translated;
   const title = useRef<Text>(null);
   useLayoutEffect(() => { state.block(blocked); }, [state, blocked]);
   useEffect(() => {
@@ -30,13 +35,19 @@ export function InformationHost({ blocked }: { blocked: boolean }) {
     onRequestClose={state.close} onShow={() => {
       const handle = findNodeHandle(title.current); if (handle != null) AccessibilityInfo.setAccessibilityFocus(handle);
     }}>
-    <View style={{ flex: 1, backgroundColor: tokens.overlay, justifyContent: 'center', padding: 24 }}>
-      <View accessibilityViewIsModal style={{ maxHeight: '80%', borderRadius: 22, padding: 20, gap: 16, backgroundColor: tokens.surface }}>
-        <Text ref={title} accessible accessibilityRole="header" style={{ color: tokens.text, fontSize: 22, fontWeight: '700' }}>{content?.title}</Text>
-        <ScrollView><Text style={{ color: tokens.textSecondary, fontSize: 16, lineHeight: 24 }}>{content?.body}</Text></ScrollView>
-        <Btn title="Close" onPress={state.close} />
+    <SafeAreaView style={{ flex: 1, backgroundColor: tokens.overlay }}>
+      <View style={{ flex: 1, justifyContent: 'flex-end', padding: 12 }}>
+        <Pressable accessible={false} onPress={state.close} style={{ position: 'absolute', top: 0, bottom: 0, left: 0, right: 0 }} />
+        <View accessibilityViewIsModal onAccessibilityEscape={state.close}
+          style={{ maxHeight: '88%', borderRadius: 20, paddingTop: 18, backgroundColor: tokens.surface }}>
+          <Text ref={title} accessible accessibilityRole="header" style={{ paddingHorizontal: 18, paddingBottom: 10, color: tokens.text, fontSize: 21, fontWeight: '700' }}>{content?.title}</Text>
+          <ScrollView bounces={false} contentContainerStyle={{ paddingHorizontal: 18, paddingBottom: 12 }}>
+            <Text localize={false} style={{ color: tokens.textSecondary, fontSize: 16 }}>{displayBody}</Text>
+          </ScrollView>
+          <SettingsRow divider action title="Done" onPress={state.close} />
+        </View>
       </View>
-    </View>
+    </SafeAreaView>
   </Modal>;
 }
 export function InformationButton({ title, body, compact = false }: { title: string; body: string; compact?: boolean }) {

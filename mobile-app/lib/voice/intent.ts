@@ -5,9 +5,8 @@
  * weights, trained by tools/intent/train.py on ~4.7k English + Spanish
  * phrasings) behind a rule layer that is deliberately biased toward safety:
  *
- *   1. URGENT words ("help", "911", "ambulance", "chest", "can't breathe",
- *      "ayuda", …) → not_ok + urgent, whatever the model says, unless the
- *      help is explicitly negated ("I don't need help").
+ *   1. Current urgent physical complaints or explicit distress/help words
+ *      → not_ok + urgent. A physical complaint can coexist with help refusal.
  *   2. Explicit negation of being fine ("not okay", "I don't feel well",
  *      "no estoy bien") → not_ok.
  *   3. Model: not_ok if P(not_ok) ≥ 0.5; ok only if P(ok) ≥ 0.75 — anything
@@ -21,7 +20,7 @@
  * tests/intent.test.ts).
  */
 import { wellnessLanguage, clearWellnessAffirmation, type WellnessCategory } from './wellnessLanguage.ts';
-import { assertedWellnessClauses, hasAffirmativeUrgentSymptom, statementSegments, symptomScan } from './symptomLexicon.ts';
+import { assertedWellnessClauses, drowsinessEvidence, urgentPhysicalEvidence, statementSegments, symptomScan } from './symptomLexicon.ts';
 import model from './intentModel.ts';
 import { normalise } from './normalise.ts';
 // Preserve the existing public utility export for callers and parity fixtures.
@@ -91,12 +90,12 @@ export function modelProbs(text: string): [number, number, number] {
   return e.map((x) => x / s) as [number, number, number];
 }
 
-const URGENT =
-  /\b(help|911|nine one one|ambulance|emergency|sos|hospital|doctor|chest|breathe|breathing|heart attack|stroke|pass out|passing out|faint|dying|ayuda|ayudame|auxilio|ambulancia|emergencia|pecho|respirar|infarto|desmay\w*|hospital|medico)\b/;
+const URGENT_HELP =
+  /\b(help|911|nine one one|ambulance|emergency|sos|hospital|doctor|ayuda|ayudame|auxilio|ambulancia|emergencia|medico)\b/;
 const NEGATED_HELP =
   /\b(don't|dont|do not|no) need (any )?(help|a doctor|an ambulance)\b|\bno help needed\b|\bnot an emergency\b|\bno emergency\b|\bno necesito (ayuda|nada|un medico)\b|\bdon't call\b|\bno llames\b/;
 const NEGATED_FINE =
-  /\b(not|n't) (really |feeling |doing |so |too |that |very )?(ok|okay|fine|good|well|great|alright|all right|right)\b|\bdon't feel (so |too |very )?(good|well|right|ok|okay|fine)\b|\bno (estoy|me siento|me encuentro) (nada |muy |tan |para nada )?bien\b|\bnada bien\b/;
+  /\b(not|n't) (really |feeling |doing |so |too |that |very )?(ok|okay|fine|good|well|great|alright|all right|right)\b|\bdon't feel (so |too |very )?(good|well|right|ok|okay|fine)\b|\bno (estoy|me siento|me encuentro) (nada |muy |tan |para nada )?bien\b|\bnada bien\b|\b(?:i )?(?:don't|dont|do not) think (?:i'm|im|i am) (?:ok|okay|fine|good|well|alright)\b|\bno creo que (?:este|estoy|me sienta) bien\b/;
 
 const SYMPTOM =
   /\b(dizzy|sick|pain|hurts?|faint|nause\w*|numb|weak|blurry|racing|pounding|tired|sleepy|shaking|sweating|scared|mareado|mareada|dolor|duele|mal|debil|nauseas|miedo)\b/;
@@ -104,32 +103,35 @@ const SYMPTOM =
 export const OK_MIN = 0.75;
 export const NOT_OK_MIN = 0.5;
 
-function wellnessCandidate(transcript: string | null | undefined): Omit<Understood, 'contactCallRequested'> {
+function wellnessCandidate(transcript: string | null | undefined, asserted: readonly string[],
+  drowsiness: ReturnType<typeof drowsinessEvidence>): Omit<Understood, 'contactCallRequested'> {
   const t = normalise(transcript ?? '');
   if (!t) return { intent: 'silent', urgent: false, confidence: 1, probs: null, reason: 'empty' };
   const probs = modelProbs(t);
   const negatedHelp = NEGATED_HELP.test(t);
   // Short Spanish negatives must not borrow the affirmative grammar's optional
   // discourse "no". Raw clauses distinguish "no muy bien" from "No, muy bien".
-  const asserted = assertedWellnessClauses(transcript ?? t);
   const negativeSpanishWellness = asserted.some(clause =>
     /\bno (?:(?:(?:estoy|me siento|me encuentro) )?(?:(?:muy|perfectamente|nada|tan|para nada) )?bien|todo (?:esta )?bien)\b/.test(clause));
   const negativeEnglishWellness = asserted.some(clause => /\bno (?:very |really )?(?:good|well|great|fine|okay|ok|alright)\b/.test(clause));
-  if (asserted.some(clause => URGENT.test(clause)) && (!negatedHelp || hasAffirmativeUrgentSymptom(transcript ?? t))) {
+  const physicalEvidence = urgentPhysicalEvidence(asserted);
+  if (physicalEvidence === 'current' || (!negatedHelp && asserted.some(clause => URGENT_HELP.test(clause)))) {
     return { intent: 'not_ok', urgent: true, confidence: 1, probs, reason: 'urgent-keyword' };
   }
+  if (drowsiness === 'current') return { intent: 'not_ok', urgent: false, confidence: 0.9, probs, reason: 'symptom-report', context: 'fatigue' };
   // "No, I don't need help" answers "are you okay?" with a yes -- unless the
   // driver also names a symptom ("I don't need help, just dizzy").
   if (negatedHelp && !SYMPTOM.test(t) && !NEGATED_FINE.test(t) && !negativeSpanishWellness && !negativeEnglishWellness) {
     return { intent: 'ok', urgent: false, confidence: 0.8, probs, reason: 'negation' };
   }
-  if (negativeEnglishWellness || negativeSpanishWellness || asserted.some(clause => NEGATED_FINE.test(clause)) && !/\bnot bad\b/.test(t)) {
+  if (negativeEnglishWellness || negativeSpanishWellness || asserted.some(clause => NEGATED_FINE.test(clause))) {
     return { intent: 'not_ok', urgent: false, confidence: Math.max(probs[1], 0.9), probs, reason: 'negation' };
   }
   const natural = wellnessLanguage(t, transcript ?? t);
   if (natural && !/["“”]/.test(transcript ?? '') && !/\b(?:she said|he said|they said|ella dice|el dice|if|what if|si estuviera)\b/.test(t)) {
     return { ...natural, urgent: false, confidence: natural.intent === 'unclear' ? Math.max(...probs) : 0.9, probs, reason: 'symptom-report' };
   }
+  if (physicalEvidence === 'unconfirmed' || drowsiness === 'negated') return { intent: 'unclear', urgent: false, confidence: Math.max(...probs), probs, reason: 'symptom-report' };
   if (probs[1] >= NOT_OK_MIN) return { intent: 'not_ok', urgent: false, confidence: probs[1], probs, reason: 'model' };
   if (probs[0] >= OK_MIN) return { intent: 'ok', urgent: false, confidence: probs[0], probs, reason: 'model' };
   return { intent: 'unclear', urgent: false, confidence: Math.max(...probs), probs, reason: 'model' };
@@ -139,10 +141,12 @@ function wellnessCandidate(transcript: string | null | undefined): Omit<Understo
  * negated-help shortcut and logistic classifier. Unknown/qualified language
  * cannot become OK without a complete, deterministic positive answer. */
 function wellness(transcript: string | null | undefined): Omit<Understood, 'contactCallRequested'> {
-  const result = wellnessCandidate(transcript);
+  const asserted = assertedWellnessClauses(transcript ?? '');
+  const drowsiness = drowsinessEvidence(asserted);
+  const result = wellnessCandidate(transcript, asserted, drowsiness);
   const t = normalise(transcript ?? '');
-  if (!t || result.urgent || result.reason === 'negation' && result.intent === 'not_ok') return result;
-  const scan = symptomScan(assertedWellnessClauses(transcript ?? '').join('. '));
+  if (!t || result.urgent || drowsiness === 'current' || result.reason === 'negation' && result.intent === 'not_ok') return result;
+  const scan = symptomScan(asserted.join('. '));
   const unclear = () => ({ ...result, intent: 'unclear' as const, context: 'other' as const });
   if (statementSegments(transcript ?? '').some(segment => segment.ownership !== 'driver')) {
     // Unrelated reporting cannot erase independently asserted current symptoms.

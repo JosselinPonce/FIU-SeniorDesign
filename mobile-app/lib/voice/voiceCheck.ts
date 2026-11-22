@@ -1,3 +1,5 @@
+import { basicOfflineAcknowledgment, offlineContext } from './basicOfflineAcknowledgment.ts';
+import { createAcknowledgmentPhrasing } from '../assistant/acknowledgmentPhrasing.ts';
 /**
  * The spoken "Are you feeling okay?" check, run when the flag engine confirms
  * an emergency. It reacts to a flag; it never looks at the vitals itself.
@@ -6,13 +8,8 @@
  *     ok      → reassure, done (outcome ok)
  *     not_ok  → safety instructions, then offer a saved-contact phone handoff
  *     explicit contact request → skip the offer; caller handles the handoff
- *     unclear → the on-device Gemma classifier gets one bounded window
- *       (reAskWaitMs, default 2000 ms) to resolve the answer (its verdict is
- *       combined with the deterministic vetoes, never with consent state).
- *       The consult covers only this first unclear answer's bounded wait; a
- *       re-asked answer opens no consult and is decided by the deterministic
- *       pipeline alone → resolved, or ask once more, simpler → listen (6 s)
- *       ok / not_ok as above; still unclear or silent → no_response
+ *     unclear → ask once more → still unclear/silent → no_response
+ *     Generative providers never participate in wellness or consent decisions.
  *
  * No response is treated like "not okay" by the caller (proposal: escalate
  * when the driver does not respond). The on-screen buttons stay available the
@@ -26,7 +23,7 @@
  * the dialogue policy is unit-tested without a device (tests/voiceCheck.test.ts).
  * Transcripts are used in memory only and never stored.
  */
-import { SEMANTIC_DECISION_MS, semanticCombinedDecision, semanticEligible, type SemanticTask, type SemanticContext, type SemanticResult } from '../assistant/safetySemantic.ts';
+import type { SemanticTask, SemanticContext } from '../assistant/safetySemantic.ts';
 import { completeSafetyResponsePlan, promptSentences, safetyGuidancePlan } from './responsePlan.ts';
 import { understand, understandCallAnswer, mentionsEmergencyServices } from './intent.ts';
 
@@ -39,11 +36,12 @@ let nextCheck = 0;
 export type Lang = 'en' | 'es';
 
 export type RecognitionPhase = 'preparing' | 'ready' | 'listening' | 'finalizing';
+export type VoiceDelivery = 'acknowledgment' | 'pre_guidance_acknowledgment';
 export type VoiceIO = {
   /** Register microphone-free preparation for the next prompt; never accepts an answer. */
   prepareRecognition?(lang: Lang, captureId: string): void;
   pause?(): Promise<void>;
-  speak(text: string, lang: Lang): Promise<void | { status: 'unavailable' }>;
+  speak(text: string, lang: Lang, delivery?: VoiceDelivery): Promise<void | { status: 'unavailable' }>;
   /** Only scoped successful final evidence is accepted; legacy strings are unconfirmed. */
   listen(lang: Lang, ms: number, hints: string[], captureId: string, onPhase?: (phase: RecognitionPhase) => void): Promise<CoreRecognition | string | null>;
   responseUnavailable?(): void;
@@ -75,10 +73,10 @@ type Reason = 'bpm_high' | 'bpm_low' | 'spo2_low';
 
 const TEXT = {
   en: {
-    ask: (name: string, r: Reason) =>
+    ask: (name: string, r: Reason, openAnswer?: boolean) =>
       `${name ? `${name}, ` : ''}${
         r === 'bpm_high' ? 'your heart rate has been unusually high' : r === 'bpm_low' ? 'your heart rate has been unusually low' : 'your oxygen level has been low'
-      }. Are you feeling okay? Please say yes, or no.`,
+      }. Are you feeling okay? ${openAnswer ? "You can tell me how you’re feeling." : "Please say yes, or no."}`,
     again: "I didn't catch that. Are you feeling okay? Say yes or no.",
     ok: "Okay. I'll keep an eye on things. Drive safely.",
     notOk: 'Please pull over as soon as it is safe. If you need emergency help, call 911.',
@@ -86,10 +84,10 @@ const TEXT = {
     hints: ['yes', 'no', "I'm okay", "I'm fine", 'not okay', 'I need help', 'help', 'call 911'],
   },
   es: {
-    ask: (name: string, r: Reason) =>
+    ask: (name: string, r: Reason, openAnswer?: boolean) =>
       `${name ? `${name}, ` : ''}${
         r === 'bpm_high' ? 'tu ritmo cardíaco ha estado inusualmente alto' : r === 'bpm_low' ? 'tu ritmo cardíaco ha estado inusualmente bajo' : 'tu nivel de oxígeno ha estado bajo'
-      }. ¿Te sientes bien? Por favor di sí, o no.`,
+      }. ¿Te sientes bien? ${openAnswer ? "Puedes decirme cómo te sientes." : "Por favor di sí, o no."}`,
     again: 'No te entendí. ¿Te sientes bien? Di sí o no.',
     ok: 'Muy bien. Sigo pendiente. Maneja con cuidado.',
     notOk: 'Por favor detente cuando sea seguro. Si necesitas ayuda de emergencia, llama al 911.',
@@ -102,6 +100,7 @@ export class VoiceCheck {
   private buttonAnswer: ((r: ManualAnswer) => void) | null = null;
   private cancelled = false;
   private readonly checkId = ++nextCheck;
+  private readonly acknowledgmentPhrasing = createAcknowledgmentPhrasing(this.checkId);
   private captureNumber = 0;
   private captureId = '';
   private consent: { captureId: string; decision: ContactCallDecision; evidence?: CoreRecognition; button?: true; typed?: true } | null = null;
@@ -114,11 +113,6 @@ export class VoiceCheck {
   }
   /** Read-only exclusion for post-check continuation; never an authorization grant. */
   get emergencyServicesExcluded(): boolean { return this.emergencyServices; }
-  private semanticTask: SemanticTask | null = null;
-  private cancelSemantic() {
-    try { this.semanticTask?.cancel(); } catch { /* Advisory cleanup cannot alter safety. */ }
-    this.semanticTask = null;
-  }
   private knownWellness: CheckResult | null = null;
   private responseIssue: 'silence' | 'unfinished' | 'failure' | 'ambiguous' = 'silence';
   private noteIssue(issue: 'silence' | 'unfinished' | 'failure' | 'ambiguous') {
@@ -130,10 +124,11 @@ export class VoiceCheck {
   private readonly io: VoiceIO;
   private readonly lang: Lang;
   private readonly name: string;
-  private readonly options: { startSemantic?: (context: SemanticContext, budget?: number) => SemanticTask; reAskWaitMs?: number; contactAvailable?: boolean; onQuestion?: (q: CheckQuestion, captureId: string) => void; onAnswer?: (answer: AcceptedSafetyAnswer) => void; cancelAcknowledgment?: () => void; startAcknowledgment?: (context: AcknowledgmentContext) => void; acknowledgment?: (context: AcknowledgmentContext) => string; contactName?: string };
+  // Legacy semantic callback options are accepted for compatibility but never invoked.
+  private readonly options: { basicOfflineAcknowledgments?: boolean; startSemantic?: (context: SemanticContext, budget?: number) => SemanticTask; reAskWaitMs?: number; contactAvailable?: boolean; onQuestion?: (q: CheckQuestion, captureId: string) => void; onAnswer?: (answer: AcceptedSafetyAnswer) => void; cancelAcknowledgment?: () => void; startAcknowledgment?: (context: AcknowledgmentContext) => void; acknowledgment?: (context: AcknowledgmentContext) => string; contactName?: string };
 
   constructor(io: VoiceIO, lang: Lang, name: string,
-    options: { startSemantic?: (context: SemanticContext, budget?: number) => SemanticTask; reAskWaitMs?: number; contactAvailable?: boolean; onQuestion?: (q: CheckQuestion, captureId: string) => void; onAnswer?: (answer: AcceptedSafetyAnswer) => void; cancelAcknowledgment?: () => void; startAcknowledgment?: (context: AcknowledgmentContext) => void; acknowledgment?: (context: AcknowledgmentContext) => string; contactName?: string } = {}) {
+    options: { basicOfflineAcknowledgments?: boolean; startSemantic?: (context: SemanticContext, budget?: number) => SemanticTask; reAskWaitMs?: number; contactAvailable?: boolean; onQuestion?: (q: CheckQuestion, captureId: string) => void; onAnswer?: (answer: AcceptedSafetyAnswer) => void; cancelAcknowledgment?: () => void; startAcknowledgment?: (context: AcknowledgmentContext) => void; acknowledgment?: (context: AcknowledgmentContext) => string; contactName?: string } = {}) {
     this.io = io;
     this.lang = lang;
     this.name = name;
@@ -166,7 +161,7 @@ export class VoiceCheck {
 
   cancel() {
     this.cancelled = true;
-    this.cancelSemantic();
+    this.acknowledgmentPhrasing.clear();
     this.buttonAnswer?.({ button: 'cancel' });
     this.io.cancel();
   }
@@ -269,7 +264,7 @@ export class VoiceCheck {
     }
   }
 
-  private async announce(text: string) {
+  private async announce(text: string, delivery?: VoiceDelivery) {
     if (this.cancelled) throw new Error('Check cancelled');
     let played = false;
     try {
@@ -277,7 +272,7 @@ export class VoiceCheck {
         if (this.cancelled) throw Error('Check cancelled');
         if (i) await this.io.pause?.();
         if (this.cancelled) throw Error('Check cancelled');
-        played = (await this.io.speak(sentence, this.lang))?.status !== 'unavailable';
+        played = (await this.io.speak(sentence, this.lang, delivery))?.status !== 'unavailable';
         if (!played) break;
       }
     } catch { /* Visible safety copy remains available. */ }
@@ -301,113 +296,33 @@ export class VoiceCheck {
     return { understood, result };
   }
 
-  /** Race one completion signal, an elapsed deadline and the scoped manual
-   * response. No polling, artificial microtask drain or outstanding timers. */
-  private async waitForSemantic(task: SemanticTask, deadline: number): Promise<ManualAnswer | null> {
-    let winner: ManualAnswer | null = null;
-    const manual = new Promise<ManualAnswer>(resolve => { this.buttonAnswer = answer => { winner = answer; resolve(answer); }; });
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const expiry = new Promise<void>(resolve => { timer = setTimeout(resolve, Math.max(0, deadline - performance.now())); });
-    try {
-      await Promise.race([manual, expiry, task.completion?.catch(() => {}) ?? (task.settled?.() ? Promise.resolve() : expiry)]);
-      return winner;
-    } finally { clearTimeout(timer); this.buttonAnswer = null; }
-  }
-
   async run(reason: Reason): Promise<CheckResult> {
     const t = TEXT[this.lang];
     let result: CheckResult | null = null;
     let statement: string | null = null;
-    let semanticContext: SemanticContext | null = null;
-    let semanticChannel: 'voice' | 'typed' = 'voice';
-    for (const [index, prompt] of [t.ask(this.name, reason), t.again].entries()) {
-      // Scoped to this iteration only. A later attempt must re-arm the
-      // statement/consent capture below: a typed-unclear manual answer during
-      // an earlier attempt's wait must never suppress a later attempt's own
-      // explicit contact request and its consent evidence.
-      let manualDecided = false;
-      const heard = await this.ask(prompt, 'wellness', [...t.hints]);
+    let unclearStatement: string | null = null;
+    for (const [index, prompt] of [t.ask(this.name, reason, this.options.basicOfflineAcknowledgments), t.again].entries()) {
+      const uncertainty = index > 0 && this.options.basicOfflineAcknowledgments && unclearStatement
+        ? basicOfflineAcknowledgment(offlineContext(unclearStatement, this.lang), this.lang, 'unclear') : null;
+      const heard = await this.ask(uncertainty ? prompt.replace(/^[^.]+\./, uncertainty) : prompt, 'wellness', [...t.hints]);
       if ('button' in heard) {
         result = { outcome: heard.button === 'ok' ? 'ok' : 'not_ok', urgent: false,
           channel: 'button', attempts: 0, confidence: null, contactCall: 'not_requested' };
       } else {
-        const { understood: u, result: determined } = this.interpretWellness(heard.text, 'typed' in heard ? 'typed' : 'voice', index + 1);
-        if (typeof __DEV__ !== 'undefined' && __DEV__) responsivenessProbe('warning', 'VoiceCheck semantic eligibility')('eligibility', { captureId: heard.captureId, question: 'wellness', usable: !!heard.final && !!heard.text && semanticEligible({ event: reason, language: this.lang, statement: heard.text }), outcome: u.intent });
-        responsivenessProbe('warning', 'VoiceCheck interpretation')('wellness interpreted', { captureId: heard.captureId, question: 'wellness', outcome: u.intent, hasText: !!heard.text });
-        if (u.intent === 'ok' || u.intent === 'not_ok') {
-          // Pre-filters keep deciding instantly: no semantic task, no waiting.
-          result = determined;
-          if (typeof __DEV__ !== 'undefined' && __DEV__) responsivenessProbe('warning', 'VoiceCheck semantic decision')('combined decision', { captureId: heard.captureId, question: 'wellness', outcome: u.intent, source: 'pre-filter' });
-        } else if (heard.final && heard.text && u.intent === 'unclear') {
+        const interpreted = this.interpretWellness(heard.text, 'typed' in heard ? 'typed' : 'voice', index + 1);
+        result = interpreted.result;
+        responsivenessProbe('warning', 'VoiceCheck interpretation')('wellness interpreted', { captureId: heard.captureId, question: 'wellness', outcome: interpreted.understood.intent, source: 'deterministic' });
+        if (interpreted.understood.intent === 'unclear') {
           this.noteIssue('ambiguous');
-          semanticContext = Object.freeze({ event: reason, language: this.lang, statement: heard.text });
-          semanticChannel = 'typed' in heard ? 'typed' : 'voice';
-          // The consult covers the FIRST unclear answer only: its bounded
-          // pre-re-ask window owns the attempt-0 verdict. A re-asked answer
-          // opens no consult and is decided by the deterministic pipeline
-          // exactly as pre-branch (escalation unchanged and fail-safe).
-          this.cancelSemantic();
-          if (index === 0 && semanticEligible(semanticContext)) {
-            const requested = this.options.reAskWaitMs ?? SEMANTIC_DECISION_MS;
-            const budget = Number.isFinite(requested) ? Math.min(SEMANTIC_DECISION_MS, Math.max(0, requested)) : SEMANTIC_DECISION_MS;
-            const deadline = performance.now() + budget;
-            try { this.semanticTask = this.options.startSemantic?.(semanticContext, budget) ?? null; } catch { /* Clarification is unchanged. */ }
-            const task = this.semanticTask;
-            if (task && (task.completion || task.settled)) {
-              const winner = await this.waitForSemantic(task, deadline);
-              if (this.cancelled || winner && 'button' in winner && winner.button === 'cancel') {
-                this.cancelSemantic();
-                throw new Error('Check cancelled');
-              }
-              if (winner === null) {
-                let advice: SemanticResult | null = null;
-                try { if (performance.now() < deadline) advice = task.get(); } catch { /* Conservative fallback. */ }
-                this.cancelSemantic();
-                const combined = semanticCombinedDecision(semanticContext, advice);
-                if (typeof __DEV__ !== 'undefined' && __DEV__) responsivenessProbe('warning', 'VoiceCheck semantic decision')('combined decision', { captureId: heard.captureId, question: 'wellness', outcome: combined.intent, decisionSource: combined.source, source: combined.source === 'gemma' ? 'gemma-grounded' : 'fallback-deterministic' });
-                if (combined.intent !== 'unclear') {
-                  result = { outcome: combined.intent, urgent: false, channel: semanticChannel, attempts: index + 1,
-                    confidence: null, contactCall: 'not_requested' };
-                }
-              } else {
-                // The tap wins; the semantic verdict is discarded without ever
-                // being read (cancel first — a consumed task can never be treated
-                // as fresh advice later).
-                this.cancelSemantic();
-                manualDecided = true;
-                const winText = this.manualText(winner);
-                let decided: CheckResult | null;
-                if ('button' in winner) {
-                  decided = { outcome: winner.button === 'ok' ? 'ok' : 'not_ok', urgent: false,
-                    channel: 'button', attempts: index + 1, confidence: null, contactCall: 'not_requested' };
-                } else {
-                  statement = winner.typed;
-                  decided = this.interpretWellness(winner.typed, 'typed', index + 1).result;
-                  if (decided?.contactCall === 'explicit_request') this.consent = { captureId: this.captureId, decision: 'explicit_request', typed: true };
-                }
-                result = decided;
-                if (typeof __DEV__ !== 'undefined' && __DEV__ && decided) responsivenessProbe('warning', 'VoiceCheck semantic decision')('combined decision', { captureId: this.captureId, question: 'wellness', outcome: decided.outcome, source: 'pre-filter' });
-                try { this.options.onAnswer?.({ question: 'wellness', channel: decided?.channel === 'button' ? 'button' : 'typed', text: winText }); } catch { /* Presentation failure cannot alter safety decisions. */ }
-              }
-            }
-          }
+          if (heard.final) unclearStatement = heard.text;
         }
       }
       if (result) {
-        if (!manualDecided) {
-          // A manual win during the wait already decided statement/consent from
-          // its own channel; the voice answer it beat must not decide instead.
-          if ('text' in heard && heard.final) statement = heard.text;
-          if (result.contactCall === 'explicit_request' && 'text' in heard) this.consent = { captureId: heard.captureId, decision: 'explicit_request', ...('typed' in heard ? { typed: true as const } : { evidence: heard.evidence }) };
-        }
+        if ('text' in heard && heard.final) statement = heard.text;
+        if (result.contactCall === 'explicit_request' && 'text' in heard) this.consent = { captureId: heard.captureId, decision: 'explicit_request', ...('typed' in heard ? { typed: true as const } : { evidence: heard.evidence }) };
         break;
       }
     }
-    // Attempt-2 answers open no semantic consult and no post-loop consume
-    // block exists: the consult is scoped to the first unclear answer's
-    // bounded wait, so a re-asked answer falls to the deterministic pipeline
-    // exactly as pre-branch (escalation unchanged, fail-safe).
-    this.cancelSemantic();
     this.knownWellness = result;
     if (!result) {
       const prefix = this.lang === 'en'
@@ -419,21 +334,35 @@ export class VoiceCheck {
         confidence: null, contactCall: 'not_requested' };
     }
     if (result.outcome === 'ok') {
+      if (this.options.basicOfflineAcknowledgments) {
+        const empathy = basicOfflineAcknowledgment(offlineContext(statement, this.lang), this.lang, 'ok');
+        if (empathy) await this.announce(empathy, 'acknowledgment');
+        else await this.announce(t.ok);
+        return result;
+      }
       if (statement && /\b(long day|rough day|dia largo|día largo|día difícil|dia dificil)\b/i.test(statement)) {
         await this.announce(this.lang === 'es' ? 'Me alegra que te sientas bien. Parece que ha sido un día largo.' : "Glad you're feeling okay. It sounds like a long day.");
       }
       await this.announce(t.ok);
       return result;
     }
-    const context = acknowledgmentContext(reason, this.lang, statement);
+    const context = this.options.basicOfflineAcknowledgments ? null
+      : acknowledgmentContext(reason, this.lang, statement, result.channel === 'voice' || result.channel === 'typed' ? result.channel : undefined, this.acknowledgmentPhrasing);
     const canAcknowledge = !result.urgent && !this.emergencyServices && result.contactCall !== 'explicit_request'
-      && !!this.options.contactAvailable && !!this.options.acknowledgment;
-    if (canAcknowledge) {
+      && !!this.options.contactAvailable && (!!this.options.basicOfflineAcknowledgments || !!this.options.acknowledgment);
+    if (canAcknowledge && context) {
       try { this.options.startAcknowledgment?.(context); } catch { /* Fixed fallback. */ }
     }
     // Inference runs during immediate mandatory guidance, never as a blocking step.
     const planTrace = typeof __DEV__ !== 'undefined' && __DEV__ ? responsivenessProbe('warning', 'Sensi sentence response plan') : () => {};
     const guidance = safetyGuidancePlan(this.lang, result.urgent);
+    if (canAcknowledge && this.options.basicOfflineAcknowledgments) {
+      const empathy = basicOfflineAcknowledgment(offlineContext(statement, this.lang), this.lang, 'not_ok');
+      if (empathy) {
+        planTrace('acknowledgment', { stage: 'acknowledgment', captureId: this.captureId, locale: this.lang });
+        await this.announce(empathy, 'pre_guidance_acknowledgment');
+      }
+    }
     let guidancePlayed = true;
     for (const [i, segment] of guidance.entries()) {
       if (i) await this.io.pause?.();
@@ -441,7 +370,7 @@ export class VoiceCheck {
       guidancePlayed = await this.announce(segment.text) && guidancePlayed;
     }
     let empathy = '';
-    if (canAcknowledge && guidancePlayed) {
+    if (canAcknowledge && guidancePlayed && context) {
       let acknowledgment: string | undefined;
       try { acknowledgment = this.options.acknowledgment?.(context); } catch { /* Fixed fallback. */ }
       empathy = approvedAcknowledgment(acknowledgment, this.lang, context);
@@ -463,7 +392,7 @@ export class VoiceCheck {
     const responsePlan = completeSafetyResponsePlan(guidance, empathy, offer);
     for (const segment of responsePlan.slice(guidance.length, -1)) {
       if (typeof __DEV__ !== 'undefined' && __DEV__) planTrace('acknowledgment', { stage: 'acknowledgment', captureId: this.captureId, locale: this.lang });
-      await this.io.pause?.(); await this.announce(segment.text);
+      await this.io.pause?.(); await this.announce(segment.text, 'acknowledgment');
     }
     await this.io.pause?.();
     const response = [responsePlan.at(-1)!.text];

@@ -115,7 +115,33 @@ test('real controller event starts presentation inference; episode ownership gat
   assert.equal(c.answerText("I'm dizzy", { ...scope(), episodeId: 'old' }), false);
   assert.equal(c.answerText("I'm dizzy", scope()), true); await tick();
   assert.equal(started, 1); assert.equal(state.check?.question, 'contact_offer'); assert.deepEqual(calls, []);
+  const tagged = state.conversation?.messages.filter(message => message.acknowledgmentSource);
+  assert.equal(tagged?.length, 1);
+  assert.equal(tagged?.[0]?.text, 'Thank you for telling me.'); assert.equal(tagged?.[0]?.acknowledgmentSource, 'fallback', 'rejected generated text is displayed as basic fallback');
+  assert.ok(state.conversation?.messages.filter(message => /pull over|call Mom/i.test(message.text)).every(message => !message.acknowledgmentSource));
   assert.equal(c.answerText('yes please', scope()), true); await tick(); await tick();
   assert.deepEqual(calls, ['+13055550123']); assert.ok(cancelled > 0); assert.equal(state.last?.result.outcome, 'not_ok');
   assert.equal(c.safetyContinuation('episode'), false);
+});
+
+for (const source of ['openai', 'gemma', 'fallback'] as const) test(`actual ${source} acknowledgment provenance survives into one message without tagging mandatory guidance`, async () => {
+  let state!: SafetyState;
+  const acknowledgment = "I'm sorry you're feeling dizzy.";
+  const c = new SafetyController({ assistantMode: () => 'local',
+    startAcknowledgment: () => ({ get: () => acknowledgment, source, cancel() {} }),
+    voiceIO: () => ({ speak: async () => {}, listen: async () => new Promise(() => {}), cancel() {} }),
+    save: async () => {}, saveAck: async () => {}, haptic() {}, onChange: s => { state = s; }, newId: () => 'provenance-episode',
+  });
+  c.configure({ id: 'p', custom_id: null, display_name: 'Driver', age: 30, gender: 'male', height_cm: 180, weight_kg: 80,
+    created_at: '', updated_at: '', emergency_name: 'Mom', emergency_phone: '+13055550123' }, null);
+  c.startSession('drive');
+  for (let n = 0; n < 40 && !state.check; n++) c.onFrame({ version: 3, seq: n, rateHz: 0, quality: 90, startMs: 0, endMs: 0,
+    heartRate: 155, spo2: 98, flags: 15, samples: [], finger: true, usable: true, raw: new Uint8Array() }, new Date(100000 + n * 1000), 0);
+  await tick();
+  const scope = () => ({ episodeId: state.check!.episode.id, question: state.check!.question, captureId: state.check!.captureId });
+  assert.equal(c.answerText("I'm dizzy", scope()), true); await tick();
+  const tagged = state.conversation?.messages.filter(message => message.acknowledgmentSource);
+  assert.equal(tagged?.length, 1); assert.equal(tagged?.[0]?.acknowledgmentSource, source); assert.equal(tagged?.[0]?.text, acknowledgment);
+  assert.ok(state.conversation?.messages.filter(message => message.text !== acknowledgment).every(message => !message.acknowledgmentSource));
+  assert.equal(c.answerText('no thanks', scope()), true); await tick(); await tick();
 });

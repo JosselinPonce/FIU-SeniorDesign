@@ -119,7 +119,8 @@ test('header uses a compact named selector with the original switching handler',
 test('Sensi introduction is interface-only and wheel control remains separate from branding', () => {
   const assistant = source('components/SensiSafetyConversation.tsx');
   const presentation = assistant;
-  assert.match(presentation, /Sensi · Safety check/);
+  assert.match(presentation, />Sensi<\/Text>/);
+  assert.match(presentation, />Safety check<\/Text>/);
   assert.match(presentation, /<SensiConversationThread/);
   const thread = source('components/SensiConversationThread.tsx');
   assert.match(thread, /Hi, I’m Sensi\. I respond during safety checks/);

@@ -74,7 +74,7 @@ export function Pill(props: { tone: Tone; children: ReactNode }) {
 export function Btn(props: {
   title: string;
   accessibilityRole?: 'button' | 'radio';
-  accessibilityState?: { selected?: boolean };
+  accessibilityState?: { selected?: boolean; expanded?: boolean };
   onPress: () => void;
   kind?: 'primary' | 'danger' | 'ghost';
   disabled?: boolean;

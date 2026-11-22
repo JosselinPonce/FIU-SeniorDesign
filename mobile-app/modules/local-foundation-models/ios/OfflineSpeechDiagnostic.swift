@@ -257,12 +257,61 @@ private struct EnglishShadowAudio {
 #endif
 
 /// Audio-thread meter and append gate; never infers silence from transcript cadence.
+// Validate before reading channel samples or handing PCM to Apple.
+func hasDeclaredPCMData(_ buffers: UnsafeMutableAudioBufferListPointer) -> Bool {
+  return !buffers.isEmpty && buffers.allSatisfy { $0.mDataByteSize > 0 }
+}
+
+#if DEBUG
+// BEGIN CAPTURE PCM DIAGNOSTICS
+final class CapturePCMDiagnostics: @unchecked Sendable {
+  private let lock = NSLock()
+  private var tapBuffers = 0
+  private var zeroFrames = 0
+  private var zeroBytes = 0
+  private var validPCM = 0
+  private var forwardedPCM = 0
+  private var firstForwarded: TimeInterval?
+
+  func observeTap(frames: AVAudioFrameCount, hasBytes: Bool, valid: Bool) {
+    lock.lock(); defer { lock.unlock() }
+    tapBuffers += 1
+    if frames == 0 { zeroFrames += 1 }
+    if !hasBytes { zeroBytes += 1 }
+    if valid { validPCM += 1 }
+  }
+
+  func forwarded(at time: TimeInterval = ProcessInfo.processInfo.systemUptime) {
+    lock.lock(); defer { lock.unlock() }
+    forwardedPCM += 1
+    firstForwarded = firstForwarded ?? time
+  }
+
+  func report(started: TimeInterval) -> [String: Any] {
+    lock.lock(); defer { lock.unlock() }
+    return ["tapBuffers": tapBuffers, "zeroFrameBuffers": zeroFrames, "zeroByteBuffers": zeroBytes,
+            "validPCM": validPCM, "forwardedPCM": forwardedPCM,
+            "firstForwardedMs": firstForwarded.map { ($0 - started) * 1000 } as Any? ?? NSNull()]
+  }
+}
+
+func captureAudioFormat(_ format: AVAudioFormat, session: AVAudioSession) -> [String: Any] {
+  ["sampleRate": format.sampleRate, "channels": format.channelCount,
+   "commonFormat": format.commonFormat.rawValue, "interleaved": format.isInterleaved,
+   "category": session.category.rawValue, "mode": session.mode.rawValue,
+   "inputRoute": session.currentRoute.inputs.map { $0.portType.rawValue },
+   "outputRoute": session.currentRoute.outputs.map { $0.portType.rawValue }]
+}
+// END CAPTURE PCM DIAGNOSTICS
+#endif
+
 private final class SpeechActivityMeter: @unchecked Sendable {
   private let lock = NSLock()
   private var feeding = true
   private var gate = VoiceListeningGate()
   private var state = OfflineEndpointState()
 #if DEBUG
+  let pcmDiagnostics = CapturePCMDiagnostics()
   private var shadow = EnglishShadowAudio()
   func shadowReport() -> [String: Any] { lock.lock(); defer { lock.unlock() }; return shadow.report }
 #endif
@@ -275,8 +324,13 @@ private final class SpeechActivityMeter: @unchecked Sendable {
   func append(_ buffer: AVAudioPCMBuffer, to request: SFSpeechAudioBufferRecognitionRequest) {
     lock.lock()
     defer { lock.unlock() }
-    guard feeding, gate.measuresPreparation || gate.acceptsSpeech,
-          let channels = buffer.floatChannelData, buffer.frameLength > 0 else { return }
+    let hasBytes = hasDeclaredPCMData(UnsafeMutableAudioBufferListPointer(buffer.mutableAudioBufferList))
+    let channels = buffer.floatChannelData
+    let valid = buffer.frameLength > 0 && hasBytes && channels != nil
+#if DEBUG
+    pcmDiagnostics.observeTap(frames: buffer.frameLength, hasBytes: hasBytes, valid: valid)
+#endif
+    guard valid, let channels, feeding, gate.measuresPreparation || gate.acceptsSpeech else { return }
     var power = 0.0
     var count = 0
     for channel in 0..<Int(buffer.format.channelCount) {
@@ -294,6 +348,7 @@ private final class SpeechActivityMeter: @unchecked Sendable {
 #if DEBUG
       shadow.observe(frames: Int(buffer.frameLength), channelCount: Int(buffer.format.channelCount), sampleRate: buffer.format.sampleRate,
                      existingSampledPower: power / Double(max(count, 1))) { channel, frame in Double(channels[channel][frame]) }
+      pcmDiagnostics.forwarded(at: now)
 #endif
     } else { firstPreparationPCM = firstPreparationPCM ?? now; lastPreparationPCM = now }
   }
@@ -354,6 +409,10 @@ final class OfflineSpeechDiagnostic {
     var cueRoute: [String] = []
     var timings = VoiceRecognitionTimings()
     let meter = SpeechActivityMeter()
+#if DEBUG
+    var captureAudio: [String: Any] = [:]
+    var firstPartialCallbackMs: Double?
+#endif
     let progress: ([String: Any]) -> Void
     var deadline: TimeInterval
     let listeningSeconds: TimeInterval
@@ -577,6 +636,9 @@ final class OfflineSpeechDiagnostic {
             current.debugResultMetadata[metadataPoint + "AtCallback"] = callbackResultMetadata
             current.debugResultMetadata[metadataPoint + "Handled"] = englishRecognitionResultMetadata(result)
           }
+          if result?.isFinal == false, current.firstPartialCallbackMs == nil {
+            current.firstPartialCallbackMs = (callbackReceivedAt - current.started) * 1000
+          }
           current.rawAppleIsFinal = result?.isFinal
           current.snapshotTask("callback")
           if let error = error as NSError? { current.callbackError = ["domain": error.domain, "code": error.code] }
@@ -615,6 +677,9 @@ final class OfflineSpeechDiagnostic {
       current.timings.mark("microphoneSetupStarted")
       let input = current.engine.inputNode
       let format = input.outputFormat(forBus: 0)
+#if DEBUG
+      current.captureAudio = captureAudioFormat(format, session: session)
+#endif
       guard format.sampleRate > 0, format.channelCount > 0,
             format.commonFormat == .pcmFormatFloat32, !format.isInterleaved else {
         finish(current.id, code: "invalid_audio_format", message: "Microphone audio format is unavailable."); return
@@ -632,7 +697,7 @@ final class OfflineSpeechDiagnostic {
         },
         NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: current.engine, queue: .main) { [weak self] _ in
           Task { @MainActor in
-            guard current.phase == "listening" ||
+            guard current.phase == "listening" || current.phase == "ready" ||
                   (current.phase == "preparing" && current.captureStarted != nil) else { return }
             self?.finish(current.id, code: "audio_route_changed", message: "Audio engine configuration changed; capture stopped.")
           }
@@ -652,6 +717,10 @@ final class OfflineSpeechDiagnostic {
         Task { @MainActor in self?.checkEndpoint(current) }
       }
     } catch {
+#if DEBUG
+      let native = error as NSError
+      current.callbackError = ["domain": native.domain, "code": native.code]
+#endif
       finish(current.id, code: "audio_setup_failed", message: error.localizedDescription)
     }
   }
@@ -686,8 +755,8 @@ final class OfflineSpeechDiagnostic {
     }
     current.timings.mark("nativeMicrophoneReady")
     current.timer?.invalidate()
-    current.phase = "listening"
-    publishProgress(current) // Same native transition starts the cue and the compact indicator.
+    current.phase = "ready"
+    publishProgress(current) // The cue runs while the PCM gate remains closed.
     current.cueTask = Task { @MainActor in
       current.cueVolume = AVAudioSession.sharedInstance().outputVolume
       current.cueRoute = AVAudioSession.sharedInstance().currentRoute.outputs.map { $0.portType.rawValue }
@@ -805,7 +874,7 @@ final class OfflineSpeechDiagnostic {
     let now = ProcessInfo.processInfo.systemUptime
     let audio = current.meter.snapshot()
     current.progress([
-      "requestId": current.id, "phase": current.phase == "listening" && current.listeningStarted == nil ? "ready" : current.phase, "transcript": current.transcript,
+      "requestId": current.id, "phase": current.phase, "transcript": current.transcript,
       "elapsedMs": (now - current.started) * 1000,
       "audioLevelDb": audio.levelDb, "activityThresholdDb": audio.thresholdDb,
       "silenceMs": audio.lastActivity.map { (now - $0) * 1000 } ?? 0,
@@ -830,7 +899,7 @@ final class OfflineSpeechDiagnostic {
 
   private func finish(_ requestId: String, code: String?, message: String, isFinal: Bool = false) {
     guard let current = capture, current.id == requestId else { return }
-    if current.phase == "listening" {
+    if current.phase == "listening" || current.phase == "ready" {
       current.phase = "finalizing"
       publishProgress(current) // Hide the live indicator before potentially slow cleanup.
     }
@@ -909,6 +978,10 @@ final class OfflineSpeechDiagnostic {
       "silenceTargetMs": 1300, "finalizationGraceMs": 2500
     ]
 #if DEBUG
+    report["captureDiagnostics"] = [
+      "audio": current.captureAudio, "pcm": current.meter.pcmDiagnostics.report(started: current.started),
+      "nativeError": current.callbackError, "firstPartialCallbackMs": current.firstPartialCallbackMs as Any? ?? NSNull()
+    ]
     report["englishFinalizationDebug"] = [
       "captureId": current.id,
       "resultMetadataRevision": "english-result-metadata-v1",

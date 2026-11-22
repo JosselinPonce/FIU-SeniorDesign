@@ -32,11 +32,11 @@ test('gesture claims movement beyond tap slop; floating wrapper passes ordinary 
   assert.match(shell,/error="" onPress=\{openAssistant\}/);
   assert.match(shell,/!assistantOpen \? <DraggableSensiLauncher/);
 });
-test('diagnostics only enter from Advanced; category card matches the other navigation cards', () => {
+test('diagnostics enter from Advanced or Sensi in Debug; Advanced uses a grouped row', () => {
   const settings=source('components/SettingsView.tsx');
   const advanced=settings.slice(settings.indexOf("{page === 'developer' && __DEV__"));
-  assert.match(advanced,/__DEV__ \? props.gemmaDiagnostics/);
-  assert.match(settings,/accessibilityLabel="Advanced Settings" onPress=\{\(\) => navigate\('advanced'\)\} style=\{st.category\}/);
+  assert.match(advanced,/\{props.gemmaDiagnostics\}/);
+  assert.match(settings, /<SettingsRow divider title="Advanced Settings"/);
   const shell=source('components/SmartWheelScreen.tsx');
   const picker=shell.slice(shell.indexOf('if (!drive.driver)'),shell.indexOf('if (editOpening)'));
   assert.doesNotMatch(picker,/Local AI diagnostics/);
@@ -68,5 +68,4 @@ test('Live Vitals uses natural text height without reserving dashboard space for
   assert.match(wrapper, /pointerEvents="box-none" style=\{\{ position: 'absolute'/);
   assert.match(wrapper, /<View pointerEvents="none"/);
   assert.deepEqual(defaultVitalsPosition(390,600,{y:180,height:24}),{x:316,y:163});
-  assert.match(drive, /\[details, setDetails\] = useState\(true\)/);
 });

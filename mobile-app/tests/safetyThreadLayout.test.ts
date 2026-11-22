@@ -1,3 +1,4 @@
+import * as sensiPresentation from '../lib/ui/sensiPresentation.ts';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -11,17 +12,25 @@ test('one thread scrolls all messages and response controls; reviewing history d
   const deps: Record<string, any> = {
     react: { useRef: (value: any) => { const n = index++; return refs[n] ??= { current: value }; }, useEffect: (fn: () => void, keys: string[]) => { if (keys[0] !== effectKey) { effectKey = keys[0]; fn(); } } },
     'react/jsx-runtime': require('react/jsx-runtime'), 'react-native': { ScrollView: 'ScrollView', View: 'View' },
-    '../lib/i18n/native': { LocalizedText: 'Text' }, '../lib/theme/ThemeProvider': { useTheme: () => ({ tokens: {} }) },
+    '../lib/i18n/native': { LocalizedText: 'Text' }, '../lib/ui/sensiPresentation': sensiPresentation, '../lib/theme/ThemeProvider': { useTheme: () => ({ tokens: {} }) },
     '../lib/assistant/threadPresentation': { nearThreadBottom, playbackLabel },
   };
   const exports: any = {};
   new Function('require','exports',ts.transpileModule(readFileSync(new NodeURL('../components/SensiConversationThread.tsx',import.meta.url),'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX } }).outputText)(
     (name: string) => { assert.ok(name in deps,name); return deps[name]; },exports);
-  const messages = [{ id: 'first', role: 'assistant', text: 'First mandatory guidance' },{ id: 'last', role: 'driver', text: 'Last answer' }];
+  const messages = [{ id: 'first', role: 'assistant', text: 'First mandatory guidance' },
+    { id: 'second', role: 'assistant', text: 'Second mandatory guidance' },
+    { id: 'last', role: 'driver', text: 'Last answer' }];
   const render = () => { index = 0; return exports.SensiConversationThread({ messages, provisional: '', footer: 'response controls', compactPlayback: true }); };
   let tree = render(); refs[0]!.current = { scrollToEnd: () => { scrolls++; } };
   assert.equal(tree.type,'ScrollView'); assert.equal(tree.props.removeClippedSubviews,false); assert.equal(tree.props.keyboardShouldPersistTaps,'handled');
   assert.equal(tree.props.style.minHeight,0); assert.ok(JSON.stringify(tree).includes('First mandatory guidance')); assert.ok(JSON.stringify(tree).includes('Last answer')); assert.ok(JSON.stringify(tree).includes('response controls'));
+  const bubbles = tree.props.children[1];
+  assert.deepEqual(bubbles.map((bubble: any) => bubble.key), ['first', 'second', 'last']);
+  assert.equal(bubbles[0].props.children[0].props.children, 'Sensi');
+  assert.equal(bubbles[1].props.children[0], null);
+  assert.equal(bubbles[1].props.children[1].props.children, 'Second mandatory guidance');
+  assert.equal(bubbles[2].props.children[0].props.children, 'You');
   tree.props.onContentSizeChange(); assert.equal(scrolls,1);
   tree.props.onScroll({ nativeEvent: { contentSize: { height: 1500 }, layoutMeasurement: { height: 300 }, contentOffset: { y: 0 } } });
   messages.push({ id: 'new', role: 'assistant', text: 'New message' }); tree = render(); tree.props.onContentSizeChange(); tree.props.onLayout();

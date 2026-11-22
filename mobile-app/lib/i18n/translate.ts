@@ -1,6 +1,7 @@
 import { spanish } from './catalog.ts';
 import type { AppLanguage } from './preferences.ts';
 const normalize = (text: string) => text.replace(/\s+/g, ' ').trim();
+const forward = new Map(Object.entries(spanish).map(([en, es]) => [normalize(en), es]));
 const reverse = new Map(Object.entries(spanish).map(([en, es]) => [normalize(es), en]));
 const patterns = Object.entries(spanish).filter(([key]) => key.includes('{')).flatMap(([en, es]) => {
   return [[en, es, 'es'], [es, en, 'en']].map(([source, target, language]) => {
@@ -21,7 +22,7 @@ export function translateText(source: string, language: AppLanguage): string {
     if (source.endsWith(' ' + acknowledgment)) return translateText(source.slice(0, -acknowledgment.length - 1), language) + ' ' + translateText(acknowledgment, language);
   }
   const key = normalize(source);
-  const exact = language === 'es' ? spanish[key] : reverse.get(key);
+  const exact = language === 'es' ? forward.get(key) : reverse.get(key);
   let value = exact;
   if (value === undefined) {
     for (const pattern of patterns) {

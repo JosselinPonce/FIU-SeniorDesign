@@ -45,6 +45,10 @@ export default function SmartWheelScreen() {
   const { colors: C, tokens, name: themeName } = useTheme();
   const st = makeStyles(tokens);
   const drive = useDriveSession();
+  // Home's dashboard unmounts when another tab or the vitals screen is open.
+  const activeDriveId = drive.hasActiveSession ? drive.session?.id : undefined;
+  const [monitoringDetailsExpanded, setMonitoringDetailsExpanded] = useState(() => activeDriveId !== undefined);
+  useEffect(() => { setMonitoringDetailsExpanded(activeDriveId !== undefined); }, [activeDriveId]);
   const [profiles, setProfiles] = useState<DriverProfile[] | null>(null);
   const [pendingDriver, setPendingDriver] = useState<DriverProfile | null>(null);
   const [pendingEdit, setPendingEdit] = useState(false);
@@ -221,7 +225,8 @@ export default function SmartWheelScreen() {
         {tab === 'drive' ? drivePage === 'vitals'
           ? <VitalsDetailView drive={drive} onBack={() => setDrivePage(drivePageAfter('back'))} />
           : <View style={{ flex: 1 }}>
-            <View style={{ flex: 1, minWidth: 0 }}><DriveView drive={drive} busy={busy} guard={guard} onOpenVitals={() => setDrivePage(drivePageAfter('details'))} onVitalsAnchor={updateVitalsAnchor} /></View>
+            <View style={{ flex: 1, minWidth: 0 }}><DriveView drive={drive} busy={busy} guard={guard} monitoringDetailsExpanded={monitoringDetailsExpanded}
+              onToggleMonitoringDetails={() => setMonitoringDetailsExpanded(value => !value)} onOpenVitals={() => setDrivePage(drivePageAfter('details'))} onVitalsAnchor={updateVitalsAnchor} /></View>
             {!assistantOpen ? <DraggableSensiLauncher defaultAnchor={vitalsAnchor}><DashboardAssistantEntry mode={SENSI_MODE} language={drive.driver.language ?? 'en'}
               disabled={false}
               error="" onPress={openAssistant} /></DraggableSensiLauncher> : null}

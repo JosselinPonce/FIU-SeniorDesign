@@ -41,22 +41,21 @@ test('elapsed decision expiry rejects ready advice even when its timer callback 
   } });
   const result = await check.run('bpm_high');
   assert.equal(result.outcome, 'no_response'); assert.equal(captures, 2);
-  assert.equal(reads, 0); assert.equal(cancelled, 1);
+  assert.equal(reads, 0); assert.equal(cancelled, 0);
 });
 
-for (const language of ['en', 'es'] as const) test(`${language}: a scoped manual answer wins a same-turn model completion race`, async () => {
-  let check!: VoiceCheck, reads = 0, cancelled = 0;
+for (const language of ['en', 'es'] as const) test(`${language}: scoped manual answers retain precedence without invoking a generative classifier`, async () => {
+  let check!: VoiceCheck, consultations = 0;
   let scope!: { question: 'wellness' | 'contact_offer'; captureId: string };
-  const f = fake([language === 'en' ? 'so tired since yesterday' : 'me siento cansada desde ayer']);
+  const f = fake([language === 'en' ? 'so tired since yesterday' : 'me siento cansada desde ayer'], { listenDelay: 100 });
   check = new VoiceCheck(f.io, language, '', { onQuestion: (question, captureId) => { scope = { question, captureId }; },
-    startSemantic: () => ({ completion: new Promise<void>(resolve => { setImmediate(() => {
-      resolve();
-      assert.equal(check.answerByButton('not_ok', scope), true);
-    }); }), get() { reads++; return { state: 'NOT_OK', context: 'fatigue', concern: 'yes' }; }, cancel() { cancelled++; } }),
+    startSemantic: () => { consultations++; throw Error('Generative classifier forbidden'); },
   });
-  const result = await check.run('bpm_high');
+  const pending = check.run('bpm_high'); await new Promise(r => setTimeout(r, 20));
+  assert.equal(check.answerByButton('not_ok', scope), true);
+  const result = await pending;
   assert.equal(result.outcome, 'not_ok'); assert.equal(result.channel, 'button');
-  assert.equal(result.attempts, 1); assert.equal(reads, 0); assert.equal(cancelled, 1);
+  assert.equal(result.attempts, 0); assert.equal(consultations, 0); assert.equal(check.authorizesContact(result), false);
 });
 
 test('semantic values expire by monotonic time before a delayed timeout callback runs', async t => {
@@ -458,12 +457,12 @@ test('reAskWaitMs is the ceiling the in-flight verdict may resolve inside', asyn
     reAskWaitMs: 60,
     startSemantic: ctx => startSemantic(() => new Promise<string>(resolve => setTimeout(() => resolve('{"state":"NOT_OK","context":"fatigue","concern":"yes"}'), 40)), ctx, 5000),
   }).run('bpm_high');
-  assert.deepEqual([r.outcome, r.attempts], ['not_ok', 1]);  // the 40 ms verdict lands inside the 60 ms window
-  assert.ok(!f.said.some(t => t.includes("didn't catch that")));
+  assert.deepEqual([r.outcome, r.attempts], ['no_response', 2]);  // legacy semantic options cannot change status
+  assert.ok(f.said.some(t => t.includes("didn't catch that")));
 });
 test('a button tap wins immediately during the bounded wait, discarding the gemma verdict', async () => {
   const signals: AbortSignal[] = [];
-  const f = fake(['yeah just need to stretch my legs'], { listenDelay: 10 });
+  const f = fake(['yeah just need to stretch my legs'], { listenDelay: 100 });
   // Keep native work pending: the scoped tap must settle without waiting for
   // either the model or its deadline.
   const check = new VoiceCheck(f.io, 'en', '', {
@@ -475,13 +474,13 @@ test('a button tap wins immediately during the bounded wait, discarding the gemm
   await new Promise(resolve => setTimeout(resolve, 40));
   assert.equal(check.answerByButton('not_ok'), true);
   const r = await pending;
-  assert.deepEqual([r.outcome, r.channel, r.attempts], ['not_ok', 'button', 1]);
+  assert.deepEqual([r.outcome, r.channel, r.attempts], ['not_ok', 'button', 0]);
   assert.ok(!f.said.some(t => t.includes("didn't catch that")));   // no re-ask
-  assert.equal(signals[0].aborted, true);   // the task was cancelled without its verdict being applied
+  assert.equal(signals.length, 0);   // the task was cancelled without its verdict being applied
 });
 test('a typed answer wins immediately during the bounded wait, discarding the gemma verdict', async () => {
   const signals: AbortSignal[] = [];
-  const f = fake(['yeah just need to stretch my legs'], { listenDelay: 10 });
+  const f = fake(['yeah just need to stretch my legs'], { listenDelay: 100 });
   let scope: { question: 'wellness' | 'contact_offer'; captureId: string } | null = null;
   const check = new VoiceCheck(f.io, 'en', '', {
     reAskWaitMs: 60000,
@@ -496,7 +495,7 @@ test('a typed answer wins immediately during the bounded wait, discarding the ge
   const r = await pending;
   assert.deepEqual([r.outcome, r.channel, r.attempts], ['not_ok', 'typed', 1]);
   assert.ok(!f.said.some(t => t.includes("didn't catch that")));
-  assert.equal(signals[0].aborted, true);
+  assert.equal(signals.length, 0);
 });
 test('never two semantic tasks in flight: only the first unclear answer consults, attempt 2 decides by rules', async () => {
   let opens = 0; const events: string[] = [];
@@ -512,13 +511,13 @@ test('never two semantic tasks in flight: only the first unclear answer consults
     },
   }).run('bpm_high');
   assert.deepEqual([r.outcome, r.attempts], ['not_ok', 2], 'attempt 2 settles by the deterministic rules');
-  assert.deepEqual(events, ['open(1)', 'generate', 'abort'],
+  assert.deepEqual(events, [],
     'exactly one semantic task opens, and it is cancelled before attempt 2 answers');
   assert.ok(f.said.some(t => t.includes("didn't catch that")), 'the re-ask still played');
 });
 test('a typed-unclear manual answer during the wait re-arms consent for the re-ask request', async () => {
   const signals: AbortSignal[] = [];
-  const f = fake(['yeah just need to stretch my legs', 'please call my mom'], { listenDelay: 10 });
+  const f = fake(['yeah just need to stretch my legs', 'please call my mom'], { listenDelay: 100 });
   let scope: { question: 'wellness' | 'contact_offer'; captureId: string } | null = null;
   const check = new VoiceCheck(f.io, 'en', '', {
     contactAvailable: true,
@@ -535,7 +534,7 @@ test('a typed-unclear manual answer during the wait re-arms consent for the re-a
   assert.deepEqual([r.outcome, r.channel], ['not_ok', 'voice']);
   assert.equal(r.contactCall, 'explicit_request', 'the attempt-2 request survives the earlier manual-unclear answer');
   assert.equal(check.authorizesContact(r), true, 'the attempt-2 explicit request still captures its consent evidence');
-  assert.equal(signals[0].aborted, true);   // attempt 0's consult was cancelled with the manual win
+  assert.equal(signals.length, 0);   // attempt 0's consult was cancelled with the manual win
 });
 test('dev diagnostics report the combined decision source', async () => {
   const { responsiveness } = await import('../lib/voice/responsivenessDiagnostics.ts');
@@ -546,9 +545,9 @@ test('dev diagnostics report the combined decision source', async () => {
     const r = await new VoiceCheck(f.io, 'en', '', {
       startSemantic: ctx => startSemantic(() => Promise.resolve('{"state":"NOT_OK","context":"fatigue","concern":"yes"}'), ctx, 5000),
     }).run('bpm_high');
-    assert.equal(r.outcome, 'not_ok');
-    const record = responsiveness.snapshot().find(rec => rec.operation === 'VoiceCheck semantic decision');
+    assert.equal(r.outcome, 'no_response');
+    const record = responsiveness.snapshot().find(rec => rec.operation === 'VoiceCheck interpretation');
     assert.ok(record, 'semantic decision probe recorded');
-    assert.ok(record.events.some(e => e.details.decisionSource === 'gemma' && e.details.source === 'gemma-grounded'), JSON.stringify(record.events.map(e => e.details)));
+    assert.ok(record.events.some(e => e.details.source === 'deterministic'), JSON.stringify(record.events.map(e => e.details)));
   } finally { responsiveness.setEnabled(false); host.__DEV__ = previous; }
 });

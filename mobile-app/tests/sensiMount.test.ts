@@ -1,3 +1,4 @@
+import * as sensiPresentation from '../lib/ui/sensiPresentation.ts';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -29,7 +30,7 @@ function harness(theme: typeof light) {
   const dependencies: Record<string, unknown> = {
     '../lib/i18n/native': { LocalizedText: 'Text', LocalizedPressable: 'Pressable' },
     react, 'react/jsx-runtime': jsx, 'react-native': native,
-    '../lib/theme/ThemeProvider': { useTheme: () => { hooks++; return { tokens: theme, colors: presentationColors(theme) }; } },
+    '../lib/ui/sensiPresentation': sensiPresentation, '../lib/theme/ThemeProvider': { useTheme: () => { hooks++; return { tokens: theme, colors: presentationColors(theme) }; } },
     '../lib/assistant/threadPresentation': { nearThreadBottom, playbackLabel },
     './ui': { Btn: 'Btn' }, '../lib/db/repositories': {},
     '../lib/voice/audioOwnership': { appAudio: { acquire: forbidden } },

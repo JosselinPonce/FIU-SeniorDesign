@@ -42,7 +42,9 @@ function harness() {
     '../lib/db/repositories': { getSetting: async () => 'en', parseList: (value: string) => JSON.parse(value),
       updateProfile: async (...args: any[]) => { saved.push(args); } },
     '../lib/db/deletion': { deleteDriverEverywhere() { throw Error('Unexpected deletion'); } },
+    '../lib/i18n/LanguageProvider': { useAppLanguage: () => ({ t: (text: string) => text }) },
     '../lib/ui/information': {}, './LanguageMenu': { LanguageMenu: 'LanguageMenu' },
+    './SettingsGroup': { SettingsGroup: 'SettingsGroup', SettingsRow: 'SettingsRow', SettingsNote: 'SettingsNote' },
     './ui': { Btn: 'Btn', Card: 'Card', SectionTitle: 'SectionTitle' },
   };
   function load(name: string) {

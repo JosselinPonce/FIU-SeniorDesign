@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { SensiSetup, SETUP_KEY, type SetupRuntime } from '../lib/onboarding/setup.ts';
+import { SensiSetup, SETUP_KEY, LEGACY_SETUP_KEY, NOTICE_VERSION, GEMMA_TERMS_VERSION, type SetupRuntime } from '../lib/onboarding/setup.ts';
 import type { PocState } from '../modules/gemma-poc/controller.ts';
 import { VerifiedModelFile, type FileIdentity } from '../modules/gemma-poc/verifiedFile.ts';
 import { GEMMA_ARTIFACT } from '../modules/gemma-poc/artifact.ts';
@@ -189,4 +189,26 @@ test('returning admission is allowed before foreground checks; maintenance still
   const f = fixture(true); await accept(f.setup); await f.setup.prepare(); await f.setup.complete(); const before = f.loads;
   const setup = new SensiSetup(f.store, f.runtime, () => false); await setup.boot(); assert.equal(setup.state.ready, true);
   await setup.repair(); assert.equal(f.loads, before); assert.equal(setup.state.ready, true); assert.match(setup.state.error, /foreground/);
+});
+
+
+test('basic onboarding requires notices but no auth, model, network, or Gemma terms', async () => {
+  const f = fixture(); await f.setup.boot();
+  assert.equal(await f.setup.continueWithoutGemma(), false);
+  await f.setup.acknowledge('notices', true);
+  assert.equal(await f.setup.continueWithoutGemma(), true);
+  assert.equal(f.setup.state.ready, true); assert.equal(f.setup.state.terms, false);
+  assert.equal(f.loads, 0); assert.equal(f.downloads, 0); assert.equal(f.disposed, 0);
+  const saved = JSON.parse(f.values.get(SETUP_KEY)!); assert.equal(saved.version, 2);
+  const restarted = new SensiSetup(f.store, f.runtime); await restarted.boot(); assert.equal(restarted.state.ready, true);
+  await restarted.acknowledge('terms', true); assert.equal(restarted.state.ready, true);
+  assert.equal(JSON.parse(f.values.get(SETUP_KEY)!).completed, true);
+});
+test('legacy completed admission migrates without model work or modifying the legacy record', async () => {
+  const f = fixture(true);
+  const old = JSON.stringify({ version: 1, noticeVersion: NOTICE_VERSION, termsVersion: GEMMA_TERMS_VERSION, artifact: GEMMA_ARTIFACT.sha256, notices: true, terms: true, completed: true, page: 5 });
+  f.values.set(LEGACY_SETUP_KEY, old); await f.setup.boot();
+  assert.equal(f.setup.state.ready, true); assert.equal(f.setup.state.modelReady, false);
+  assert.equal(f.values.get(LEGACY_SETUP_KEY), old); assert.equal(JSON.parse(f.values.get(SETUP_KEY)!).version, 2);
+  assert.equal(f.loads, 0); assert.equal(f.downloads, 0);
 });

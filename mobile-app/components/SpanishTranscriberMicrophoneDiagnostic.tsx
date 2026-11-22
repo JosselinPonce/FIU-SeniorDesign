@@ -5,6 +5,7 @@ import { appAudio } from '../lib/voice/audioOwnership';
 import { cancelSpanishOfflineTranscription, subscribeSpanishTranscriberTestProgress,
   testSpanishOfflineTranscription, type SpanishTranscriptionTestResult } from '../modules/local-foundation-models';
 import { Btn } from './ui';
+import { DiagnosticDetails, DiagnosticResult } from './DiagnosticUI';
 
 type Run = { id: string; cancelled: boolean; pending?: Promise<SpanishTranscriptionTestResult>; done: Promise<void> };
 
@@ -77,15 +78,19 @@ export function SpanishTranscriberMicrophoneDiagnostic({ blocked }: { blocked: b
 
   if (!__DEV__) return null;
   return <View style={{ gap: 6 }}>
+    <DiagnosticResult title="Spanish microphone test" status={busy ? 'RUNNING' : error || report?.status === 'error' ? 'FAIL' : report?.status === 'success' ? 'PASS' : report ? 'WARNING' : 'NOT TESTED'} />
     <Btn title="Test Spanish offline transcription" disabled={blocked || busy} onPress={() => void start()} />
-    <Text style={{ color: tokens.textSecondary }}>While parked, enable airplane mode and turn Wi-Fi off to verify offline operation. This action may request microphone permission, then records for 5 seconds. Say “Sí, estoy bien” when Recording appears. No model downloads, saved recordings, contacts or calls. The test times out after 20 seconds.</Text>
+    <Text style={{ color: tokens.textSecondary }}>Park before testing. Uses the microphone for 5 seconds; no saved audio, downloads or calls.</Text>
+    <DiagnosticDetails title="Offline microphone instructions">
+      <Text style={{ color: tokens.textSecondary }}>While parked, enable airplane mode and turn Wi-Fi off to verify offline operation. This action may request microphone permission, then records for 5 seconds. Say “Sí, estoy bien” when Recording appears. No model downloads, saved recordings, contacts or calls. The test times out after 20 seconds.</Text>
+    </DiagnosticDetails>
     <Btn title="Cancel Spanish transcription test" kind="ghost" disabled={!busy} onPress={requestStop} />
     <Text accessibilityLiveRegion="polite" style={{ color: tokens.textSecondary }}>{phase}</Text>
     {error ? <Text selectable style={{ color: tokens.textSecondary }}>{error}</Text> : null}
-    {report ? <>
+    {report ? <DiagnosticDetails title="Microphone test evidence">
       <Text selectable style={{ color: tokens.textSecondary }}>Finalized transcription: {report.transcript || '(none)'}</Text>
       <Text style={{ color: tokens.textSecondary }}>Preparation: {report.preparationTimeMs === undefined ? 'Unknown' : `${Math.round(report.preparationTimeMs)} ms`} · Recognition: {report.recognitionTimeMs === undefined ? 'Unknown' : `${Math.round(report.recognitionTimeMs)} ms`}</Text>
       <Text selectable style={{ color: tokens.textSecondary }}>{JSON.stringify(report, null, 2)}</Text>
-    </> : null}
+    </DiagnosticDetails> : null}
   </View>;
 }

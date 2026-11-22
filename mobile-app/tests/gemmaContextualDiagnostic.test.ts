@@ -31,7 +31,7 @@ test('mocked native suite uses all unchanged production prompts/validation and s
   const f = fixture(); const report = await f.runner.run(() => {});
   assert.equal(report.status, 'complete'); assert.equal(report.rows.length, 12);
   assert.equal(f.loads, 6); assert.equal(f.releases, 6); assert.equal(f.snapshots, 24);
-  assert.deepEqual(f.prompts, CONTEXTUAL_FIXTURES.map(f => acknowledgmentContext(f.event, f.language, f.statement)).filter(canGenerateAcknowledgment).map(acknowledgmentPrompt));
+  assert.deepEqual(f.prompts, CONTEXTUAL_FIXTURES.map(f => acknowledgmentContext(f.event, f.language, f.statement)).filter(canGenerateAcknowledgment).map(context => acknowledgmentPrompt(context)));
   for (const row of report.rows) {
     if (row.inferenceSkipped) {
       assert.equal(row.fallbackReason, 'ineligible_statement'); assert.equal(row.generatedOutput, null);
@@ -43,7 +43,7 @@ test('mocked native suite uses all unchanged production prompts/validation and s
     assert.equal(row.operationSumMs, 17); assert.equal(typeof row.initializationMs, 'number'); assert.equal(typeof row.inferenceMs, 'number');
     assert.deepEqual(row.memory.afterRelease, sample); assert.equal(row.statementOmitted, row.kind !== 'grounded');
   }
-  assert.deepEqual(diagnosticSummary(report.rows, 'es'), { cases: 6, skipped: 3, attempted: 3, completedOutput: 3, accepted: 3, released: 3 });
+  assert.deepEqual(diagnosticSummary(report.rows, 'es'), { medianMs: 5, p95Ms: 5, repeatedOpenings: 2, cases: 6, skipped: 3, attempted: 3, completedOutput: 3, accepted: 3, released: 3 });
   assert.equal(diagnosticSummary(report.rows, 'en', 'grounded').attempted, 3); assert.equal(report.peakNativeMemoryMeasured, false);
 });
 
@@ -150,4 +150,31 @@ test('background/inactive lifetime cannot publish late output or start the next 
   current = false; f.runner.cancel(); output.resolve("I'm sorry you're feeling dizzy.");
   const report = await pending; assert.equal(report.status, 'cancelled'); assert.equal(publications, before);
   assert.equal(report.rows[0]!.generatedOutput, null); assert.equal(f.loads, 1); assert.equal(f.releases, 1);
+});
+
+test('both A/B arms exercise the same finalized bilingual fixtures with the unchanged validator', async () => {
+  const contexts = [];
+  for (const arm of ['baseline', 'conversational'] as const) {
+    const prompts: string[] = [];
+    const f = fixture({ generate: async prompt => {
+      prompts.push(prompt);
+      return arm === 'conversational' ? prompt.split('\n')[1]! : prompt.split('\n').at(-2)!;
+    } });
+    const report = await f.runner.run(() => {}, arm);
+    assert.equal(report.status, 'complete');
+    contexts.push(report.rows.map(row => row.context));
+    for (const language of ['en', 'es'] as const) {
+      const summary = diagnosticSummary(report.rows, language);
+      assert.equal(summary.attempted, 5);
+      assert.equal(summary.skipped, 3);
+      assert.equal(summary.accepted, 5);
+    }
+    assert.equal(prompts.length, 10);
+    if (arm === 'conversational') {
+      assert.ok(prompts.some(prompt => prompt.includes('worried') && prompt.includes('dizzy')));
+      assert.ok(prompts.some(prompt => prompt.includes('mareo') && prompt.includes('preocupación')));
+      assert.ok(prompts.every(prompt => prompt.split('\n').length <= 4));
+    }
+  }
+  assert.deepEqual(contexts[0], contexts[1]);
 });

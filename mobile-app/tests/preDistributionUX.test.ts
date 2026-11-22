@@ -105,8 +105,8 @@ test('diagnostic navigation and production composer are separate from the transc
   assert.ok(!/SafetyController|supabase|handoffContact|phoneHandoff|\.simulate\(|saveAck/.test(adapter));
   const view = read('components/SensiSafetyConversation.tsx');
   assert.ok(!view.includes('footer={controls}'));
-  assert.ok(view.indexOf('{controls}') > view.indexOf('compactPlayback />'));
-  assert.ok(read('components/SettingsView.tsx').includes('<SimulationProgress demo={sf.demo} />'));
+  assert.ok(view.indexOf('<SafetyTypedResponse secondary') > view.indexOf('compactPlayback />'));
+  assert.ok(read('components/SettingsView.tsx').includes('<SimulationProgress demo={demo}'));
 });
 
 test('native failures and wrong capture identities retain manual fallback without clearance', async () => {

@@ -18,27 +18,32 @@ export function createSensiSessionStorage(secure: SecureSessionStore) {
     if (remember === undefined) remember = await guarded(async () => (await secure.getItemAsync(preferenceKey)) === 'true');
     return remember;
   }
+  let queue = Promise.resolve();
+  function serial<T>(work: () => Promise<T>): Promise<T> {
+    const next = queue.catch(() => {}).then(work);
+    queue = next.then(() => {}, () => {}); return next;
+  }
   return {
     hasError: () => failed,
-    async select(keep: boolean) {
+    select(keep: boolean) { return serial(async () => {
       // Old credentials must be removed before switching either storage mode.
       await guarded(() => secure.deleteItemAsync(SENSI_STORAGE_KEY));
       await guarded(() => secure.setItemAsync(preferenceKey, String(keep)));
       memory = null; remember = keep; failed = false;
-    },
-    async getItem(key: string) {
+    }); },
+    getItem(key: string) { return serial(async () => {
       if (key !== SENSI_STORAGE_KEY) return null;
       return await persistent() ? guarded(() => secure.getItemAsync(key)) : memory;
-    },
-    async setItem(key: string, value: string) {
+    }); },
+    setItem(key: string, value: string) { return serial(async () => {
       if (key !== SENSI_STORAGE_KEY) return;
       if (await persistent()) await guarded(() => secure.setItemAsync(key, value));
       else memory = value;
-    },
-    async removeItem(key: string) {
+    }); },
+    removeItem(key: string) { return serial(async () => {
       if (key !== SENSI_STORAGE_KEY) return;
       memory = null;
       await guarded(() => secure.deleteItemAsync(key));
-    },
+    }); },
   };
 }

@@ -8,7 +8,7 @@ const require = createRequire(import.meta.url);
 function harness(blocked = false) {
   const effects: Array<() => void> = [], cleanups: Array<() => void> = []; let appListener!: (state: string) => void;
   let repairs = 0, cancels = 0, finish!: () => void;
-  const setup = { state: { ready: true, busy: false, modelReady: false, error: '' }, runtime: { state: { busy: false, error: '', cleanupRequired: false } },
+  const setup = { state: { ready: true, terms: true, busy: false, modelReady: false, error: '' }, runtime: { state: { busy: false, error: '', cleanupRequired: false } },
     subscribe: () => () => {}, cancel: () => { cancels++; }, repair: async (current: () => boolean) => {
       repairs++; assert.equal(current(), true); setup.state.busy = true; await new Promise<void>(resolve => { finish = resolve; }); setup.state.busy = false;
     } };
@@ -17,7 +17,11 @@ function harness(blocked = false) {
       useState: (initial: any) => [typeof initial === 'function' ? initial() : initial, () => {}] },
     'react/jsx-runtime': require('react/jsx-runtime'), 'react-native': { AppState: { currentState: 'active', addEventListener: (_: string, fn: typeof appListener) => { appListener = fn; return { remove() {} }; } } },
     '../lib/i18n/native': { LocalizedText: 'Text' }, '../lib/theme/ThemeProvider': { useTheme: () => ({ tokens: {} }) },
+    '../lib/onboarding/setup': { GEMMA_TERMS_URL: 'https://ai.google.dev/gemma/terms', GEMMA_POLICY_URL: 'https://ai.google.dev/gemma/prohibited_use_policy' },
     '../lib/onboarding/phone': { sensiSetup: setup }, '../modules/gemma-poc/phone': { inspectGemmaModelFile: () => 'present' },
+    './DiagnosticUI': { DiagnosticDetails: 'DiagnosticDetails' },
+    './GemmaStatus': { GemmaStatus: 'GemmaStatus' },
+    './SettingsGroup': { SettingsGroup: 'SettingsGroup', SettingsRow: 'SettingsRow', SettingsNote: 'SettingsNote' },
     './ui': { Btn: 'Btn', Card: 'Card', SectionTitle: 'SectionTitle' },
   };
   const source = readFileSync(new NodeURL('../components/GemmaModelSettings.tsx', import.meta.url), 'utf8');

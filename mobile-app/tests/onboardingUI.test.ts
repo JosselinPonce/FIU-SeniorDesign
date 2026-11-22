@@ -1,3 +1,5 @@
+import * as sensiPresentation from '../lib/ui/sensiPresentation.ts';
+import { SENSI_PROVIDERS } from '../lib/assistant/sensiPreferences.ts';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -17,9 +19,11 @@ function harness(page: number, tokens = light, accepted = false, busy = false, e
     subscribe: (fn: any) => { fn(controller.state); return () => {}; },
     cancel: () => calls.push('cancel'), acknowledge: (...args: any[]) => { calls.push(['ack', ...args]); }, go: (p: number) => calls.push(['go', p]),
     prepare: () => { calls.push('prepare'); }, complete: async () => { calls.push('complete'); return true; },
+    continueWithoutGemma: async () => { calls.push('without model'); return true; },
   };
   const deps: Record<string, any> = {
     '../lib/i18n/native': { LocalizedText: 'Text', LocalizedPressable: 'Pressable' },
+    './CloudPrivacyInfo': { CloudPrivacyInfo: 'CloudPrivacyInfo' }, '../lib/ui/sensiPresentation': sensiPresentation, '../lib/assistant/sensiPreferences': { SENSI_PROVIDERS },
     './LanguageMenu': { LanguageMenu: 'LanguageMenu' },
     '../lib/db/repositories': { getSetting: async () => null, setSetting: async (key: string, value: string) => { calls.push(['saved', key, value]); } },
     react: { useState: (initial: any) => { const current = index++; return [current === 1 && review ? page : current === 5 ? education : initial, (value: any) => calls.push(['state', value])]; }, useRef: (value: any) => ({ current: value }), useEffect: (fn: any) => fn() },
@@ -30,6 +34,7 @@ function harness(page: number, tokens = light, accepted = false, busy = false, e
     '../lib/theme/ThemeProvider': { useTheme: () => ({ tokens }) }, '../lib/onboarding/setup': { GEMMA_TERMS_URL, GEMMA_POLICY_URL },
     '../lib/onboarding/gemmaTerms': { GEMMA_TERMS_TEXT, GEMMA_POLICY_TEXT }, '../modules/gemma-poc/artifact': { GEMMA_ARTIFACT },
     '../lib/voice/speechIO': { prepareVoice: async () => ({ granted: true }) },
+    './SettingsGroup': { SettingsGroup: 'SettingsGroup', SettingsRow: 'SettingsRow', SettingsNote: 'SettingsNote' },
     './BrandMark': { BrandMark: 'BrandMark' }, './DashboardAssistantEntry': { DashboardAssistantEntry: 'SensiIcon' },
     './VoicePicker': { VoicePicker: 'VoicePicker' }, './ui': { Btn: 'Btn' }, '../assets/branding/drivesense-logo.png': 'approved-logo',
   };
@@ -46,7 +51,15 @@ function harness(page: number, tokens = light, accepted = false, busy = false, e
   visit(tree);
   return { tree, nodes, controller, calls, background, text: nodes.filter(n => n.type === 'Text').flatMap(n => n.props.children).join(' ') };
 }
-for (const tokens of [light, dark]) test(`${tokens === light ? 'Warm Pearl' : 'Soft Graphite'} onboarding uses safe areas, approved branding and no Skip action`, () => {
+test('Continue Without Gemma is explicit, requires general notices and invokes no provisioning', async () => {
+  const f = harness(4, light, true);
+  const button = f.nodes.find(n => n.type === 'Btn' && n.props.title === 'Continue Without Gemma');
+  assert.ok(button); assert.equal(button.props.disabled, false); button.props.onPress();
+  await Promise.resolve(); await Promise.resolve();
+  assert.ok(f.calls.includes('without model')); assert.ok(f.calls.includes('done')); assert.ok(!f.calls.includes('prepare'));
+  assert.equal(harness(4).nodes.find(n => n.props?.title === 'Continue Without Gemma').props.disabled, true);
+});
+for (const tokens of [light, dark]) test(`${tokens === light ? 'Warm Pearl' : 'Soft Graphite'} onboarding preserves notices and offers optional model continuation`, () => {
   for (let page = 0; page < 6; page++) {
     const f = harness(page, tokens);
     assert.equal(f.tree.type, 'SafeAreaView'); assert.equal(f.tree.props.style.backgroundColor, tokens.background);
@@ -108,7 +121,7 @@ test('copy accurately separates foreground monitoring, recording, local inferenc
   assert.match(harness(1).text, /locked-phone VoiceCheck are not supported/);
   assert.match(harness(2).text, /not a medical device/); assert.match(harness(2).text, /Supabase/);
   assert.match(harness(2).text, /explicit request or agreement/);
-  assert.match(harness(3).text, /not general chat/); assert.match(harness(3).text, /fixed rules/);
+  assert.match(harness(3).text, /confirmed sensor event/); assert.match(harness(3).text, /fixed rules/);
   assert.match(GEMMA_TERMS_TEXT, /Section 3/); assert.match(GEMMA_POLICY_TEXT, /You may not use/);
 });
 test('setup is launch-only, deferred for existing work, and preserves the normal profile selection path', () => {

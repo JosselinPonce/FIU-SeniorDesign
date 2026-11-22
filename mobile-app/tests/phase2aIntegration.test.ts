@@ -197,15 +197,15 @@ test('maintenance lease excludes event-time Gemma without blocking mandatory gui
   hold.resolve(); await maintenance;
 });
 
-for (const mode of ['accepted','invalid','missing'] as const) test(`production phone semantic adapter during clarification (${mode}, mocked native GGUF)`, async () => {
+for (const mode of ['accepted','invalid','missing'] as const) test(`production ignores retired semantic adapter during clarification (${mode}, mocked native GGUF)`, async () => {
   const f = fixture('en',{statement:'so tired since yesterday',followup:'perhaps',installed:mode!=='missing',output:mode==='invalid'?'unsafe extra prose':'{"state":"NOT_OK","context":"fatigue","concern":"yes"}'});
   f.guidance.resolve(); const pending=f.controller.rehearse(); await tick();
-  assert.equal(f.generations,mode==='missing'?0:1); assert.equal(f.releases,mode==='missing'?0:1);
+  assert.equal(f.generations,0); assert.equal(f.releases,0);
   // A contact-offer retry shares "I didn't catch that" with wellness. Count
   // wellness questions so the assertion cannot confuse these capture scopes.
   assert.equal(f.spoken.filter(text => text === 'Are you feeling okay?').length, 1);
   f.clarification.resolve(); const result=await pending;
-  assert.equal(f.spoken.filter(text => text === 'Are you feeling okay?').length, mode === 'accepted' ? 1 : 2);
-  assert.equal(result.outcome,mode==='accepted'?'not_ok':'no_response');assert.equal(f.handoffs,0);assert.equal(f.downloads,0);assert.equal(f.saves,0);
-  assert.equal(f.generations,mode==='missing'?0:1,'no second model reload for ineligible empathy');assert.equal(f.runtime.state.loaded,false);
+  assert.equal(f.spoken.filter(text => text === 'Are you feeling okay?').length, 2);
+  assert.equal(result.outcome,'no_response');assert.equal(f.handoffs,0);assert.equal(f.downloads,0);assert.equal(f.saves,0);
+  assert.equal(f.generations,0,'no generative status decisions or ineligible empathy');assert.equal(f.runtime.state.loaded,false);
 });

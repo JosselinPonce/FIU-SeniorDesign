@@ -13,8 +13,8 @@ const semanticContext = { event: 'bpm_high' as const, language: 'en' as const, s
 
 /** Real phone adapter against a fixed installed-model receipt and controllable
  * native context; everything else is a fixture. No native binary is used. */
-function harness(options: { output?: string; release?: () => Promise<void>; initialize?: () => Promise<void>; generate?: () => Promise<string>; stop?: () => Promise<void>; realTasks?: boolean } = {}) {
-  let stops = 0;
+function harness(options: { output?: string; release?: () => Promise<void>; initialize?: () => Promise<void>; generate?: () => Promise<string>; stop?: () => Promise<void>; realTasks?: boolean; missingReceipt?: boolean } = {}) {
+  let stops = 0, hashes = 0;
   const listeners = new Set<(state: string) => void>();
   const appState = { currentState: 'active', addEventListener: (_event: string, listener: (state: string) => void) => { listeners.add(listener); return { remove() { listeners.delete(listener); } }; } };
   const counts = { inits: 0, releases: 0, generations: 0 };
@@ -26,13 +26,13 @@ function harness(options: { output?: string; release?: () => Promise<void>; init
     'expo-file-system': { File: class { exists = true; size = GEMMA_ARTIFACT.bytes; modificationTime = 1; creationTime = 1; } },
     'expo-file-system/legacy': {
       documentDirectory: 'file:///fixture/',
-      readAsStringAsync: async () => JSON.stringify({ version: 1, uri: `file:///fixture/gemma-poc/${GEMMA_ARTIFACT.filename}`,
+      readAsStringAsync: async () => options.missingReceipt ? 'null' : JSON.stringify({ version: 1, uri: `file:///fixture/gemma-poc/${GEMMA_ARTIFACT.filename}`,
         size: GEMMA_ARTIFACT.bytes, modified: 1, created: 1, sha256: GEMMA_ARTIFACT.sha256, revision: GEMMA_ARTIFACT.revision }),
       writeAsStringAsync: async () => {}, getFreeDiskStorageAsync: async () => GEMMA_ARTIFACT.bytes * 3,
       makeDirectoryAsync: async () => {}, deleteAsync: async () => {}, moveAsync: async () => {},
       createDownloadResumable: () => ({ downloadAsync: async () => ({ status: 200 }), cancelAsync: async () => {} }),
     },
-    '../model-file-hash': { nativeFileHash: () => { throw Error('fixture receipt avoids hashing'); } },
+    '../model-file-hash': { nativeFileHash: () => { hashes++; throw Error('fixture receipt avoids hashing'); } },
     '../model-file-hash/verification': { verifyNativeFile: async () => { throw Error('fixture receipt avoids hashing'); } },
     './artifact': { GEMMA_ARTIFACT, MODEL_URL: 'https://fixture.invalid/model' },
     './controller': { GemmaPoc }, './provisioning': { ModelProvisioner }, './verifiedFile': { VerifiedModelFile },
@@ -47,7 +47,7 @@ function harness(options: { output?: string; release?: () => Promise<void>; init
   new Function('require', 'exports', '__DEV__', compiled)((name: string) => {
     assert.ok(name in deps, `fixture is missing module ${name}`); return deps[name];
   }, exports, false);
-  return { exports, counts: () => ({ ...counts }), get poc() { return exports.gemmaPoc; }, stops: () => stops, background() { appState.currentState = 'background'; for (const listener of [...listeners]) listener('background'); }, foreground() { appState.currentState = 'active'; } };
+  return { exports, counts: () => ({ ...counts }), get poc() { return exports.gemmaPoc; }, stops: () => stops, hashes: () => hashes, background() { appState.currentState = 'background'; for (const listener of [...listeners]) listener('background'); }, foreground() { appState.currentState = 'active'; } };
 }
 async function settle(check: () => boolean, limit = 200) {
   for (let n = 0; n < limit && !check(); n++) await tick();
@@ -161,7 +161,7 @@ test('semantic budget is shared at 2000ms and acknowledgment remains 1500ms', as
   assert.equal(f.stops(), 1); assert.equal(task.get(), null);
   lease.release(); await settle(() => !f.poc.state.loaded);
   const src = readFileSync(new NodeURL('../modules/gemma-poc/controller.ts', import.meta.url), 'utf8');
-  assert.match(src, /generateSafetyAcknowledgment[\s\S]{0,700}?, 1500\);/);
+  assert.match(src, /generateSafetyAcknowledgment[\s\S]{0,900}?, 1500, onTimeout\);/);
 });
 
 test('cold loading consumes the semantic availability budget before native generation', async t => {
@@ -172,4 +172,72 @@ test('cold loading consumes the semantic availability budget before native gener
   await task.completion;
   assert.equal(task.get(), null);
   assert.deepEqual(f.counts(), { inits: 1, releases: 1, generations: 0 });
+});
+
+test('ready-only acknowledgment never cold-loads or borrows a diagnostic context', async () => {
+  const f = harness();
+  const context = { event: 'bpm_high' as const, language: 'en' as const, outcome: 'not_ok' as const, statement: "I'm dizzy" };
+  assert.equal(f.exports.isGemmaAcknowledgmentReady(), false);
+  assert.equal(await f.exports.generateReadyGemmaAcknowledgment(context, new AbortController().signal), '');
+  assert.deepEqual(f.counts(), { inits: 0, releases: 0, generations: 0 });
+  await f.poc.load(); assert.equal(f.exports.isGemmaAcknowledgmentReady(), false);
+  assert.equal(await f.exports.generateReadyGemmaAcknowledgment(context, new AbortController().signal), '');
+  assert.equal(f.counts().generations, 0); await f.poc.dispose();
+});
+test('ready-only acknowledgment uses an existing verified lease and rejects error/background states', async () => {
+  const f = harness(); const lease = f.exports.beginGemmaWarmLease();
+  await settle(() => f.exports.isGemmaAcknowledgmentReady());
+  assert.equal(f.exports.isGemmaAcknowledgmentReady(), true);
+  f.poc.state.error = 'quarantined'; assert.equal(f.exports.isGemmaAcknowledgmentReady(), false); f.poc.state.error = '';
+  const context = { event: 'bpm_high' as const, language: 'en' as const, outcome: 'not_ok' as const, statement: "I'm dizzy" };
+  await f.exports.generateReadyGemmaAcknowledgment(context, new AbortController().signal);
+  assert.equal(f.counts().inits, 1); assert.equal(f.counts().generations, 1);
+  f.background(); assert.equal(f.exports.isGemmaAcknowledgmentReady(), false);
+  lease.release(); await settle(() => !f.poc.state.loaded);
+});
+
+test('readiness publishes after a warm event clears ownership and a failed context can be prepared again', async () => {
+  let fail = false;
+  const f = harness({ generate: async () => {
+    if (fail) throw new Error('fixture inference failure');
+    return "I'm sorry you're feeling dizzy.";
+  } });
+  const { acknowledgmentContext } = await import('../lib/assistant/safetyAcknowledgment.ts');
+  const context = acknowledgmentContext('bpm_high', 'en', "I'm dizzy");
+  const readiness: boolean[] = [];
+  const unsubscribe = f.exports.subscribeGemmaReadiness(() => readiness.push(f.exports.isGemmaAcknowledgmentReady()));
+  const lease = f.exports.beginGemmaWarmLease();
+  assert.ok(lease);
+  assert.equal(await settle(() => f.exports.isGemmaAcknowledgmentReady()), true);
+  assert.equal(readiness.at(-1), true);
+  assert.equal(f.exports.isGemmaRuntimeProtected(), true);
+  await f.exports.generateReadyGemmaAcknowledgment(context, new AbortController().signal);
+  assert.equal(readiness.at(-1), true);
+  fail = true;
+  assert.equal(await f.exports.generateReadyGemmaAcknowledgment(context, new AbortController().signal), '');
+  assert.equal(await settle(() => !f.poc.state.loaded && !f.poc.state.busy), true);
+  await tick();
+  assert.equal(readiness.at(-1), false);
+  assert.equal(f.exports.isGemmaRuntimeProtected(), false);
+  const retry = f.exports.beginGemmaWarmLease();
+  assert.ok(retry);
+  assert.equal(await settle(() => f.exports.isGemmaAcknowledgmentReady()), true);
+  lease.release();
+  assert.equal(f.exports.isGemmaAcknowledgmentReady(), true, 'stale release cannot revoke the new session');
+  retry.release();
+  await settle(() => !f.poc.state.loaded);
+  unsubscribe();
+});
+
+test('automatic warm lease requires an existing receipt and never hashes or initializes without it', async () => {
+  const f = harness({ missingReceipt: true });
+  const lease = f.exports.beginGemmaWarmLease(true);
+  assert.ok(lease);
+  await settle(() => !f.poc.state.busy);
+  assert.equal(f.poc.state.loaded, false);
+  assert.match(f.poc.state.error, /receipt/);
+  assert.equal(f.counts().inits, 0);
+  assert.equal(f.hashes(), 0);
+  lease.release();
+  await f.exports.waitForGemmaWarmCleanup();
 });

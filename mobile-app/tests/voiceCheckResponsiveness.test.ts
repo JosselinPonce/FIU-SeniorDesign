@@ -39,6 +39,44 @@ test('both readiness paths use fresh PCM, exclude cue input, and separately inst
   assert.match(english, /finalResultReceived && finalTranscript.rangeOfCharacter/);
 });
 
+test('English and Spanish only publish Listening after cue completion and successful gate opening', () => {
+  const englishCue = english.split('private func beginListeningCue(')[1]!.split('private func stopCapture')[0]!;
+  assert.match(englishCue, /phase = "ready"[\s\S]*publishProgress[\s\S]*VoiceCheckListeningCue\.shared\.play[\s\S]*guard !Task\.isCancelled, capture === current[\s\S]*guard current\.meter\.beginListening/);
+  const [before, after] = englishCue.split('guard current.meter.beginListening');
+  assert.doesNotMatch(before!, /phase = "listening"/);
+  assert.match(after!, /phase = "listening"[\s\S]*publishProgress/);
+  assert.match(spanish, /phase\("ready"\)[\s\S]*VoiceCheckListeningCue\.shared\.play[\s\S]*guard capture\.meter\.beginListening[\s\S]*phase\("listening"\)/);
+});
+
+test('Debug capture summary joins only the matching UI phase and manual answer', () => {
+  const run = new Function('exports', '__DEV__', ts.transpileModule(source('lib/voice/responsivenessDiagnostics.ts'), {
+    compilerOptions: { module: ts.ModuleKind.CommonJS },
+  }).outputText);
+  for (const debug of [true, false]) {
+    const api: any = {};
+    run(api, debug);
+    api.responsiveness.setEnabled(true);
+    api.responsivenessProbe('warning', 'recognition')('capture summary', {
+      captureId: 'one', recognitionSummary: { terminalReason: 'recognition_failed', adapterStatus: 'error' },
+    });
+    api.traceVoiceCheckPublication({ captureId: 'one', phase: 'response_unavailable' });
+    api.traceVoiceCheckPublication({ captureId: 'one', phase: 'cleared' });
+    api.traceVoiceCheckPublication({ captureId: 'two', phase: 'listening' });
+    api.responsivenessProbe('warning', 'VoiceCheck decision')('answer selected', { captureId: 'one', channel: 'typed' });
+    const records = api.responsiveness.snapshot();
+    if (!debug) assert.deepEqual(records, []);
+    else {
+      const summaries = records.flatMap((record: any) => record.events).filter((event: any) => event.point === 'capture summary');
+      assert.equal(summaries.length, 1);
+      assert.deepEqual(summaries[0].details.recognitionSummary, {
+        terminalReason: 'recognition_failed', adapterStatus: 'error',
+        finalVoiceCheckPhase: 'response_unavailable', answerChannel: 'typed',
+      });
+    }
+  }
+  for (const code of [english, spanish]) assert.match(code, /#if DEBUG(?:(?!#endif)[\s\S])*report\["captureDiagnostics"\]/);
+});
+
 test('real Debug session owner falls back safely, invalidates routes, restores configuration and rejects cancelled IDs', { skip: process.platform !== 'darwin' }, () => {
   const helper = english.split('// BEGIN SESSION ALIGNMENT:')[1]!.split('// END SESSION ALIGNMENT')[0]!.split('\n').slice(1).join('\n')
     .replace('private func handleEvent', 'func handleEvent');
@@ -188,6 +226,9 @@ ${helper}
 test('actual English and Spanish meters discard preparation/cue PCM and accept the first listening buffer', { skip: process.platform !== 'darwin' }, () => {
   const gate = english.split('// BEGIN LISTENING GATE:')[1]!.split('// END LISTENING GATE')[0]!.split('\n').slice(1).join('\n');
   const state = english.split('// BEGIN ENDPOINT STATE:')[1]!.split('// END ENDPOINT STATE')[0]!.split('\n').slice(1).join('\n');
+  const validity = english.split('// Validate before reading channel samples')[1]!.split('#if DEBUG')[0]!.replace(/^.*\n/, '');
+  const shadow = english.split('// BEGIN ENGLISH SHADOW ENERGY:')[1]!.split('// END ENGLISH SHADOW ENERGY')[0]!.split('\n').slice(1).join('\n');
+  const counters = english.split('// BEGIN CAPTURE PCM DIAGNOSTICS')[1]!.split('func captureAudioFormat')[0]!;
   const meter = 'private final class SpeechActivityMeter' + english.split('private final class SpeechActivityMeter')[1]!.split('/// Owns only diagnostic capture.')[0];
   const spanishMeter = 'private final class SpanishSpeechMeter' + spanish.split('private final class SpanishSpeechMeter')[1]!.split('// One native capture owner')[0];
   const directory = mkdtempSync(join(tmpdir(), 'drivesense-listening-input-'));
@@ -198,6 +239,11 @@ import AVFoundation
 final class SFSpeechAudioBufferRecognitionRequest { var frames = 0; func append(_ b: AVAudioPCMBuffer) { frames += Int(b.frameLength) } }
 ${gate}
 ${state}
+${validity}
+#if DEBUG
+${shadow}
+${counters}
+#endif
 ${meter}
 ${spanishMeter}
 let format = AVAudioFormat(standardFormatWithSampleRate: 16000, channels: 1)!
@@ -213,7 +259,19 @@ assert(en.prepareCue() && es.prepareCue())
 for _ in 0..<10 { en.append(buffer, to: request); assert(!es.receive(buffer)) }
 assert(request.frames == 0 && en.snapshot().elapsed == 0 && es.snapshot().elapsed == 0)
 assert(en.beginListening(now: 10, seconds: 6) && es.beginListening(now: 10, seconds: 6))
+let zero = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 320)!
+en.append(zero, to: request); assert(!es.receive(zero)); assert(request.frames == 0)
+var malformed = AudioBufferList(mNumberBuffers: 1, mBuffers: AudioBuffer(mNumberChannels: 1, mDataByteSize: 0, mData: nil))
+withUnsafeMutablePointer(to: &malformed) {
+  assert(!hasDeclaredPCMData(UnsafeMutableAudioBufferListPointer($0)))
+}
 en.append(buffer, to: request); assert(es.receive(buffer))
+#if DEBUG
+let report = en.pcmDiagnostics.report(started: 0)
+assert(report["tapBuffers"] as? Int == 52 && report["zeroFrameBuffers"] as? Int == 1)
+assert(report["validPCM"] as? Int == 51 && report["forwardedPCM"] as? Int == 1)
+assert(report["firstForwardedMs"] is Double)
+#endif
 assert(request.frames == 320 && en.snapshot().elapsed == 0.02 && es.snapshot().elapsed == 0.02)
 en.recognizedSpeech(startSeconds: 0); es.recognizedSpeech()
 for _ in 0..<30 { en.append(buffer, to: request); assert(es.receive(buffer)) }
@@ -224,6 +282,8 @@ en.append(buffer, to: request); assert(!es.receive(buffer)); assert(request.fram
 private let cancelled = SpeechActivityMeter(); cancelled.stopFeeding()
 assert(!cancelled.prepareCue() && !cancelled.beginListening(now: 10, seconds: 6))
 print("PASS")`);
-    assert.match(execFileSync('xcrun', ['swift', '-module-cache-path', join(directory, 'cache'), file], { encoding: 'utf8', timeout: 60000 }), /PASS/);
+    for (const flags of [[], ['-D', 'DEBUG']]) {
+      assert.match(execFileSync('xcrun', ['swift', ...flags, '-module-cache-path', join(directory, 'cache'), file], { encoding: 'utf8', timeout: 60000 }), /PASS/);
+    }
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
