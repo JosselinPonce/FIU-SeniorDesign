@@ -4,6 +4,8 @@ import { LocalizedPressable as Pressable, LocalizedText as Text } from '../lib/i
 import { SafetyTypedResponse } from './SafetyTypedResponse';
 import { monitoringMessage } from '../lib/analysis/sensorContinuity';
 import { useEffect, useRef } from 'react';
+import { liveBaselineHeartRate } from '../lib/ui/dashboard';
+import { PersonalizedBaseline } from './PersonalizedBaseline';
 import { CompactVitalCard } from './CompactVitalCard';
 import { InformationButton } from './Information';
 import { useTheme } from '../lib/theme/ThemeProvider';
@@ -12,13 +14,17 @@ import { presentationColors, type ThemeTokens } from '../lib/theme/tokens';
  * The in-car screen: is everything connected, what are the vitals, is data
  * flowing, and one big start/stop button. Technical detail lives in Settings.
  */
-import { Linking, Modal, ScrollView, StyleSheet, View, useWindowDimensions } from 'react-native';
+import { Linking, Modal, ScrollView, type LayoutChangeEvent, StyleSheet, View, useWindowDimensions } from 'react-native';
 
 import type { useDriveSession } from '../lib/hooks/useDriveSession';
 import { CHART_SECONDS } from '../lib/hooks/useDriveSession';
 import { Btn, Card, Pill, Row, SectionTitle, fmtBytes, fmtClock, fmtDuration, fmtNum, type Tone } from './ui';
 import { RateDot } from './charts';
 import { PERFUSION_HINT } from '../lib/analysis/signal';
+
+const demoUI = __DEV__
+  ? require('./HomeHardwareDemo') as typeof import('./HomeHardwareDemo')
+  : null;
 
 type Drive = ReturnType<typeof useDriveSession>;
 
@@ -78,15 +84,33 @@ function Chain(props: { drive: Drive }) {
   );
 }
 
-export function DriveView(props: { drive: Drive; busy: boolean; guard: (fn: () => Promise<unknown>) => void; monitoringDetailsExpanded: boolean; onToggleMonitoringDetails(): void; onOpenVitals(): void; onVitalsAnchor?(anchor: { y: number; height: number }): void }) {
+export function DriveView(props: { drive: Drive; demoView?: boolean; busy: boolean; guard: (fn: () => Promise<unknown>) => void; monitoringDetailsExpanded: boolean; onToggleMonitoringDetails(): void; onOpenVitals(): void; onDashboardScrollStart?(): void; onVitalsAnchor?(anchor: { y: number; height: number }): void }) {
   const { colors: C, tokens } = useTheme();
   const st = makeStyles(tokens);
   const d = props.drive;
   const details = props.monitoringDetailsExpanded;
-  const heading = useRef({ y: 0, height: 58 });
+  const demoView = __DEV__ && !!props.demoView;
+  const stopDemo = __DEV__ ? d.homeHardwareDemoControls?.stop : undefined;
+  // Leaving the dashboard retains its existing cleanup. Switching panels stays on this dashboard.
+  useEffect(() => () => stopDemo?.(), [stopDemo]);
+  const heading = useRef<{ y: number; height: number } | null>(null);
   const scrollOffset = useRef(0);
-  const reportHeading = () => props.onVitalsAnchor?.({ y: heading.current.y - scrollOffset.current, height: heading.current.height });
+  const reportHeading = () => {
+    const layout = heading.current;
+    if (layout) props.onVitalsAnchor?.({ y: layout.y - scrollOffset.current, height: layout.height });
+  };
+  const measureHeading = ({ nativeEvent: { layout } }: LayoutChangeEvent) => {
+    heading.current = { y: layout.y, height: layout.height };
+    reportHeading();
+  };
   const now = Date.now();
+  const simulation = __DEV__ && demoView ? d.homeHardwareDemo?.simulation : undefined;
+  const demoVitals = __DEV__ && demoUI && demoView ? demoUI.demoVitalPresentation(d, now) : null;
+  const projection = simulation?.enabled && demoVitals ? {
+    value: demoVitals.projected?.value ?? null,
+    actual: demoVitals.sourceValue,
+    offset: demoVitals.projected?.offset ?? null,
+  } : undefined;
   const { width, fontScale } = useWindowDimensions();
 
   const signal: { tone: Tone; text: string } = !d.lastRx
@@ -99,8 +123,20 @@ export function DriveView(props: { drive: Drive; busy: boolean; guard: (fn: () =
           ? { tone: 'brand', text: 'Reading your pulse…' }
           : { tone: 'good', text: 'Good signal' };
 
+  const session = d.session;
+  const startedAt = session ? Date.parse(session.started_at) : null;
+  const endedAt = session?.ended_at ? Date.parse(session.ended_at) : null;
+  const duration = startedAt === null ? null
+    : d.hasActiveSession ? now - startedAt
+    : session?.duration_seconds != null ? session.duration_seconds * 1000
+    : endedAt === null ? null : endedAt - startedAt;
   const sf = d.safety;
   const th = sf.th;
+  const liveBaselineBpm = liveBaselineHeartRate({
+    bpm: d.bpm, lastRx: d.lastRx, connected: d.isConnected, now,
+    active: d.hasActiveSession && sf.monitoring === 'active' && !sf.demo,
+    reliable: d.finger && d.signal?.good === true,
+  });
   const hasDriveDetails = (!d.hasActiveSession && (d.fold.state === 'folding' || d.fold.state === 'done'))
     || d.fold.state === 'failed' || !!sf.last || d.trend?.status === 'elevated' || !!sf.advisory
     || (!!d.voice && !d.voice.granted);
@@ -110,32 +146,53 @@ export function DriveView(props: { drive: Drive; busy: boolean; guard: (fn: () =
       ? { low: Math.max(th.lowWarn, sf.band.mean - 2 * sf.band.sd), high: Math.min(th.highWarn, sf.band.mean + 2 * sf.band.sd) }
       : null;
 
+  const recordingControls = <View style={{ gap: 8, paddingHorizontal: 2 }}>
+    <Text accessibilityLiveRegion="polite" style={st.subtle}>{monitoringMessage(sf.monitoring)}</Text>
+    {!d.hasActiveSession ? (
+      <>
+        <Btn
+          title={d.isConnected ? 'Start drive' : 'Start drive (waiting for the Pi)'}
+          disabled={!d.isConnected}
+          busy={props.busy}
+          onPress={() => props.guard(d.startSession)}
+        />
+        <Text style={st.subtle}>Not recording</Text>
+      </>
+    ) : (
+      <>
+        <Btn title="End drive" kind="danger" busy={props.busy} onPress={() => props.guard(d.endSession)} />
+        <Text style={st.subtle}>Recording · {duration === null ? '—' : fmtDuration(duration)} · {d.stored} readings saved</Text>
+      </>
+    )}
+  </View>;
+  const vitalTiles = (layout?: 'summary' | 'history') => <View style={[st.tiles, (width < 320 || fontScale > 1.4) && { flexDirection: 'column' }]}>
+    <CompactVitalCard metric="heart" label="Heart Rate" demoLayout={layout} simulation={layout === 'summary' && simulation?.scenario === 'high_hr' ? projection : undefined} value={d.bpm} unit="BPM" average={d.avgBpm} points={d.bpmSeries}
+      connected={d.isConnected} lastRx={d.lastRx} now={now} seconds={CHART_SECONDS} min={40} max={160} band={usual} warningBounds={th ? { low: th.lowWarn, high: th.highWarn } : undefined} />
+    <CompactVitalCard metric="oxygen" label="SpO₂ (estimate)" demoLayout={layout} simulation={layout === 'summary' && simulation?.scenario === 'low_spo2' ? projection : undefined} value={d.spo2} unit="%" average={d.avgSpo2} points={d.spo2Series}
+      connected={d.isConnected} lastRx={d.lastRx} now={now} seconds={CHART_SECONDS} min={85} max={100} warningBounds={th ? { low: th.spo2Warn } : undefined} />
+  </View>;
+
   return (
     <ScrollView contentContainerStyle={st.container} scrollEventThrottle={32}
+      onScrollBeginDrag={props.onDashboardScrollStart}
       onScroll={({ nativeEvent }) => { scrollOffset.current = nativeEvent.contentOffset.y; reportHeading(); }}>
+      {__DEV__ && !demoView && d.homeHardwareDemo?.simulation.enabled
+        ? <Pill tone="warn">Hardware Demo simulation enabled</Pill> : null}
       <Chain drive={d} />
-      <View style={{ gap: 8, paddingHorizontal: 2 }}>
-        <Text accessibilityLiveRegion="polite" style={st.subtle}>{monitoringMessage(sf.monitoring)}</Text>
-        {!d.hasActiveSession ? (
-          <>
-            <Btn
-              title={d.isConnected ? 'Start drive' : 'Start drive (waiting for the Pi)'}
-              disabled={!d.isConnected}
-              busy={props.busy}
-              onPress={() => props.guard(d.startSession)}
-            />
-            <Text style={st.subtle}>Not recording</Text>
-          </>
-        ) : (
-          <>
-            <Btn title="End drive" kind="danger" busy={props.busy} onPress={() => props.guard(d.endSession)} />
-            <Text style={st.subtle}>Recording · {d.session ? fmtDuration(now - new Date(d.session.started_at).getTime()) : '—'} · {d.stored} readings saved</Text>
-          </>
-        )}
-      </View>
+      {recordingControls}
 
-      <Text accessibilityRole="header" style={{ color: tokens.text, fontSize: 19, fontWeight: '700' }}
-        onLayout={({ nativeEvent: { layout } }) => { heading.current = { y: layout.y, height: layout.height }; reportHeading(); }}>Live Vitals</Text>
+      {__DEV__ && demoUI && demoView ? <>
+        <View style={[st.between, st.vitalsHeading]} onLayout={measureHeading}>
+          <Text accessibilityRole="header" style={{ color: tokens.text, fontSize: 19, fontWeight: '700' }}>Live Vitals</Text>
+          <Pill tone={simulation?.enabled ? 'warn' : 'neutral'}>{simulation?.enabled ? 'Simulation' : 'Simulation off'}</Pill>
+          {!simulation?.enabled ? <Text style={st.subtle}>Showing actual sensor readings only</Text> : null}
+        </View>
+        {sf.tracking ? <Text style={st.watchText} accessibilityLiveRegion="polite">{WATCH_TEXT[sf.tracking.kind] ?? 'Checking…'}</Text> : null}
+        {vitalTiles('summary')}
+      </> : <>
+      <View style={st.vitalsHeading} onLayout={measureHeading}>
+        <Text accessibilityRole="header" style={{ color: tokens.text, fontSize: 19, fontWeight: '700' }}>Live Vitals</Text>
+      </View>
       <View style={{ gap: 6, paddingHorizontal: 2 }}>
         <View style={st.between}>
           <Pill tone={signal.tone}>{signal.text}</Pill>
@@ -170,19 +227,15 @@ export function DriveView(props: { drive: Drive; busy: boolean; guard: (fn: () =
 
       </View>
 
-      <View style={[st.tiles, (width < 320 || fontScale > 1.4) && { flexDirection: 'column' }]}>
-        <CompactVitalCard metric="heart" label="Heart Rate" value={d.bpm} unit="BPM" average={d.avgBpm} points={d.bpmSeries}
-          connected={d.isConnected} lastRx={d.lastRx} now={now} seconds={CHART_SECONDS} min={40} max={160} band={usual} warningBounds={th ? { low: th.lowWarn, high: th.highWarn } : undefined} />
-        <CompactVitalCard metric="oxygen" label="SpO₂ (estimate)" value={d.spo2} unit="%" average={d.avgSpo2} points={d.spo2Series}
-          connected={d.isConnected} lastRx={d.lastRx} now={now} seconds={CHART_SECONDS} min={85} max={100} warningBounds={th ? { low: th.spo2Warn } : undefined} />
-      </View>
+      {vitalTiles()}
+      </>}
       <Btn title="View Detailed Vitals" kind="ghost" onPress={props.onOpenVitals} />
       <Pressable accessibilityRole="button" accessibilityState={{ expanded: details }} onPress={props.onToggleMonitoringDetails} style={{ minHeight: 44, justifyContent: 'center' }}>
         <Text style={{ color: tokens.textSecondary, fontWeight: '600' }}>{details ? '−' : '+'} Monitoring details</Text>
       </Pressable>
       {details ? <Card>
-            <Row label="Recording since" value={d.session ? fmtClock(new Date(d.session.started_at)) : '—'} />
-            <Row label="Duration" value={d.session ? fmtDuration(now - new Date(d.session.started_at).getTime()) : '—'} />
+            <Row label={d.hasActiveSession ? 'Recording since' : 'Last drive started'} value={session ? fmtClock(new Date(session.started_at)) : '—'} />
+            <Row label="Duration" value={duration === null ? '—' : fmtDuration(duration)} />
             <Row label="Readings saved" value={String(d.stored)} />
             <Row
               label="Cloud sync"
@@ -207,6 +260,12 @@ export function DriveView(props: { drive: Drive; busy: boolean; guard: (fn: () =
         <SectionTitle right={d.sampleRate ? <Text style={st.subtle}>{d.samplesPerPacket} samples/packet @ {d.sampleRate} Hz</Text> : null}>Data flow</SectionTitle>
         <RateDot series={d.rateSeries} />
       </Card> : null}
+      <PersonalizedBaseline key={d.driver?.id} driverId={d.driver?.id} savedDriveRevision={d.savedDriveRevision} recording={d.hasActiveSession} liveBpm={liveBaselineBpm} />
+      {__DEV__ && demoUI && demoView ?
+        <demoUI.HomeHardwareDemo drive={d} now={now}>
+          <demoUI.HardwareDemoDiagnostics drive={d} now={now}>{vitalTiles('history')}</demoUI.HardwareDemoDiagnostics>
+        </demoUI.HomeHardwareDemo>
+        : null}
       {hasDriveDetails ? <Card>
         <SectionTitle>Drive details</SectionTitle>
         {!d.hasActiveSession && d.fold.state === 'folding' ? <Text style={st.body}>Folding the waveform archive…</Text> : null}
@@ -323,6 +382,7 @@ const makeStyles = (tokens: ThemeTokens) => {
     hopLabel: { textAlign: 'center', fontSize: 12, fontWeight: '700', color: C.ink },
     hopDetail: { fontSize: 11, color: C.sub, textAlign: 'center' },
     between: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, justifyContent: 'space-between', alignItems: 'center' },
+    vitalsHeading: { minHeight: 58, paddingRight: 102, justifyContent: 'center', alignContent: 'center' },
     tiles: { flexDirection: 'row', gap: 10 },
     subtle: { fontSize: 12, color: C.sub },
     body: { fontSize: 14, color: C.sub, lineHeight: 20 },

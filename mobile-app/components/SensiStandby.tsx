@@ -44,12 +44,12 @@ export function SensiStandby({ visible, drive, mode, onClose, onTrySafetyCheck }
             const status = item.status;
             const indicator = readinessIndicator(status);
             const color = { success: t.connected, warning: t.warning, danger: t.danger, neutral: t.textMuted }[indicator.tone];
-            return <View key={item.id} accessible accessibilityLabel={[translate(item.label), translate(status), item.percent === undefined ? '' : `${item.percent}%`].filter(Boolean).join('. ')}
+            return <View key={item.id} accessible accessibilityLabel={[translate(item.label), translate(status)].join('. ')}
               style={{ flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', columnGap: 10, rowGap: 4, paddingVertical: 4 }}>
               <Text style={{ color: t.textSecondary, fontSize: 14, flexGrow: 1, flexShrink: 1, flexBasis: 140 }}>{item.label}</Text>
               <View style={{ flexDirection: 'row', alignItems: 'center', maxWidth: '100%', minWidth: 0, flexShrink: 1, gap: 6 }}>
                 <Feather name={indicator.icon} size={16} color={color} accessible={false} />
-                <Text style={{ color, fontSize: 14, fontWeight: '600', flexShrink: 1 }}>{status}{item.percent === undefined ? '' : ` · ${item.percent}%`}</Text>
+                <Text style={{ color, fontSize: 14, fontWeight: '600', flexShrink: 1 }}>{status}</Text>
               </View>
             </View>;
           })}

@@ -158,6 +158,21 @@ type Track = {
   seconds: (boolean | null)[];
 };
 
+export type ConfirmationObservation = {
+  kind: FlagKind;
+  level: FlagLevel;
+  threshold: number;
+  required: number;
+  slots: number;
+  accepted: number;
+  beyond: number;
+};
+
+type ConfirmationSlotObservation = {
+  episodeId: string;
+  slot: { acceptedValue: number | null } | null;
+};
+
 export type EngineEvent =
   | { type: 'notice'; episode: Episode }
   | { type: 'warning'; episode: Episode } // flag ticked, now tracking
@@ -180,16 +195,23 @@ export class FlagEngine {
 
   private th: Thresholds;
   private readonly newId: () => string;
-  private readonly confirmWarningS: number;
+  private readonly highWarningOnly: boolean;
+  private confirmWarningS: number;
   private readonly confirmCriticalS: number;
 
   /** `opts` lets the offline tuning tool (tools/tuning/tune.ts) replay drives
-   *  with other confirmation windows; the app always uses the defaults. */
-  constructor(th: Thresholds, newId: () => string, opts: { confirmWarningS?: number; confirmCriticalS?: number } = {}) {
+   *  with other confirmation windows. The isolated hardware diagnostic can restrict the warning kind. */
+  constructor(th: Thresholds, newId: () => string, opts: { confirmWarningS?: number; confirmCriticalS?: number; highWarningOnly?: boolean } = {}) {
     this.th = th;
     this.newId = newId;
+    this.highWarningOnly = opts.highWarningOnly ?? false;
     this.confirmWarningS = opts.confirmWarningS ?? CONFIRM_WARNING_S;
     this.confirmCriticalS = opts.confirmCriticalS ?? CONFIRM_CRITICAL_S;
+  }
+
+  /** Configure the isolated diagnostic between runs, retaining its existing cooldowns. */
+  setWarningConfirmationWindow(seconds: number) {
+    this.confirmWarningS = seconds;
   }
 
   setThresholds(th: Thresholds) {
@@ -205,6 +227,21 @@ export class FlagEngine {
 
   get thresholdsInUse(): Thresholds {
     return this.th;
+  }
+
+  /** Read-only evidence for inspection. Never changes evaluator state. */
+  inspect() {
+    return {
+      filteredBpm: this.bpmMed.length >= 3 ? median(this.bpmMed) : null,
+      filteredSpo2: this.spoMed.length >= 3 ? median(this.spoMed) : null,
+      rejected: this.rejected,
+      tracks: [...this.tracks.values()].map(track => {
+        const { required, slots, accepted, beyond } = this.observeTrack(track);
+        return { episode: { ...track.episode }, required, samples: slots, minimumCoverage: COVERAGE_MIN,
+          minimumBeyond: BEYOND_MIN, accepted, beyond };
+      }),
+      cooldowns: [...this.cooldown.entries()].map(([kind, cooldown]) => ({ kind, ...cooldown })),
+    };
   }
 
   /** The episode currently waiting for the driver's answer, if any. */
@@ -287,8 +324,8 @@ export class FlagEngine {
     };
   }
 
-  /** Feed one second. Returns the events it caused (usually none). */
-  feed(r: Reading): EngineEvent[] {
+  /** Feed one second. The optional diagnostic observer sees each updated window, even if this feed closes it. */
+  feed(r: Reading, observe?: (observation: ConfirmationObservation, detail: ConfirmationSlotObservation) => void, scope?: 'exclude_high_warning'): EngineEvent[] {
     const out: EngineEvent[] = [];
     const t = r.t;
 
@@ -317,14 +354,16 @@ export class FlagEngine {
       ['spo2_low', medSpo, spo2],
     ];
     for (const [kind, med, raw] of series) {
+      if (this.highWarningOnly && kind !== 'bpm_high') continue;
       const track = this.tracks.get(kind);
       if (track) {
-        out.push(...this.step(kind, track, med, raw, t));
+        out.push(...this.step(kind, track, med, raw, t, scope));
+        observe?.(this.observeTrack(track), { episodeId: track.episode.id, slot: { acceptedValue: raw } });
         continue;
       }
       if (med === null || this.awaiting) continue;
       const level = this.levelOf(kind, med);
-      if (!level) continue;
+      if (!level || (this.highWarningOnly && level !== 'warning')) continue;
       const cd = this.cooldown.get(kind);
       if (cd && t < cd.until && !(cd.level === 'warning' && level === 'critical')) continue;
       if (level === 'notice') {
@@ -336,19 +375,28 @@ export class FlagEngine {
         continue;
       }
       const episode = this.open(kind, level, med, t, 'tracking');
-      this.tracks.set(kind, { episode, seconds: [] });
+      const opened = { episode, seconds: [] };
+      this.tracks.set(kind, opened);
+      observe?.(this.observeTrack(opened), { episodeId: episode.id, slot: null });
       out.push({ type: 'warning', episode });
     }
     return out;
   }
 
-  private step(kind: FlagKind, tr: Track, med: number | null, raw: number | null, t: number): EngineEvent[] {
+  private observeTrack({ episode: { kind, level, threshold }, seconds }: Track): ConfirmationObservation {
+    const required = level === 'critical' ? this.confirmCriticalS : this.confirmWarningS;
+    const window = seconds.slice(-required);
+    return { kind, level, threshold, required, slots: window.length,
+      accepted: window.filter(value => value !== null).length, beyond: window.filter(value => value === true).length };
+  }
+
+  private step(kind: FlagKind, tr: Track, med: number | null, raw: number | null, t: number, scope?: 'exclude_high_warning'): EngineEvent[] {
     const ep = tr.episode;
     tr.seconds.push(raw === null ? null : this.isBeyond(kind, raw));
     if (med !== null) {
       const worse = kind === 'bpm_high' ? med > ep.value : med < ep.value;
       if (worse) ep.value = med;
-      if (this.levelOf(kind, med) === 'critical' && ep.level !== 'critical') {
+      if (!this.highWarningOnly && this.levelOf(kind, med) === 'critical' && ep.level !== 'critical') {
         ep.level = 'critical';
         return [{ type: 'escalated', episode: { ...ep } }];
       }
@@ -361,7 +409,8 @@ export class FlagEngine {
       const accepted = win.filter((x) => x !== null);
       const coverage = accepted.length / w;
       const beyond = accepted.length ? accepted.filter(Boolean).length / accepted.length : 0;
-      if (coverage >= COVERAGE_MIN && beyond >= BEYOND_MIN) {
+      const scopedOut = scope === 'exclude_high_warning' && kind === 'bpm_high' && ep.level === 'warning';
+      if (!scopedOut && coverage >= COVERAGE_MIN && beyond >= BEYOND_MIN) {
         // Keep other confirmed-ready tracks queued until the active dialogue resolves.
         // Never overwrite the episode that owns that dialogue in the same feed batch.
         if (this.awaiting) return [];

@@ -1,6 +1,5 @@
 import { VOICECHECK_BASIC_OFFLINE } from '../voice/basicOfflineAcknowledgment';
 import type { AnswerScope } from '../voice/voiceCheck';
-import { phoneSensiAcknowledgment, sensiPreferences } from '../assistant/phoneSensiRouting';
 import { SENSI_MODE } from '../assistant/mode';
 import { openConfirmedDemoPhoneInterface, hasSystemPhoneConfirmation, openAuthorizedPhoneInterface } from '../voice/phoneHandoff';
 /**
@@ -16,7 +15,7 @@ import type { CheckAnswer } from '../voice/voiceCheck';
 import * as Haptics from 'expo-haptics';
 
 import { WheelConnection, type ConnectionState, type RelayStatus, type Source } from '../ble/bleService';
-import { Deframer, SeqTracker, uuidv4 } from '../ble/protocol';
+import { Deframer, SeqTracker, uuidv4, type Frame } from '../ble/protocol';
 import { LiveUploader, type LinkState, type LiveStatus } from '../db/liveSync';
 import * as repo from '../db/repositories';
 import { syncToSupabase } from '../db/sync';
@@ -32,6 +31,20 @@ import { CAL_SECONDS, applyCalibration } from '../analysis/calibration';
 import { computeTrend, type Trend } from '../analysis/trend';
 import { SafetyController, initialSafety, type DemoScenario, type SafetyState } from '../analysis/safetyController';
 import { phoneSensiVoiceIO, prepareVoice, releaseAudio, resetVoiceCache, setPreferredVoice } from '../voice/speechIO';
+
+import type { HardwareSafetySnapshot } from '../diagnostics/hardwareSafetyTest';
+const HardwareSafetyTest = typeof __DEV__ !== 'undefined' && __DEV__
+  ? (require('../diagnostics/hardwareSafetyTest') as typeof import('../diagnostics/hardwareSafetyTest')).HardwareSafetyTest
+  : null;
+
+import type { HomeHardwareDemoSnapshot } from '../diagnostics/homeHardwareDemo';
+const homeDemoModule = typeof __DEV__ !== 'undefined' && __DEV__
+  ? require('../diagnostics/homeHardwareDemo') as typeof import('../diagnostics/homeHardwareDemo')
+  : null;
+
+const homeDemoAuth = typeof __DEV__ !== 'undefined' && __DEV__
+  ? (require('../assistant/phoneCloudAuth') as typeof import('../assistant/phoneCloudAuth')).sensiCloudAuth
+  : null;
 
 /** Seconds of vitals kept for the on-screen charts. */
 export const CHART_SECONDS = 120;
@@ -85,6 +98,10 @@ type State = {
   trend: Trend | null;
   storageMode: StorageMode;
   baseline: Baseline | null;
+  hardwareTest?: HardwareSafetySnapshot;
+  homeHardwareDemo?: HomeHardwareDemoSnapshot;
+  homeDemoWaveform?: { at: number; samples: Frame['samples'] } | null;
+  savedDriveRevision: number;
   /** Flags, the voice check and the rhythm advisory (lib/analysis/safetyController.ts). */
   safety: SafetyState;
   voice: { granted: boolean; onDevice: boolean } | null;
@@ -98,12 +115,15 @@ type Action =
   | { type: 'driver'; driver: DriverProfile | null }
   | { type: 'driverUpdated'; driver: DriverProfile }
   | { type: 'session'; session: DriveSession | null }
-  | { type: 'frame'; frame: import('../ble/protocol').Frame; rx: Date; avgBpm: number | null; avgSpo2: number | null; lost: number; crc: number; signal: SignalQuality | null }
+  | { type: 'frame'; frame: Frame; rx: Date; avgBpm: number | null; avgSpo2: number | null; lost: number; crc: number; signal: SignalQuality | null }
   | { type: 'stored' }
   | { type: 'duplicate' }
   | { type: 'ignored' }
   | { type: 'storeError'; error: string }
   | { type: 'rollover'; session: DriveSession }
+  | { type: 'hardwareTest'; snapshot: HardwareSafetySnapshot }
+  | { type: 'homeHardwareDemo'; snapshot: HomeHardwareDemoSnapshot }
+  | { type: 'savedDrive' }
   | { type: 'resetSession' }
   | { type: 'live'; live: LiveStatus }
   | { type: 'rate'; point: RatePoint }
@@ -146,6 +166,7 @@ const initial: State = {
   trend: null,
   storageMode: 'vitals',
   baseline: null,
+  savedDriveRevision: 0,
   safety: initialSafety,
   voice: null,
   fold: { state: 'idle' },
@@ -204,6 +225,8 @@ function reducer(s: State, a: Action): State {
         lost: a.lost,
         crcErrors: a.crc,
         signal: a.signal,
+        ...(__DEV__ ? { homeDemoWaveform: f.version === 3 && f.usable && f.finger && f.samples.length
+          ? { at: t, samples: f.samples } : null } : {}),
       };
     }
     case 'stored':
@@ -221,8 +244,15 @@ function reducer(s: State, a: Action): State {
         stored: 0,
         duplicates: 0,
         rollovers: s.rollovers + 1,
+        savedDriveRevision: s.savedDriveRevision + 1,
         notice: `Sensor restarted at ${new Date().toLocaleTimeString()} — continued in a new session.`,
       };
+    case 'hardwareTest':
+      return { ...s, hardwareTest: a.snapshot };
+    case 'homeHardwareDemo':
+      return { ...s, homeHardwareDemo: a.snapshot };
+    case 'savedDrive':
+      return { ...s, savedDriveRevision: s.savedDriveRevision + 1 };
     case 'resetSession':
       return { ...s, stored: 0, duplicates: 0, ignoredNoSession: 0, fold: { state: 'idle' } };
     case 'live':
@@ -252,6 +282,7 @@ export function useDriveSession() {
   const profileEdit = useRef<string | null>(null);
   const startingSession = useRef(false);
   const endingSession = useRef(false);
+  const demoRollover = useRef<DriveSession | null>(null);
   const deframer = useRef(new Deframer());
   const seq = useRef(new SeqTracker());
   const avgBpm = useRef<number[]>([]);
@@ -269,14 +300,71 @@ export function useDriveSession() {
   // Serialises database writes so back-to-back frames cannot interleave.
   const queue = useRef<Promise<void>>(Promise.resolve());
   const supportedScreen = useRef(false);
+  const hardwareDriver = useRef(state.driver);
+  hardwareDriver.current = state.driver;
+  const hardwareBaseline = useRef({ driverId: state.driver?.id, baseline: state.baseline });
+  hardwareBaseline.current = { driverId: state.driver?.id, baseline: state.baseline };
+  const productionSafety = useRef(initialSafety);
+  const hardwareTest = useMemo(() => HardwareSafetyTest ? new HardwareSafetyTest({
+    contextBlock: () => {
+      if (!hasSystemPhoneConfirmation(Platform.OS, Platform.Version)) return 'platform';
+      if (AppState.currentState !== 'active' || !supportedScreen.current) return 'foreground';
+      if (!connected.current || !espOnPi.current) return 'hardware';
+      if (sessionRef.current || startingSession.current) return 'recording';
+      if (!hardwareDriver.current || profileEdit.current) return 'profile';
+      const { tracking, check, demo, conversation } = productionSafety.current;
+      return tracking || check || demo || conversation ? 'safety' : null;
+    },
+    monitoringActive: () => productionSafety.current.monitoring === 'active',
+    productionState: () => ({ monitoring: productionSafety.current.monitoring, tracking: !!productionSafety.current.tracking }),
+    driver: () => hardwareDriver.current,
+    thresholds: () => productionSafety.current.th,
+    baseline: driverId => hardwareBaseline.current.driverId === driverId ? hardwareBaseline.current.baseline : null,
+    readDriver: repo.getProfile,
+    change: snapshot => dispatch({ type: 'hardwareTest', snapshot }),
+    voiceIO: phoneSensiVoiceIO,
+    releaseAudio,
+    openURL: url => Linking.openURL(url),
+    id: uuidv4,
+    now: () => Date.now(),
+  }) : null, []);
   // Flags → voice check. Created once; reports its state into the reducer.
+  const homeDemo = useMemo(() => homeDemoModule ? new homeDemoModule.HomeHardwareDemo({
+    currentContext: () => {
+      const { tracking, check, demo, conversation } = productionSafety.current;
+      return hasSystemPhoneConfirmation(Platform.OS, Platform.Version)
+        && AppState.currentState === 'active' && supportedScreen.current
+        && !startingSession.current && !endingSession.current && !profileEdit.current
+        && (!sessionRef.current || sessionRef.current !== demoRollover.current) && !tracking && !check && !demo && !conversation;
+    },
+    driver: () => hardwareDriver.current,
+    account: () => homeDemoAuth?.cachedCredential()?.userId ?? null,
+    prepareVoice,
+    thresholds: () => productionSafety.current.th,
+    thresholdProvenance: scenario => {
+      const { driverId, baseline } = hardwareBaseline.current;
+      return homeDemoModule.demoThresholdProvenance(scenario, productionSafety.current,
+        driverId === hardwareDriver.current?.id && !!baseline?.established && baseline.spo2Median != null);
+    },
+    recordingId: () => sessionRef.current?.status === 'active' ? sessionRef.current.id : null,
+    saveEvent: event => repo.saveDriveDemoEvent(event),
+    saveOutcome: (event, outcome) => repo.saveDriveDemoOutcome(event, outcome),
+    readDriver: repo.getProfile,
+    voiceIO: phoneSensiVoiceIO,
+    releaseAudio,
+    openURL: url => Linking.openURL(url),
+    change: snapshot => dispatch({ type: 'homeHardwareDemo', snapshot }),
+    id: uuidv4,
+    now: () => Date.now(),
+  }) : null, []);
+  useEffect(() => homeDemo ? homeDemoAuth?.subscribe(() => homeDemo.tick()) : undefined, [homeDemo]);
+
   const safety = useMemo(
     () =>
       new SafetyController({
         interactionCurrent: () => AppState.currentState === 'active' && supportedScreen.current,
         assistantMode: () => SENSI_MODE,
         basicOfflineAcknowledgments: VOICECHECK_BASIC_OFFLINE,
-        startAcknowledgment: VOICECHECK_BASIC_OFFLINE ? undefined : phoneSensiAcknowledgment,
         voiceIO: phoneSensiVoiceIO,
         handoffContact: (phone, origin) => {
           // Last platform-boundary check, including transitions ahead of React effects.
@@ -294,7 +382,10 @@ export function useDriveSession() {
           await repo.saveAlert(row);
           // A check may complete after End Drive's final upload. Reuse the
           // existing final-flush path for its original, now-ended recording.
-          if (row.response && sessionRef.current?.id !== row.session_id) void live.finish(row.session_id);
+          if (row.response && sessionRef.current?.id !== row.session_id) {
+            if (row.response === 'not_ok' || row.response === 'no_response' || row.escalated) dispatch({ type: 'savedDrive' });
+            void live.finish(row.session_id);
+          }
         },
         saveAck: repo.setAck,
         saveSnapshot: repo.saveSnapshot,
@@ -302,7 +393,12 @@ export function useDriveSession() {
           void Haptics.notificationAsync(
             k === 'error' ? Haptics.NotificationFeedbackType.Error : Haptics.NotificationFeedbackType.Warning,
           ),
-        onChange: (st) => dispatch({ type: 'safety', safety: st }),
+        onChange: st => {
+          if (hardwareTest || homeDemo) productionSafety.current = st;
+          hardwareTest?.tick();
+          homeDemo?.tick();
+          dispatch({ type: 'safety', safety: st });
+        },
         newId: uuidv4,
       }),
     [],
@@ -318,13 +414,18 @@ export function useDriveSession() {
       foreground.current = next === 'active';
       updateMonitoring();
     });
-    const timer = setInterval(() => safety.checkSensorFreshness(Date.now()), 500);
-    return () => { subscription.remove(); clearInterval(timer); };
-  }, [safety, updateMonitoring]);
+    const timer = setInterval(() => {
+      safety.checkSensorFreshness(Date.now());
+      hardwareTest?.tick();
+      homeDemo?.tick();
+    }, 500);
+    return () => { subscription.remove(); clearInterval(timer); hardwareTest?.cancel(null, 'lifecycle'); homeDemo?.stop(); };
+  }, [safety, updateMonitoring, homeDemo]);
   const setSafetyPresentationEnabled = useCallback((enabled: boolean) => {
     supportedScreen.current = enabled;
+    homeDemo?.tick();
     updateMonitoring();
-  }, [updateMonitoring]);
+  }, [updateMonitoring, homeDemo]);
 
   // What the dashboard's "link" pill shows, reported with every heartbeat.
   const linkState = useCallback((): LinkState => {
@@ -411,10 +512,23 @@ export function useDriveSession() {
         const rolloverSession = esp32Restarted && sessionRef.current?.status === 'active' ? sessionRef.current : null;
         // Revoke consent immediately, before queued database work can yield to a dialogue.
         if (esp32Restarted) {
+          if (rolloverSession && homeDemo) {
+            demoRollover.current = rolloverSession;
+            homeDemo.stop();
+          }
+          else homeDemo?.resetLiveContinuity();
+          hardwareTest?.recordTransportRestart(raw, rx.getTime(), missingNow);
+          hardwareTest?.disconnect('transport_restart');
           safety.setMonitoringContext(false, foreground.current, supportedScreen.current);
           updateMonitoring();
         }
-        safety.onFrame(f, rx, missingNow, sq);
+        const engineReading = safety.onFrame(f, rx, missingNow, sq);
+        if (!esp32Restarted) homeDemo?.frame(raw, rx.getTime(), missingNow, sq, f.heartRate);
+        // Only decoded sensor frames reach the evaluator; simulation has a separate source.
+        if (hardwareTest) {
+          const waveform = sq ? sq.good ? 'passed' : analyzer.current.hasWindow ? 'rejected' : 'warming' : 'unavailable';
+          hardwareTest.frame(raw, rx.getTime(), missingNow, waveform, engineReading ?? null, esp32Restarted, sq, f.heartRate);
+        }
         if (sessionRef.current?.status === 'active') {
           live.nudge(); // flags and answers reach the dashboard without waiting for the tick
         }
@@ -433,6 +547,7 @@ export function useDriveSession() {
                 return;
               }
               sessionRef.current = next;
+              demoRollover.current = null;
               safety.setRecordingSession(next.id);
               seen.current.clear();
               dispatch({ type: 'rollover', session: next });
@@ -468,7 +583,7 @@ export function useDriveSession() {
           .catch(() => undefined);
       }
     },
-    [live, safety, updateMonitoring],
+    [live, safety, updateMonitoring, hardwareTest, homeDemo],
   );
 
   const connection = useMemo(
@@ -476,6 +591,7 @@ export function useDriveSession() {
       new WheelConnection({
         onStateChange: (s, error) => {
           connected.current = s === 'connected';
+          if (!connected.current) homeDemo?.resetLiveContinuity();
           updateMonitoring();
           if (s === 'connected') {
             // A new link starts a fresh byte stream: no half-frame carries over.
@@ -487,10 +603,11 @@ export function useDriveSession() {
         onBytes,
         onRelayStatus: (relay) => {
           espOnPi.current = relay.esp;
+          if (!relay.esp) { hardwareTest?.disconnect(); homeDemo?.resetLiveContinuity(); }
           dispatch({ type: 'relay', relay });
         },
       }),
-    [onBytes, updateMonitoring],
+    [onBytes, updateMonitoring, hardwareTest, homeDemo],
   );
 
   useEffect(() => {
@@ -516,10 +633,6 @@ export function useDriveSession() {
   // chosen the app keeps a link to the Pi up, reconnecting on its own.
   const driverId = state.driver?.id;
   useEffect(() => {
-    void sensiPreferences.boot();
-    void sensiPreferences.selectDriver(driverId ?? null);
-  }, [driverId]);
-  useEffect(() => {
     if (driverId) connection.start();
   }, [driverId, connection]);
 
@@ -530,6 +643,7 @@ export function useDriveSession() {
       const b = await repo.driverBaseline(driver.id);
       const ack = await repo.getAck(driver.id);
       if (selectedProfile.current !== selection || selection?.id !== driver.id) return null;
+      hardwareBaseline.current = { driverId: driver.id, baseline: b };
       safety.configure(driver, b, ack, reason);
       const trend = computeTrend(await repo.driveMedians(driver.id), Date.now());
       if (selectedProfile.current !== selection) return null;
@@ -541,8 +655,11 @@ export function useDriveSession() {
 
   const selectDriver = useCallback(
     (driver: DriverProfile) => {
+      homeDemo?.stop();
+      hardwareTest?.disconnect();
       safety.endSession();
       selectedProfile.current = { id: driver.id };
+      hardwareBaseline.current = { driverId: driver.id, baseline: null };
       safety.configure(driver, null, { high: null, low: null }, 'profile');
       calRef.current = { hr: driver.cal_hr ?? null, spo2: driver.cal_spo2 ?? null };
       sessionRef.current = null;
@@ -555,7 +672,7 @@ export function useDriveSession() {
       void prepareVoice().then(voice => dispatch({ type: 'voice', voice }));
       void loadBaseline(driver, 'profile');
     },
-    [loadBaseline, safety],
+    [loadBaseline, safety, hardwareTest, homeDemo],
   );
 
   const beginProfileEdit = useCallback(async () => {
@@ -563,6 +680,8 @@ export function useDriveSession() {
       throw new Error('End and save the current drive before editing.');
     const id = state.driver.id;
     profileEdit.current = id;
+    homeDemo?.stop();
+    hardwareTest?.cancel(null, 'context');
     const selection = { id };
     selectedProfile.current = selection; // invalidate pending baseline/profile loads
     safety.cancelCheck();
@@ -575,7 +694,7 @@ export function useDriveSession() {
       dispatch({ type: 'driverUpdated', driver: latest });
       return latest;
     } catch (e) { profileEdit.current = null; throw e; }
-  }, [state.driver, safety, loadBaseline]);
+  }, [state.driver, safety, loadBaseline, hardwareTest, homeDemo]);
 
   const saveProfileEdit = useCallback(async (original: DriverProfile, input: repo.NewProfileInput, languageOnly = false) => {
     const selection = selectedProfile.current;
@@ -592,6 +711,7 @@ export function useDriveSession() {
         return { baseline, ack, trend: computeTrend(medians, Date.now()) };
       },
       publish: (saved, context) => {
+        hardwareBaseline.current = { driverId: saved.id, baseline: context.baseline };
         safety.refreshProfile(saved, context.baseline, context.ack);
         calRef.current = { hr: saved.cal_hr ?? null, spo2: saved.cal_spo2 ?? null };
         dispatch({ type: 'driverUpdated', driver: saved });
@@ -617,6 +737,8 @@ export function useDriveSession() {
   const startSession = useCallback(async () => {
     if (sessionRef.current || !state.driver || profileEdit.current || startingSession.current || endingSession.current) return;
     startingSession.current = true;
+    homeDemo?.stop();
+    hardwareTest?.cancel(null, 'context');
     try {
       seen.current.clear();
       dispatch({ type: 'resetSession' });
@@ -633,12 +755,13 @@ export function useDriveSession() {
       // Microphone + speech permission now, so an emergency is never blocked by a dialog.
       if (!state.voice?.granted) dispatch({ type: 'voice', voice: await prepareVoice() });
     } finally { startingSession.current = false; }
-  }, [state.driver, state.storageMode, state.voice, live, safety]);
+  }, [state.driver, state.storageMode, state.voice, live, safety, hardwareTest, homeDemo]);
 
   const endSession = useCallback(async () => {
     const session = sessionRef.current;
     if (!session || endingSession.current) return;
     endingSession.current = true;
+    homeDemo?.stop();
     try {
       safety.setRecordingSession(null);
       let ended: DriveSession;
@@ -650,6 +773,7 @@ export function useDriveSession() {
       sessionRef.current = null;
       dispatch({ type: 'session', session: ended });
       await queue.current; // every frame of this session is stored before folding
+      dispatch({ type: 'savedDrive' });
       if (ended.storage_mode === 'full') {
         dispatch({ type: 'fold', fold: { state: 'folding' } });
         try {
@@ -680,17 +804,19 @@ export function useDriveSession() {
         void live.finish(ended.id); // re-push: uploads the new snapshot / advisory rows
       }
     } finally { endingSession.current = false; }
-  }, [live, safety, loadBaseline, state.driver]);
+  }, [live, safety, loadBaseline, state.driver, homeDemo]);
 
   /** Back to the driver list. An active session is ended first, never dropped. */
   const leaveDriver = useCallback(async () => {
     const selection = selectedProfile.current;
+    homeDemo?.stop();
+    hardwareTest?.disconnect();
     safety.endSession();
     if (sessionRef.current) await endSession();
     if (selectedProfile.current !== selection) return;
     selectedProfile.current = null;
     dispatch({ type: 'driver', driver: null });
-  }, [endSession, safety]);
+  }, [endSession, safety, hardwareTest, homeDemo]);
 
   const setStorageMode = useCallback(async (mode: StorageMode) => {
     await repo.setSetting('storage_mode', mode);
@@ -700,16 +826,59 @@ export function useDriveSession() {
   /** Settings: hear and answer the real voice check once (nothing recorded). */
   const rehearseVoice = useCallback(async () => {
     if (!state.voice?.granted) dispatch({ type: 'voice', voice: await prepareVoice() });
+    homeDemo?.stop();
+    hardwareTest?.cancel(null, 'other_safety_test');
     resetVoiceCache(); // pick up a voice downloaded since the app started
     return safety.rehearse();
-  }, [safety, state.voice]);
+  }, [safety, state.voice, hardwareTest, homeDemo]);
 
   /** On-screen answer to the voice check (always available). */
-  const respondAlert = useCallback((response: CheckAnswer, scope?: AnswerScope & { episodeId: string }) => safety.answer(response, scope), [safety]);
-  const respondAlertText = useCallback((text: string, scope: AnswerScope & { episodeId: string }) => safety.answerText(text, scope), [safety]);
+  const hardwareTestControls = useMemo(() => hardwareTest ? {
+    start: (allowContact: boolean, benchMode?: boolean, fastDemo?: boolean) => {
+      homeDemo?.stop();
+      return hardwareTest.start(allowContact, benchMode, fastDemo);
+    },
+    cancel: () => hardwareTest.cancel(),
+    reset: () => hardwareTest.reset(),
+    confirm: (id: string) => hardwareTest.confirm(id),
+    markConfirmationVisible: (id: string) => hardwareTest.markConfirmationVisible(id),
+    markListeningVisible: (episodeId: string, captureId: string) => hardwareTest.markListeningVisible(episodeId, captureId),
+    requestRecoveredHandoff: (episodeId: string) => hardwareTest.requestRecoveredHandoff(episodeId),
+  } : null, [hardwareTest, homeDemo]);
 
+  const homeHardwareDemoControls = useMemo(() => homeDemo ? {
+    enable: () => {
+      const enabled = homeDemo.enable();
+      if (enabled) connection.start();
+      return enabled;
+    },
+    stop: () => homeDemo.stop(),
+    configureSimulation: (change: Parameters<typeof homeDemo.configureSimulation>[0]) => {
+      if (change.enabled) hardwareTest?.cancel(null, 'other_safety_test');
+      homeDemo.configureSimulation(change);
+    },
+    trigger: () => {
+      hardwareTest?.cancel(null, 'other_safety_test');
+      return homeDemo.trigger();
+    },
+    cancel: () => homeDemo.cancelEpisode(),
+    confirm: (id: string) => homeDemo.confirm(id),
+  } : null, [connection, homeDemo, hardwareTest]);
+  const respondAlert = useCallback((response: CheckAnswer, scope?: AnswerScope & { episodeId: string }) =>
+    homeDemo?.owns(scope?.episodeId) ? homeDemo.answer(response, scope)
+      : hardwareTest?.owns(scope?.episodeId) ? hardwareTest.answer(response, scope) : safety.answer(response, scope), [safety, hardwareTest, homeDemo]);
+  const respondAlertText = useCallback((text: string, scope: AnswerScope & { episodeId: string }) =>
+    homeDemo?.owns(scope.episodeId) ? homeDemo.answerText(text, scope)
+      : hardwareTest?.owns(scope.episodeId) ? hardwareTest.answerText(text, scope) : safety.answerText(text, scope), [safety, hardwareTest, homeDemo]);
+
+  const isolatedSafety = state.homeHardwareDemo?.safety?.conversation ? state.homeHardwareDemo.safety : state.hardwareTest?.safety;
   return {
     ...state,
+    safety: isolatedSafety?.conversation && !state.safety.check && !state.safety.conversation
+      ? { ...state.safety, check: isolatedSafety.check, conversation: isolatedSafety.conversation, last: isolatedSafety.last }
+      : state.safety,
+    hardwareTestControls,
+    homeHardwareDemoControls,
     isConnected: state.connection === 'connected',
     hasActiveSession: state.session?.status === 'active',
     selectDriver,
@@ -731,7 +900,11 @@ export function useDriveSession() {
     canContinueSafetyConversation: useCallback((episodeId: string) => safety.safetyContinuation(episodeId), [safety]),
     confirmRealContactDemo: useCallback((episodeId: string) => safety.confirmRealContactDemo(episodeId), [safety]),
     cancelRealContactDemo: useCallback(() => safety.cancelRealContactDemo(), [safety]),
-    dismissSafetyConversation: useCallback((episodeId: string) => safety.dismissSafetyConversation(episodeId), [safety]),
+    dismissSafetyConversation: useCallback((episodeId: string) => {
+      if (homeDemo?.owns(episodeId)) homeDemo.cancelEpisode();
+      else if (hardwareTest?.owns(episodeId)) hardwareTest.cancel();
+      else safety.dismissSafetyConversation(episodeId);
+    }, [safety, hardwareTest, homeDemo]),
     assistantContactAvailability: useCallback(() => safety.assistantContactAvailability(), [safety]),
     assistantOwnership: useCallback(() => safety.assistantOwnership(), [safety]),
     assistantContact: useCallback((text: string, offered: boolean, current: () => boolean) =>
@@ -741,9 +914,11 @@ export function useDriveSession() {
     simulate: useCallback(
       async (scenario: DemoScenario, realContact = false) => {
         if (!state.voice?.granted) dispatch({ type: 'voice', voice: await prepareVoice() });
+        homeDemo?.stop();
+        hardwareTest?.cancel(null, 'other_safety_test');
         return safety.simulate(scenario, realContact);
       },
-      [safety, state.voice],
+      [safety, state.voice, hardwareTest, homeDemo],
     ),
     resetAck: useCallback(() => safety.resetAck(), [safety]),
     /** Records CAL_SECONDS of clean raw readings for a calibration. */

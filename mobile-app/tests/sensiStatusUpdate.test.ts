@@ -53,7 +53,7 @@ const luminance = (hex: string) => {
   return rgb[0]! * .2126 + rgb[1]! * .7152 + rgb[2]! * .0722;
 };
 for (const tokens of [light, dark]) test(`readiness meanings and colors have readable contrast in ${tokens === light ? 'light' : 'dark'} theme`, () => {
-  for (const [status, tone] of [['Installed', 'success'], ['Available', 'success'], ['Connecting', 'warning'], ['Downloading', 'warning'], ['Unavailable', 'danger'], ['Error', 'danger'], ['Not installed', 'neutral'], ['Installation unverified', 'neutral'], ['Unknown', 'neutral']] as const) {
+  for (const [status, tone] of [['Available', 'success'], ['Connecting', 'warning'], ['Unavailable', 'danger'], ['Error', 'danger'], ['Unknown', 'neutral']] as const) {
     const indicator = readinessIndicator(status); assert.equal(indicator.tone, tone);
     const color = { success: tokens.connected, warning: tokens.warning, danger: tokens.danger, neutral: tokens.textMuted }[indicator.tone];
     const a = luminance(color), b = luminance(tokens.surface);

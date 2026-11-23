@@ -12,7 +12,8 @@ import { SettingsGroup, SettingsNote, SettingsRow } from './SettingsGroup';
 import { InformationButton } from './Information';
 import { SensiCloudAccess, useSensiAccount } from './SensiCloudAccess';
 import { GemmaModelSettings } from './GemmaModelSettings';
-import type { SensiDetail, SettingsPage } from '../lib/ui/settingsNavigation';
+type SensiDetail = 'sensi_account' | 'sensi_mode' | 'sensi_cloud' | 'sensi_gemma' | 'sensi_voice';
+type SettingsPage = SensiDetail | 'developer';
 
 export function SensiProviderSettings({ driverId, blocked, accountBlocked, page, navigate }: {
   driverId: string | null;

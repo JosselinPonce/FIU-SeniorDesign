@@ -1,7 +1,7 @@
 import type { SettingsPage } from '../lib/ui/settingsNavigation';
 import { LocalizedAlert as Alert, LocalizedPressable as Pressable, LocalizedText as Text } from '../lib/i18n/native';
 import { SENSI_MODE } from '../lib/assistant/mode';
-import { sensiSetup } from '../lib/onboarding/phone';
+import { sensiSetup } from '../lib/onboarding/builtInPhone';
 import { SensiStandby } from './SensiStandby';
 import { openSensi, sensiDestination } from '../lib/assistant/sensiStandby';
 import { SensiSafetyConversation } from './SensiSafetyConversation';
@@ -9,8 +9,7 @@ import { VitalsDetailView } from './VitalsDetailView';
 import { drivePageAfter, type DrivePage } from '../lib/ui/dashboard';
 import { BrandMark } from './BrandMark';
 import { DraggableSensiLauncher } from './DraggableSensiLauncher';
-import { AppearanceMenu } from './AppearanceMenu';
-import { LanguageMenu } from './LanguageMenu';
+import { DriveProfileMenu } from './DriveProfileMenu';
 import { DashboardAssistantEntry } from './DashboardAssistantEntry';
 import { InformationHost } from './Information';
 import { useTheme } from '../lib/theme/ThemeProvider';
@@ -21,13 +20,12 @@ import { presentationColors, type ThemeTokens } from '../lib/theme/tokens';
  * switch drivers.
  */
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { ActivityIndicator, AppState, StyleSheet, View, SafeAreaView, Platform, StatusBar as NativeStatusBar } from 'react-native';
+import { ActivityIndicator, StyleSheet, View, SafeAreaView, Platform, StatusBar as NativeStatusBar } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 
 import { useDriveSession } from '../lib/hooks/useDriveSession';
 import * as repo from '../lib/db/repositories';
 import type { DriverProfile } from '../lib/db/repositories';
-import { Btn } from './ui';
 import { DriverPicker } from './DriverPicker';
 import { DriverConfirmation } from './DriverConfirmation';
 import { DriveView, VoiceCheckModal } from './DriveView';
@@ -39,7 +37,6 @@ import { Onboarding } from './Onboarding';
 
 type Tab = 'drive' | 'history' | 'settings';
 
-const GemmaDiagnostic = __DEV__ ? (require('../modules/gemma-poc/GemmaDiagnostic') as typeof import('../modules/gemma-poc/GemmaDiagnostic')).GemmaDiagnostic : null;
 
 export default function SmartWheelScreen() {
   const { colors: C, tokens, name: themeName } = useTheme();
@@ -52,8 +49,11 @@ export default function SmartWheelScreen() {
   const [profiles, setProfiles] = useState<DriverProfile[] | null>(null);
   const [pendingDriver, setPendingDriver] = useState<DriverProfile | null>(null);
   const [pendingEdit, setPendingEdit] = useState(false);
+  const [switching, setSwitching] = useState(false);
   const [drivePage, setDrivePage] = useState<DrivePage>('dashboard');
+  const [demoView, setDemoView] = useState(false);
   useEffect(() => { setDrivePage('dashboard'); }, [drive.driver?.id]);
+  const [dashboardScrollStart, setDashboardScrollStart] = useState(0);
   const [vitalsAnchor, setVitalsAnchor] = useState<{ y: number; height: number } | null>(null);
   const updateVitalsAnchor = useCallback((next: { y: number; height: number }) => {
     setVitalsAnchor(previous => previous?.y === next.y && previous?.height === next.height ? previous : next);
@@ -66,10 +66,8 @@ export default function SmartWheelScreen() {
   const [editingProfile, setEditingProfile] = useState<DriverProfile | null>(null);
   const [editOpening, setEditOpening] = useState(false);
   const [assistantOpen, setAssistantOpen] = useState(false);
-  const [gemmaOpen, setGemmaOpen] = useState(false);
   const [autoOn, setAutoOn] = useState(true);
   useEffect(() => { if (drive.safety.check) setAssistantOpen(false); }, [drive.safety.check]);
-  useEffect(() => { if (drive.hasActiveSession || drive.safety.check || drive.safety.demo) setGemmaOpen(false); }, [drive.hasActiveSession, drive.safety.check, drive.safety.demo]);
 
   function openAssistant() {
     // Preserve any current safety modal; opening never restarts the check.
@@ -82,11 +80,6 @@ export default function SmartWheelScreen() {
   const ongoing = drive.hasActiveSession || !!drive.safety.check || !!drive.safety.demo || drive.safety.monitoring === 'active';
   const showIntro = reviewIntro || (setupState.booted && !setupState.ready && !ongoing);
   useEffect(() => sensiSetup.subscribe(setSetupState), []);
-  useEffect(() => {
-    // Covers returning-user launch checks before the onboarding view is mounted.
-    const app = AppState.addEventListener('change', next => { if (next !== 'active') sensiSetup.cancel(); });
-    return () => { app.remove(); };
-  }, []);
   useEffect(() => { if (!ongoing) void sensiSetup.boot(); }, [ongoing]);
   const finishIntro = useCallback(() => { if (sensiSetup.state.ready) setReviewIntro(false); }, []);
   // Re-render once a second so timers and "x s ago" stay current.
@@ -105,8 +98,8 @@ export default function SmartWheelScreen() {
   // presented, revoking active capture/consent rather than running invisibly.
   useLayoutEffect(() => {
     drive.setSafetyPresentationEnabled(!!drive.driver && !!profiles && showIntro === false && (setupState.ready || ongoing)
-      && !editingProfile && !editOpening && !gemmaOpen);
-  }, [drive.driver?.id, profiles, setupState.ready, ongoing, showIntro, editingProfile, editOpening, gemmaOpen, drive.setSafetyPresentationEnabled]);
+      && !editingProfile && !editOpening && !switching);
+  }, [drive.driver?.id, profiles, setupState.ready, ongoing, showIntro, editingProfile, editOpening, switching, drive.setSafetyPresentationEnabled]);
 
   const guard = useCallback((fn: () => Promise<unknown>) => {
     setBusy(true);
@@ -115,12 +108,12 @@ export default function SmartWheelScreen() {
 
   function switchDriver() {
     if (!drive.hasActiveSession) {
-      void drive.leaveDriver();
+      setSwitching(true);
       return;
     }
     Alert.alert('End this drive?', 'Switching drivers ends and saves the current drive first.', [
       { text: 'Keep driving', style: 'cancel' },
-      { text: 'End & switch', style: 'destructive', onPress: () => guard(drive.leaveDriver) },
+      { text: 'End & switch', style: 'destructive', onPress: () => guard(async () => { await drive.endSession(); setSwitching(true); }) },
     ]);
   }
 
@@ -153,6 +146,7 @@ export default function SmartWheelScreen() {
     return (
       <>
         <StatusBar style={themeName === 'dark' ? 'light' : 'dark'} />
+        <InformationHost blocked={!!drive.safety.check || !!drive.safety.demo} />
         <Onboarding controller={sensiSetup} review={setupState.ready} onDone={finishIntro} onChooseDriver={() => {
           if (ongoing) return;
           void drive.leaveDriver().then(() => { setPendingDriver(null); setReviewIntro(false); }).catch(e => Alert.alert('Could not switch driver', String(e)));
@@ -169,24 +163,23 @@ export default function SmartWheelScreen() {
     );
   }
 
-  if (__DEV__ && gemmaOpen && GemmaDiagnostic && !drive.hasActiveSession && !drive.safety.check && !drive.safety.demo) return <GemmaDiagnostic
-    blocked={drive.hasActiveSession || !!drive.safety.check || !!drive.safety.demo}
-    onClose={() => { setSettingsEntry('developer'); setSettingsRequest(value => value + 1); setGemmaOpen(false); }} />;
-
-  if (!drive.driver) {
+  if (!drive.driver || switching) {
     if (pendingDriver && pendingEdit) return <DriverPicker profiles={[pendingDriver]} editProfile={pendingDriver}
       onPick={() => {}} onCreated={reload} onCancelEdit={() => setPendingEdit(false)} onSaveProfile={async input => {
         await repo.updateProfile(pendingDriver.id, input, pendingDriver.updated_at);
         const updated = await repo.getProfile(pendingDriver.id); await reload(); setPendingDriver(updated); setPendingEdit(false);
       }} />;
     if (pendingDriver) return <DriverConfirmation profile={pendingDriver} onEdit={() => setPendingEdit(true)} onBack={() => setPendingDriver(null)} onConfirm={() => {
-      drive.selectDriver(pendingDriver); setPendingDriver(null);
+      if (drive.driver?.id !== pendingDriver.id) drive.selectDriver(pendingDriver);
+      setPendingDriver(null); setSwitching(false);
     }} />;
     return (
       <>
         <StatusBar style={themeName === 'dark' ? 'light' : 'dark'} />
         <View style={{ flex: 1, backgroundColor: tokens.background }}>
-        <DriverPicker profiles={profiles} onPick={setPendingDriver} onCreated={reload} />
+        <DriverPicker profiles={profiles} onPick={setPendingDriver} onCreated={reload} onUseCreated={setPendingDriver}
+          activeDriverId={drive.driver?.id} onBack={switching ? () => setSwitching(false) : undefined}
+          onEditActive={() => { setSwitching(false); void openProfileEditor(); }} />
         <InformationHost blocked={!!drive.safety.check || !!drive.safety.demo} />
         </View>
       </>
@@ -210,14 +203,10 @@ export default function SmartWheelScreen() {
     <SafeAreaView style={st.root}>
       <StatusBar style={themeName === 'dark' ? 'light' : 'dark'} />
       <View style={st.header}>
-        <View style={{ flex: 1, minWidth: 0 }}><BrandMark /></View>
-        <Pressable onPress={switchDriver} style={[st.switch, { maxWidth: '43%', flexDirection: 'row', alignItems: 'center', gap: 6 }]}
-          accessibilityRole="button" accessibilityLabel={`Switch driver. Current driver: ${drive.driver.display_name}`}>
-          <Text localize={false} style={[st.driver, { flexShrink: 1 }]}>{drive.driver.display_name}</Text>
-          <Text accessible={false} style={st.switchText}>⌄</Text>
-        </Pressable>
-        <AppearanceMenu />
-        <LanguageMenu />
+        <View style={{ flex: 1, minWidth: 0 }}><BrandMark compact /></View>
+        <DriveProfileMenu name={drive.driver.display_name} blocked={!!drive.safety.check || !!drive.safety.conversation && !drive.safety.conversation.finished} onSwitch={switchDriver} onEdit={() => void openProfileEditor()}
+          dashboardMode={__DEV__ && drive.homeHardwareDemoControls ? demoView : undefined}
+          onDashboardMode={__DEV__ ? setDemoView : undefined} />
       </View>
 
 
@@ -225,20 +214,18 @@ export default function SmartWheelScreen() {
         {tab === 'drive' ? drivePage === 'vitals'
           ? <VitalsDetailView drive={drive} onBack={() => setDrivePage(drivePageAfter('back'))} />
           : <View style={{ flex: 1 }}>
-            <View style={{ flex: 1, minWidth: 0 }}><DriveView drive={drive} busy={busy} guard={guard} monitoringDetailsExpanded={monitoringDetailsExpanded}
-              onToggleMonitoringDetails={() => setMonitoringDetailsExpanded(value => !value)} onOpenVitals={() => setDrivePage(drivePageAfter('details'))} onVitalsAnchor={updateVitalsAnchor} /></View>
-            {!assistantOpen ? <DraggableSensiLauncher defaultAnchor={vitalsAnchor}><DashboardAssistantEntry mode={SENSI_MODE} language={drive.driver.language ?? 'en'}
+            <View style={{ flex: 1, minWidth: 0 }}><DriveView drive={drive} demoView={__DEV__ && demoView} busy={busy} guard={guard} monitoringDetailsExpanded={monitoringDetailsExpanded}
+              onToggleMonitoringDetails={() => setMonitoringDetailsExpanded(value => !value)} onOpenVitals={() => setDrivePage(drivePageAfter('details'))} onVitalsAnchor={updateVitalsAnchor}
+              onDashboardScrollStart={() => setDashboardScrollStart(value => value + 1)} /></View>
+            {!assistantOpen ? <DraggableSensiLauncher key={drive.driver.id} driverId={drive.driver.id} defaultAnchor={vitalsAnchor} scrollStart={dashboardScrollStart}>{(collapse, showGreeting) => <DashboardAssistantEntry mode={SENSI_MODE} language={drive.driver?.language ?? 'en'}
               disabled={false}
-              error="" onPress={openAssistant} /></DraggableSensiLauncher> : null}
+              error="" onPress={() => { showGreeting(); openAssistant(); }} onCollapse={collapse} />}</DraggableSensiLauncher> : null}
           </View> : null}
         {tab === 'history' ? <HistoryView refreshKey={`${drive.session?.id ?? ''}:${drive.session?.status ?? ''}:${drive.fold.state}`} /> : null}
         {tab === 'settings' ? (
           <SettingsView key={`settings-${settingsRequest}`}
             initialPage={settingsEntry}
             drive={drive}
-            gemmaDiagnostics={__DEV__ ? <Btn title="Gemma diagnostics" kind="ghost"
-              disabled={drive.hasActiveSession || !!drive.safety.check || !!drive.safety.demo || assistantOpen || setupState.busy}
-              onPress={() => { if (!drive.hasActiveSession && !drive.safety.check && !drive.safety.demo && !sensiSetup.state.busy) setGemmaOpen(true); }} /> : null}
             autoOn={autoOn}
             setAutoOn={setAutoOn}
             onWiped={async () => {
@@ -301,30 +288,27 @@ const makeStyles = (tokens: ThemeTokens) => {
       flexWrap: 'wrap',
       alignItems: 'center',
       gap: 8,
-      paddingTop: Platform.OS === 'android' ? (NativeStatusBar.currentHeight ?? 0) + 8 : 8,
-      paddingHorizontal: 18,
-      paddingBottom: 8,
+      paddingTop: Platform.OS === 'android' ? (NativeStatusBar.currentHeight ?? 0) + 2 : 2,
+      paddingHorizontal: 14,
+      paddingBottom: 2,
       backgroundColor: C.card,
       borderBottomWidth: 1,
       borderBottomColor: C.line,
     },
     brand: { fontSize: 12, fontWeight: '800', color: C.ink, letterSpacing: 1, textTransform: 'uppercase', borderLeftWidth: 3, borderLeftColor: tokens.accent, paddingLeft: 8 },
-    driver: { fontSize: 14, fontWeight: '700', color: C.ink, textAlign: 'right' },
     cid: { fontSize: 12, fontWeight: '600', color: C.sub },
-    switch: { minHeight: 44, minWidth: 44, justifyContent: 'center', paddingHorizontal: 4, paddingVertical: 4 },
-    switchText: { color: C.sub, fontSize: 12, fontWeight: '600' },
     tabs: {
       flexDirection: 'row',
       backgroundColor: C.card,
       borderTopWidth: 1,
       borderTopColor: C.line,
-      paddingBottom: 8,
+      paddingVertical: 3,
       paddingHorizontal: 10,
       gap: 6,
     },
-    tab: { flex: 1, minHeight: 48, borderRadius: 14, alignItems: 'center', paddingTop: 0, gap: 6 },
+    tab: { flex: 1, minHeight: 44, borderRadius: 10, alignItems: 'center', justifyContent: 'center', paddingVertical: 4, gap: 3 },
     tabBar: { height: 3, width: 18, borderRadius: 2, backgroundColor: 'transparent' },
     tabText: { fontSize: 13, fontWeight: '700', color: C.faint },
-    recDot: { position: 'absolute', top: 10, right: '28%', width: 8, height: 8, borderRadius: 4, backgroundColor: tokens.heartAccent },
+    recDot: { position: 'absolute', top: 8, right: 8, width: 8, height: 8, borderRadius: 4, backgroundColor: tokens.heartAccent },
   });
 };

@@ -1,5 +1,4 @@
 import { VoiceCheckTesting } from './VoiceCheckTesting';
-import { SensiProviderSettings } from './SensiProviderSettings';
 import { SettingsGroup, SettingsRow } from './SettingsGroup';
 import { SimulationProgress } from './SimulationProgress';
 import { FIRST_ABNORMAL_SIMULATION_SECOND, simulationReading, type DemoScenario } from '../lib/analysis/simulationReadings';
@@ -21,7 +20,7 @@ import { presentationColors, type ThemeTokens } from '../lib/theme/tokens';
  * Storage choice, cloud backlog, and the technical link details that used to
  * crowd the drive screen.
  */
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { SETTINGS_CATEGORIES, isSensiDetail, settingsTitle, type SettingsPage } from '../lib/ui/settingsNavigation';
 import { AppState, BackHandler, ScrollView, StyleSheet, Switch, View } from 'react-native';
 
@@ -44,6 +43,10 @@ const SensiVoicePlaybackDiagnostic = __DEV__
   ? (require('./SensiVoicePlaybackDiagnostic') as typeof import('./SensiVoicePlaybackDiagnostic')).SensiVoicePlaybackDiagnostic
   : null;
 
+const HardwareSafetyDiagnostic = __DEV__
+  ? (require('./HardwareSafetyDiagnostic') as typeof import('./HardwareSafetyDiagnostic')).HardwareSafetyDiagnostic
+  : null;
+
 type Drive = ReturnType<typeof useDriveSession>;
 
 const MODES: { key: StorageMode; title: string; body: string }[] = [
@@ -64,7 +67,6 @@ const MODES: { key: StorageMode; title: string; body: string }[] = [
 export function SettingsView(props: {
   initialPage?: SettingsPage;
   drive: Drive;
-  gemmaDiagnostics?: ReactNode;
   autoOn: boolean;
   setAutoOn: (v: boolean) => void;
   onWiped: () => Promise<void>;
@@ -74,14 +76,15 @@ export function SettingsView(props: {
   const { colors: C, tokens } = useTheme();
   const st = makeStyles(tokens);
   const d = props.drive;
-  const [page, setPage] = useState<SettingsPage>(props.initialPage ?? null);
+  const initialPage = String(props.initialPage) === 'where_to_store' ? 'data' : props.initialPage ?? null;
+  const [page, setPage] = useState<SettingsPage>(initialPage);
   const scroll = useRef<ScrollView>(null);
   const focusedDemo = useRef(false);
   const positions = useRef<Record<string, number>>({});
   const history = useRef<SettingsPage[]>([]);
   const navigate = (next: SettingsPage) => { history.current.push(page); setPage(next); };
-  const goBack = () => setPage(history.current.length ? history.current.pop()! : isSensiDetail(page) ? 'assistant' : page === 'voicecheck_testing' ? 'safety_testing' : page === 'safety_testing' || page === 'thresholds' ? 'safety' : page === 'developer' ? 'advanced' : null);
-  useEffect(() => { if (props.initialPage) setPage(props.initialPage); }, [props.initialPage]);
+  const goBack = () => setPage(history.current.length ? history.current.pop()! : isSensiDetail(page) ? 'assistant' : page === 'voicecheck_testing' ? 'safety_testing' : page === 'safety_testing' || page === 'thresholds' || page === 'calibration' ? 'safety' : page === 'developer' ? 'advanced' : page === 'what_to_save' || page === 'cloud_sync' ? 'data' : null);
+  useEffect(() => { if (initialPage) setPage(initialPage); }, [initialPage]);
   useEffect(() => {
     const back = BackHandler.addEventListener('hardwareBackPress', () => {
       if (page === null) return false;
@@ -94,6 +97,14 @@ export function SettingsView(props: {
   const [direct, setDirect] = useState(false);
   const [syncMsg, setSyncMsg] = useState('');
   const [syncing, setSyncing] = useState(false);
+  const [waiting, setWaiting] = useState<Awaited<ReturnType<typeof pendingCount>> | null>(null);
+  useEffect(() => {
+    if (page !== 'data' && page !== 'cloud_sync') return;
+    let current = true;
+    void Promise.resolve().then(pendingCount).then(result => { if (current) setWaiting(result); })
+      .catch(() => { if (current) setWaiting(null); });
+    return () => { current = false; };
+  }, [page, syncing, d.live?.ok, d.session?.status]);
   const [rehearsal, setRehearsal] = useState<string | null>(null);
   const [demoResult, setDemoResult] = useState<string | null>(null);
   const [selectedScenario, setSelectedScenario] = useState<DemoScenario | null>(null);
@@ -154,13 +165,15 @@ export function SettingsView(props: {
     setSyncing(true);
     try {
       const p = await pendingCount();
-      if (p.sessions === 0 && p.profiles === 0) {
+      if (p.sessions === 0 && p.profiles === 0 && p.events === 0) {
         setSyncMsg('Everything is already in the cloud.');
         return;
       }
       setSyncMsg(`Uploading ${p.profiles} profile(s) and ${p.sessions} drive(s)…`);
       const r = await syncToSupabase();
       setSyncMsg(r.errors.length ? `Couldn't reach the cloud: ${r.errors[0]}` : `Uploaded ${r.profiles} profile(s), ${r.sessions} drive(s), ${r.events} readings.`);
+    } catch {
+      setSyncMsg("Could not check or upload waiting data.");
     } finally {
       setSyncing(false);
     }
@@ -200,9 +213,11 @@ export function SettingsView(props: {
         {d.hasActiveSession ? <Text style={st.note}>End and save the current drive before editing.</Text> : null}
       </Card>
       </> : null}
-      {assistantPage ? <SensiProviderSettings page={assistantPage} navigate={navigate}
-        driverId={d.driver?.id ?? null} accountBlocked={d.hasActiveSession || !!sf.check || !!sf.demo}
-        blocked={d.hasActiveSession || !!sf.check || !!sf.demo || sf.monitoring === 'active'} /> : null}
+      {page === 'assistant' ? <SettingsGroup>
+        <SettingsRow title="Voice & Language" onPress={() => navigate('sensi_voice')} />
+        <SettingsRow divider title="Safety Testing" onPress={() => navigate('safety_testing')} />
+        <SettingsRow divider title="Diagnostics" onPress={() => navigate(__DEV__ ? 'developer' : 'voicecheck_testing')} />
+      </SettingsGroup> : null}
       {page === 'sensi_voice' ? <>
       <Card>
         <Text style={st.note}>Sensi checks how you feel after confirmed sensor events. You can answer by voice, typing or buttons. Calling your saved contact requires your explicit agreement.</Text>
@@ -231,19 +246,20 @@ export function SettingsView(props: {
         <Text style={st.note}>
           Speech is processed on this phone. Audio follows the current speaker or Bluetooth route and the device volume.
           Use Voice to choose an installed system voice. Optional Premium or Enhanced voices can be downloaded in iPhone Settings → Accessibility → Read & Speak → Voices.
-          VoiceCheck recognition remains offline; no models are downloaded during a check.
+          VoiceCheck recognition stays on this phone.
         </Text>
       </Card>
       </> : null}
       {page === 'safety' ? <>
-      <Btn title="Safety Testing" onPress={() => navigate('safety_testing')} />
-      <Card><SectionTitle>Safety checks</SectionTitle>
-        <Text style={st.note}>Warnings use your driver's current thresholds. Voice, typing and buttons remain available.</Text>
-        <Text style={st.note}>Oxygen is an estimate. A normal-looking value is not proof of normal oxygen.</Text>
-        <Btn title="Threshold details" kind="ghost" onPress={() => navigate('thresholds')} />
-      </Card>
-      <CalibrationCard drive={d} />
+      <SettingsGroup>
+        <SettingsRow title="Safety Testing" onPress={() => navigate('safety_testing')} />
+        <SettingsRow divider title="Threshold details" onPress={() => navigate('thresholds')} />
+        <SettingsRow divider title="Calibrate with a Reference Device" onPress={() => navigate('calibration')} />
+      </SettingsGroup>
+      <Text style={st.note}>Warnings use your driver's current thresholds. Voice, typing and buttons remain available.</Text>
+      <Text style={st.note}>Oxygen is an estimate. A normal-looking value is not proof of normal oxygen.</Text>
       </> : null}
+      {page === 'calibration' ? <CalibrationCard drive={d} /> : null}
       {page === 'thresholds' ? <>
       <Card>
         <SectionTitle>Safety checks</SectionTitle>
@@ -321,52 +337,20 @@ export function SettingsView(props: {
 
       </> : null}
       {page === 'data' ? <>
-      <Card>
-        <SectionTitle>What to save</SectionTitle>
-        {MODES.map((m) => (
-          <Pressable
-            key={m.key}
-            accessibilityRole="radio"
-            accessibilityState={{ selected: d.storageMode === m.key, disabled: d.hasActiveSession }}
-            disabled={d.hasActiveSession}
-            onPress={() => void d.setStorageMode(m.key)}
-            style={[st.mode, d.storageMode === m.key && st.modeOn, d.hasActiveSession && { backgroundColor: tokens.disabledSurface }]}
-          >
-            <View style={[st.radio, d.storageMode === m.key && st.radioOn]} />
-            <View style={{ flex: 1, gap: 3 }}>
-              <Text style={st.modeTitle}>{m.title}</Text>
-              <Text style={st.modeBody}>{m.body}</Text>
-            </View>
-          </Pressable>
-        ))}
-        {d.hasActiveSession ? <Text style={st.note}>Applies from the next drive.</Text> : null}
-      </Card>
-
-      <Card>
-        <SectionTitle>Cloud</SectionTitle>
-        <Text style={st.note}>
-          Drives stream to the dashboard live while you have signal. Anything recorded offline waits on the phone; upload it here.
-        </Text>
-        {d.live?.legacySchema ? (
-          <Text style={[st.note, { color: C.warn }]}>
-            The database is missing the v3 update, so some live details (link state, alerts, archives) aren't uploaded yet.
-          </Text>
-        ) : null}
-        <Btn title="Upload waiting profiles and drives" kind="ghost" busy={syncing} onPress={uploadBacklog} />
-        {syncMsg ? <Text style={st.note}>{syncMsg}</Text> : null}
-      </Card>
-
-      <Card>
-        <SectionTitle>Your data</SectionTitle>
-        <Btn title="Review Introduction & Setup" kind="ghost" onPress={props.onShowIntro} />
-        <Text style={st.note}>
-          To delete one driver: go back to "Who's driving?", long-press them, and choose Delete. To delete one drive: open it
-          in History. Deleting removes it here and on the dashboard.
-        </Text>
-        <Btn
-          title="Wipe all data on this phone"
-          kind="danger"
-          disabled={d.hasActiveSession}
+      <SectionTitle>Data Storage</SectionTitle>
+      <SettingsGroup>
+        <SettingsRow title="What to Save" subtitle={MODES.find(mode => mode.key === d.storageMode)?.title} onPress={() => navigate('what_to_save')} />
+      </SettingsGroup>
+      <SectionTitle>Cloud & Sync</SectionTitle>
+      <SettingsGroup>
+        <SettingsRow title="Cloud Synchronization" subtitle={d.live?.lastError || waiting && (waiting.profiles + waiting.sessions + waiting.events) > 0
+          ? 'Waiting to sync' : d.live?.lastPushAt ? 'Dashboard reached' : undefined}
+          onPress={() => navigate('cloud_sync')} />
+      </SettingsGroup>
+      <SectionTitle>Your data</SectionTitle>
+      <SettingsGroup>
+        <SettingsRow title="Review Introduction & Setup" onPress={props.onShowIntro} />
+        <SettingsRow divider title="Delete Local Data" subtitle="Also requests deletion from the dashboard" tone="danger" action disabled={d.hasActiveSession}
           onPress={() =>
             Alert.alert(
               'Wipe everything?',
@@ -388,9 +372,29 @@ export function SettingsView(props: {
                 },
               ],
             )
-          }
-        />
-      </Card>
+          } />
+      </SettingsGroup>
+      </> : null}
+      {page === 'what_to_save' ? <>
+        <SettingsGroup>
+          {MODES.map((m, index) => <SettingsRow key={m.key} divider={index > 0}
+            title={m.title} subtitle={m.body} selected={d.storageMode === m.key} disabled={d.hasActiveSession}
+            onPress={() => void d.setStorageMode(m.key)} />)}
+        </SettingsGroup>
+        {d.hasActiveSession ? <Text style={st.note}>Applies from the next drive.</Text> : null}
+      </> : null}
+      {page === 'cloud_sync' ? <>
+        <SettingsGroup>
+          <SettingsRow title="Upload waiting profiles and drives" disabled={syncing} onPress={uploadBacklog} />
+          {waiting ? <>
+            <SettingsRow divider title="Waiting profiles" subtitle={String(waiting.profiles)} />
+            <SettingsRow divider title="Waiting drives" subtitle={String(waiting.sessions)} />
+            <SettingsRow divider title="Waiting readings" subtitle={String(waiting.events)} />
+          </> : null}
+        </SettingsGroup>
+        <Text style={st.note}>Drives stream to the dashboard live while you have signal. Anything recorded offline waits on the phone; upload it here.</Text>
+        {d.live?.lastError ? <Text style={[st.note, { color: C.warn }]}>{d.live.lastError}</Text> : null}
+        {syncMsg ? <Text style={st.note}>{syncMsg}</Text> : null}
       </> : null}
       {page === 'connections' ? <>
       <Card>
@@ -423,6 +427,8 @@ export function SettingsView(props: {
 
       <Card>
         <SectionTitle>Link health</SectionTitle>
+        <DiagnosticResult title="Packet evidence" status={!d.packets ? 'NOT TESTED' : d.crcErrors || d.lost ? 'WARNING' : 'PASS'}><Text style={st.note}>Packet receipt and error counters only; sensor accuracy is not established.</Text></DiagnosticResult>
+        <DiagnosticDetails title="Packet and link details">
         <Row label="Packets received" value={String(d.packets)} />
         <Row label="Samples per packet" value={d.samplesPerPacket ? `${d.samplesPerPacket} @ ${d.sampleRate ?? '?'} Hz` : '—'} />
         <Row label="Lost packets" value={String(d.lost)} tone={d.lost ? 'warn' : 'good'} />
@@ -445,6 +451,7 @@ export function SettingsView(props: {
         </View>
         {d.driver ? <Text style={st.id}>driver {d.driver.id}</Text> : null}
         {d.session ? <Text style={st.id}>session {d.session.id}</Text> : null}
+        </DiagnosticDetails>
       </Card>
       </> : null}
       {page === 'advanced' ? <>
@@ -456,16 +463,16 @@ export function SettingsView(props: {
         <Btn title="Data & Privacy" kind="ghost" onPress={() => navigate('data')} />
       </Card>
       {__DEV__ ? <Card><SectionTitle>Developer Tools</SectionTitle>
-        <Text style={st.note}>Recognition, model and audio diagnostics. Debug builds only.</Text>
+        <Text style={st.note}>Recognition and audio diagnostics. Debug builds only.</Text>
         <Btn title="Open Developer Tools" kind="ghost" onPress={() => navigate('developer')} />
       </Card> : null}
       </> : null}
       {page === 'developer' && __DEV__ ? <>
+      {HardwareSafetyDiagnostic ? <Card><HardwareSafetyDiagnostic drive={d} /></Card> : null}
       <SettingsGroup>
-        {props.gemmaDiagnostics}
         {SensiVoicePlaybackDiagnostic ? <SensiVoicePlaybackDiagnostic blocked={!!sf.check || !!sf.demo} /> : null}
         {ResponsivenessDiagnostics ? <DiagnosticDetails title="Timing and Spanish recognition">
-          <ResponsivenessDiagnostics blocked={d.hasActiveSession || !!sf.check || !!sf.demo} messages={sf.conversation?.messages} />
+          <ResponsivenessDiagnostics blocked={d.hasActiveSession || !!sf.check || !!sf.demo} />
         </DiagnosticDetails> : null}
       </SettingsGroup>
 
@@ -490,7 +497,7 @@ export function SettingsView(props: {
           <Btn title="Edit Driver Profile" kind="ghost" disabled={d.hasActiveSession || !!sf.check || !!sf.demo} onPress={() => props.onEditProfile(page)} /></> : null}
         {realContact && savedContact.phone ? <Text localize={false} style={st.note}>{d.driver?.emergency_name || '—'} · {maskedContactPhone(savedContact.phone)}</Text> : null}
         {preferenceError ? <Text accessibilityRole="alert" style={st.note}>{preferenceError}</Text> : null}
-        <Text style={st.note}>Simulated readings use current thresholds and are never saved, uploaded, or used for learning. With cloud consent, OpenAI may receive part of your response.</Text>
+        <Text style={st.note}>Simulated readings in Safety Testing use current thresholds and are never saved, uploaded, or used for learning.</Text>
         <InformationButton title="Simulation details" body="Plays fabricated readings through the real warning engine with this driver's thresholds, 4× faster than real time: a few normal seconds, then abnormal ones until the warning flag is raised, confirmed, and the voice check asks if you're OK. The simulated readings are never saved, uploaded, or used for learning." />
         {(
           [
@@ -534,12 +541,7 @@ const makeStyles = (tokens: ThemeTokens) => {
   return StyleSheet.create({
     secondary: { minHeight: 44, justifyContent: 'center', paddingVertical: 10 },
     container: { padding: 16, gap: 14, paddingBottom: 40 },
-    mode: { flexDirection: 'row', gap: 12, padding: 12, borderRadius: 14, borderWidth: 1.5, borderColor: C.line },
-    modeOn: { borderColor: C.brand, backgroundColor: tokens.surfaceMuted },
-    radio: { width: 20, height: 20, borderRadius: 10, borderWidth: 2, borderColor: C.faint, marginTop: 2 },
-    radioOn: { borderColor: C.brand, backgroundColor: C.brand },
     modeTitle: { fontSize: 16, fontWeight: '700', color: C.ink },
-    modeBody: { fontSize: 13, color: C.sub, lineHeight: 18 },
     note: { fontSize: 13, color: C.sub, lineHeight: 18 },
     bench: { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 6 },
     id: { fontSize: 10, color: C.faint },

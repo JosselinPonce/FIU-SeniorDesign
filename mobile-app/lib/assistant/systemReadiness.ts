@@ -1,13 +1,8 @@
-import type { GemmaFileStatus } from './sensiStandby.ts';
-import type { PocState } from '../../modules/gemma-poc/controller.ts';
 import type { OfflineSpeechCapability } from '../../modules/local-foundation-models/index.ts';
 
-export type ReadinessItem = Readonly<{ id: 'sensors' | 'gemma' | 'recognition' | 'responses' | 'manual'; label: string; status: string; detail?: string; percent?: number }>;
+export type ReadinessItem = Readonly<{ id: 'sensors' | 'recognition' | 'responses' | 'manual'; label: string; status: string; detail?: string }>;
 export type VoiceResponseStatus = 'checking' | 'available' | 'unavailable' | 'unknown';
 export type ReadinessSnapshot = Readonly<{
-  file: GemmaFileStatus;
-  installation?: 'checking' | 'installed' | 'missing' | 'unverified' | 'unavailable';
-  runtime: Pick<PocState, 'busy' | 'phase' | 'error' | 'installed' | 'loaded' | 'cleanupRequired' | 'progress'>;
   speech: OfflineSpeechCapability | null;
   installedLocales: readonly string[];
   responses: VoiceResponseStatus;
@@ -29,27 +24,10 @@ export function sensorReadiness(input: SensorReadiness): ReadinessItem {
   return { ...row, status: 'Connected' };
 }
 
-/** Installed means an unchanged approved-artifact receipt, never runtime readiness. */
-export function gemmaReadiness(snapshot: ReadinessSnapshot): ReadinessItem {
-  const row = { id: 'gemma' as const, label: 'Sensi AI (Gemma)' };
-  const runtime = snapshot.runtime;
-  if (runtime.busy && (runtime.progress?.stage === 'download' || !runtime.progress && runtime.phase === 'Downloading and verifying model')) {
-    const { completed, total } = runtime.progress ?? { completed: NaN, total: NaN };
-    const valid = Number.isFinite(completed) && Number.isFinite(total) && completed >= 0 && total > 0 && completed <= total;
-    return { ...row, status: 'Downloading', ...(valid ? { percent: Math.floor(completed / total * 100) } : {}) };
-  }
-  if (snapshot.file === 'present' && snapshot.installation === 'installed') return { ...row, status: 'Installed' };
-  if (snapshot.installation === 'unavailable' || runtime.error || runtime.cleanupRequired) return { ...row, status: 'Unavailable', detail: 'Fixed safety responses remain available.' };
-  if (snapshot.file === 'missing' || snapshot.installation === 'missing') return { ...row, status: 'Not installed' };
-  if (snapshot.file === 'checking' || snapshot.installation === 'checking') return { ...row, status: 'Checking model status' };
-  if (snapshot.file !== 'present') return { ...row, status: 'Unavailable', detail: 'Model status could not be verified.' };
-  return { ...row, status: 'Installation unverified', detail: 'Integrity and runtime availability are checked before use.' };
-}
-
 /** Text and icons share a semantic tone; status words remain the accessible meaning. */
 export function readinessIndicator(status: string) {
-  if (['Connected', 'Available', 'Installed'].includes(status)) return { tone: 'success', icon: 'check-circle' } as const;
-  if (['Connecting', 'Downloading'].includes(status)) return { tone: 'warning', icon: 'clock' } as const;
+  if (['Connected', 'Available'].includes(status)) return { tone: 'success', icon: 'check-circle' } as const;
+  if (['Connecting'].includes(status)) return { tone: 'warning', icon: 'clock' } as const;
   if (['Unavailable', 'Error', 'Connection unavailable'].includes(status)) return { tone: 'danger', icon: 'alert-circle' } as const;
   return { tone: 'neutral', icon: 'minus-circle' } as const;
 }
@@ -83,6 +61,6 @@ export function systemReadiness(input: SensorReadiness, snapshot: ReadinessSnaps
     status: !snapshot.foreground || ['checking', 'unknown'].includes(snapshot.responses) ? 'Checked when a safety check starts'
       : snapshot.responses === 'available' ? 'Available' : 'Unavailable',
     ...(snapshot.responses === 'available' && snapshot.foreground ? { detail: 'Installed voice found; playback is checked at use.' } : {}) };
-  return { overall, items: [sensors, gemmaReadiness(snapshot), recognitionReadiness(snapshot, language), responses,
+  return { overall, items: [sensors, recognitionReadiness(snapshot, language), responses,
     { id: 'manual', label: 'Manual responses', status: 'Available', detail: 'Typed and button responses.' } as ReadinessItem] };
 }

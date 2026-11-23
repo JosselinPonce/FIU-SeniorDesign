@@ -37,14 +37,39 @@ export type Lang = 'en' | 'es';
 
 export type RecognitionPhase = 'preparing' | 'ready' | 'listening' | 'finalizing';
 export type VoiceDelivery = 'acknowledgment' | 'pre_guidance_acknowledgment';
+export type VoiceCaptureMilestones = {
+  cueCompletedMs: number | null;
+  pcmGateOpenedMs: number | null;
+  firstForwardedPcmMs: number | null;
+  finalizationStartedMs?: number | null;
+  firstPartialMs?: number | null;
+  finalResultMs?: number | null;
+  terminalReason?: 'finalization_incomplete' | 'empty_final_after_partial' | 'no_speech_timeout'
+    | 'cancelled' | 'audio_interrupted' | 'audio_setup_failed' | 'recognition_failed'
+    | 'audio_conversion_failed' | 'audio_cleanup_failed' | 'other';
+  partial: boolean;
+  final: boolean;
+  failure: 'audio_ownership' | 'adapter' | null;
+};
+export type VoiceDebugEvent = { captureId: string; question: CheckQuestion } & (
+  { kind: 'opened' } |
+  { kind: 'prompt'; status: 'completed' | 'failed' | 'interrupted' } |
+  { kind: 'recognition'; status: 'accepted' | 'rejected' | 'missing' | 'timeout' | 'stale' | 'cancelled'; final: boolean } |
+  { kind: 'answer'; channel: 'voice' | 'button' | 'typed' | 'none'; cancelled: boolean } |
+  { kind: 'rejected_answer'; channel: 'button' | 'typed'; reason: 'stale' | 'duplicate' | 'invalid' | 'already_answered' } |
+  { kind: 'offer'; decision: ContactCallDecision }
+);
 export type VoiceIO = {
   /** Register microphone-free preparation for the next prompt; never accepts an answer. */
   prepareRecognition?(lang: Lang, captureId: string): void;
   pause?(): Promise<void>;
   speak(text: string, lang: Lang, delivery?: VoiceDelivery): Promise<void | { status: 'unavailable' }>;
   /** Only scoped successful final evidence is accepted; legacy strings are unconfirmed. */
-  listen(lang: Lang, ms: number, hints: string[], captureId: string, onPhase?: (phase: RecognitionPhase) => void): Promise<CoreRecognition | string | null>;
+  listen(lang: Lang, ms: number, hints: string[], captureId: string, onPhase?: (phase: RecognitionPhase) => void,
+    onNativeDebug?: (milestones: VoiceCaptureMilestones) => void): Promise<CoreRecognition | string | null>;
   responseUnavailable?(): void;
+  observeDebug?(event: VoiceDebugEvent): void;
+  observeNativeDebug?(captureId: string, question: CheckQuestion): (milestones: VoiceCaptureMilestones) => void;
   /** Stops any speech or listening in progress. */
   cancel(): void;
 };
@@ -103,6 +128,7 @@ export class VoiceCheck {
   private readonly acknowledgmentPhrasing = createAcknowledgmentPhrasing(this.checkId);
   private captureNumber = 0;
   private captureId = '';
+  private debugManualCapture: string | null = null;
   private consent: { captureId: string; decision: ContactCallDecision; evidence?: CoreRecognition; button?: true; typed?: true } | null = null;
 
   authorizesContact(result: CheckResult): boolean {
@@ -125,10 +151,10 @@ export class VoiceCheck {
   private readonly lang: Lang;
   private readonly name: string;
   // Legacy semantic callback options are accepted for compatibility but never invoked.
-  private readonly options: { basicOfflineAcknowledgments?: boolean; startSemantic?: (context: SemanticContext, budget?: number) => SemanticTask; reAskWaitMs?: number; contactAvailable?: boolean; onQuestion?: (q: CheckQuestion, captureId: string) => void; onAnswer?: (answer: AcceptedSafetyAnswer) => void; cancelAcknowledgment?: () => void; startAcknowledgment?: (context: AcknowledgmentContext) => void; acknowledgment?: (context: AcknowledgmentContext) => string; contactName?: string };
+  private readonly options: { basicOfflineAcknowledgments?: boolean; startSemantic?: (context: SemanticContext, budget?: number) => SemanticTask; reAskWaitMs?: number; contactAvailable?: boolean; onQuestion?: (q: CheckQuestion, captureId: string) => void; onAnswer?: (answer: AcceptedSafetyAnswer) => void; cancelAcknowledgment?: () => void; startAcknowledgment?: (context: AcknowledgmentContext) => void; acknowledgment?: (context: AcknowledgmentContext) => string; contactName?: string; biometricSimulationDemo?: boolean };
 
   constructor(io: VoiceIO, lang: Lang, name: string,
-    options: { basicOfflineAcknowledgments?: boolean; startSemantic?: (context: SemanticContext, budget?: number) => SemanticTask; reAskWaitMs?: number; contactAvailable?: boolean; onQuestion?: (q: CheckQuestion, captureId: string) => void; onAnswer?: (answer: AcceptedSafetyAnswer) => void; cancelAcknowledgment?: () => void; startAcknowledgment?: (context: AcknowledgmentContext) => void; acknowledgment?: (context: AcknowledgmentContext) => string; contactName?: string } = {}) {
+    options: { basicOfflineAcknowledgments?: boolean; startSemantic?: (context: SemanticContext, budget?: number) => SemanticTask; reAskWaitMs?: number; contactAvailable?: boolean; onQuestion?: (q: CheckQuestion, captureId: string) => void; onAnswer?: (answer: AcceptedSafetyAnswer) => void; cancelAcknowledgment?: () => void; startAcknowledgment?: (context: AcknowledgmentContext) => void; acknowledgment?: (context: AcknowledgmentContext) => string; contactName?: string; biometricSimulationDemo?: boolean } = {}) {
     this.io = io;
     this.lang = lang;
     this.name = name;
@@ -140,8 +166,25 @@ export class VoiceCheck {
     return !this.cancelled && this.captureId === captureId && this.buttonAnswer !== null;
   }
 
+  private observe(event: VoiceDebugEvent) {
+    try { this.io.observeDebug?.(event); }
+    catch { /* Diagnostic observers cannot affect the response. */ }
+  }
+
+  private observeManualRejection(scope: AnswerScope | undefined, channel: 'button' | 'typed',
+    reason: 'stale' | 'duplicate' | 'invalid' | 'already_answered') {
+    this.observe({ kind: 'rejected_answer', captureId: scope?.captureId ?? this.captureId,
+      question: scope?.question ?? this.question, channel, reason });
+  }
+
   private submit(answer: ManualAnswer, scope?: AnswerScope): boolean {
-    if (this.cancelled || !this.buttonAnswer || scope && (scope.captureId !== this.captureId || scope.question !== this.question)) return false;
+    if (this.cancelled || !this.buttonAnswer || scope && (scope.captureId !== this.captureId || scope.question !== this.question)) {
+      const stale = this.cancelled || !!scope && (scope.captureId !== this.captureId || scope.question !== this.question);
+      this.observeManualRejection(scope, 'button' in answer ? 'button' : 'typed',
+        stale ? 'stale' : this.debugManualCapture === this.captureId ? 'duplicate' : 'already_answered');
+      return false;
+    }
+    if (this.io.observeDebug) this.debugManualCapture = this.captureId;
     const resolve = this.buttonAnswer;
     this.buttonAnswer = null; // A second manual action cannot win the same question.
     resolve(answer);
@@ -149,13 +192,20 @@ export class VoiceCheck {
   }
 
   answerByButton(r: CheckAnswer, scope?: AnswerScope): boolean {
-    if ((this.question === 'wellness') !== (r === 'ok' || r === 'not_ok')) return false;
+    if ((this.question === 'wellness') !== (r === 'ok' || r === 'not_ok')) {
+      this.observeManualRejection(scope, 'button',
+        scope && (scope.captureId !== this.captureId || scope.question !== this.question) ? 'stale' : 'invalid');
+      return false;
+    }
     return this.submit({ button: r }, scope);
   }
 
   answerByText(text: string, scope: AnswerScope): boolean {
     const trimmed = text.trim();
-    if (!scope || !trimmed || trimmed.length > 500) return false;
+    if (!scope || !trimmed || trimmed.length > 500) {
+      this.observeManualRejection(scope, 'typed', 'invalid');
+      return false;
+    }
     return this.submit({ typed: trimmed }, scope);
   }
 
@@ -180,6 +230,7 @@ export class VoiceCheck {
       this.buttonAnswer = (answer) => resolve(answer);
     });
     this.options.onQuestion?.(question, captureId);
+    this.observe({ kind: 'opened', question, captureId });
     const trace = responsivenessProbe('warning', 'VoiceCheck decision');
     trace('question opened', { captureId, question, locale: this.lang });
     let settled = false;
@@ -201,6 +252,8 @@ export class VoiceCheck {
             }
           }
           catch { playbackFailed = true; }
+          this.observe({ kind: 'prompt', captureId, question,
+            status: this.cancelled || settled ? 'interrupted' : playbackFailed ? 'failed' : 'completed' });
           if (settled || this.cancelled) return { text: null, final: false, captureId, evidence: undefined };
           // The question and choices remain visible. Never accept an unheard
           // contact prompt's queued speech as consent; allow a full button window.
@@ -226,6 +279,15 @@ export class VoiceCheck {
           trace('result received', { captureId, question, settled, cancelled: this.cancelled, captureMatches: this.captureId === captureId,
             status: typeof evidence === 'object' && evidence ? evidence.status : 'missing',
             usable: typeof evidence === 'object' && evidence ? successfulFinal(evidence, captureId) : false });
+          if (this.io.observeDebug) {
+            const recognition = typeof evidence === 'object' ? evidence : null;
+            const status = this.cancelled || recognition?.status === 'cancelled' ? 'cancelled'
+              : settled || this.captureId !== captureId || recognition?.status === 'stale' ? 'stale'
+              : !recognition ? 'missing' : recognition.status === 'timeout' ? 'timeout'
+              : successfulFinal(recognition, captureId) ? 'accepted' : 'rejected';
+            this.observe({ kind: 'recognition', captureId, question, status,
+              final: !!recognition?.finalTranscript.trim() && recognition.finalResultReceived });
+          }
           if (settled || this.cancelled || this.captureId !== captureId) return { text: null, final: false, captureId, evidence: undefined };
           if (typeof evidence === 'string' || evidence === null) return { text: null, final: false, captureId, evidence: undefined };
           if (evidence.status === 'error' || evidence.status === 'incomplete') {
@@ -245,6 +307,8 @@ export class VoiceCheck {
         button,
       ]);
       trace('answer selected', { captureId, question, channel: 'button' in answer ? 'button' : 'typed' in answer ? 'typed' : answer.final ? 'voice' : 'none', cancelled: this.cancelled });
+      this.observe({ kind: 'answer', captureId, question, cancelled: this.cancelled,
+        channel: 'button' in answer ? 'button' : 'typed' in answer ? 'typed' : answer.final ? 'voice' : 'none' });
       if ('button' in answer || 'typed' in answer) this.io.cancel();
       if (this.cancelled || ('button' in answer && answer.button === 'cancel')) throw new Error('Check cancelled');
       // Observation only, after the winning response. Never feeds back into interpretation.
@@ -301,7 +365,11 @@ export class VoiceCheck {
     let result: CheckResult | null = null;
     let statement: string | null = null;
     let unclearStatement: string | null = null;
-    for (const [index, prompt] of [t.ask(this.name, reason, this.options.basicOfflineAcknowledgments), t.again].entries()) {
+    const opening = typeof __DEV__ !== 'undefined' && __DEV__ && this.options.biometricSimulationDemo
+      ? this.lang === 'en' ? 'This safety check was triggered by a simulated biometric abnormality. Are you feeling okay?'
+        : 'Esta comprobación se inició por una anomalía biométrica simulada. ¿Te sientes bien?'
+      : t.ask(this.name, reason, this.options.basicOfflineAcknowledgments);
+    for (const [index, prompt] of [opening, t.again].entries()) {
       const uncertainty = index > 0 && this.options.basicOfflineAcknowledgments && unclearStatement
         ? basicOfflineAcknowledgment(offlineContext(unclearStatement, this.lang), this.lang, 'unclear') : null;
       const heard = await this.ask(uncertainty ? prompt.replace(/^[^.]+\./, uncertainty) : prompt, 'wellness', [...t.hints]);
@@ -382,7 +450,11 @@ export class VoiceCheck {
 
     const contactName = this.options.contactName?.trim();
     const label = contactName && contactName.length <= 60 && /^[\p{L}\p{M} .'’-]+$/u.test(contactName) ? contactName : null;
-    const offer = this.lang === 'en'
+    const offer = typeof __DEV__ !== 'undefined' && __DEV__ && this.options.biometricSimulationDemo
+      ? this.lang === 'en'
+        ? `Should I open the iPhone dialer for ${label ?? 'your saved test contact'} now? This may start a real call.`
+        : `¿Abro ahora el marcador del iPhone para ${label ?? 'tu contacto de prueba guardado'}? Esto puede iniciar una llamada real.`
+      : this.lang === 'en'
       ? label ? `Would you like me to call ${label}?` : 'Would you like me to call your emergency contact?'
       : label ? `¿Quieres que llame a ${label}?` : '¿Quieres que llame a tu contacto de emergencia?';
     const retry = this.lang === 'en'
@@ -398,6 +470,10 @@ export class VoiceCheck {
     const response = [responsePlan.at(-1)!.text];
     if (typeof __DEV__ !== 'undefined' && __DEV__) planTrace('contact_offer', { stage: 'contact_offer', captureId: this.captureId, locale: this.lang });
     if (typeof __DEV__ !== 'undefined' && __DEV__) responsivenessProbe('warning', 'Sensi response composition')('coordinated response', { captureId: this.captureId, question: 'contact_offer', source: 'sentence_plan', locale: this.lang });
+    const offerResult = (decision: ContactCallDecision) => {
+      this.observe({ kind: 'offer', captureId: this.captureId, question: 'contact_offer', decision });
+      return { ...result, contactCall: decision };
+    };
     for (const prompt of [response, retry]) {
       let heard: Awaited<ReturnType<VoiceCheck['ask']>>;
       try {
@@ -405,18 +481,18 @@ export class VoiceCheck {
       } catch (error) {
         if (this.cancelled) throw error;
         // An unavailable follow-up must not erase the driver's NOT OK answer.
-        return { ...result, contactCall: 'unconfirmed_offer' };
+        return offerResult('unconfirmed_offer');
       }
       if ('text' in heard) this.emergencyServices ||= mentionsEmergencyServices(heard.text);
       // End this call branch; a later yes or button tap cannot undo the exclusion.
-      if (this.emergencyServices) return { ...result, contactCall: 'emergency_services' };
+      if (this.emergencyServices) return offerResult('emergency_services');
       const answer = 'button' in heard ? (heard.button === 'call_yes' ? 'yes' : 'no') : understandCallAnswer(heard.text);
       if (answer === 'yes' && ('button' in heard || heard.final)) {
         this.consent = { captureId: this.captureId, decision: 'accepted_offer', ...('button' in heard ? { button: true as const } : 'typed' in heard ? { typed: true as const } : { evidence: heard.evidence }) };
-        return { ...result, contactCall: 'accepted_offer' };
+        return offerResult('accepted_offer');
       }
-      if (answer === 'no') return { ...result, contactCall: 'declined_offer' };
+      if (answer === 'no') return offerResult('declined_offer');
     }
-    return { ...result, contactCall: 'unconfirmed_offer' };
+    return offerResult('unconfirmed_offer');
   }
 }

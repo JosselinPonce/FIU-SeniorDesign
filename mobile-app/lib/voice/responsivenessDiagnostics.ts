@@ -22,6 +22,8 @@ export type TimingDetails = {
   recognitionSummary?: RecognitionSummary;
   englishFinalization?: import('../../modules/local-foundation-models').EnglishFinalizationDiagnostics;
   captureId?: string;
+  episodeId?: string;
+  granted?: boolean; onDevice?: boolean;
   question?: string; phase?: string; source?: string; channel?: string; outcome?: string;
   stage?: string; current?: boolean; captureMatches?: boolean; usable?: boolean;
   hasTranscript?: boolean; hasFinalText?: boolean; transcriptsMatch?: boolean;

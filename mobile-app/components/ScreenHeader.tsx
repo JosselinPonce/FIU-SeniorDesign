@@ -11,8 +11,8 @@ export function ScreenHeader({ title, onBack, backLabel = 'Back', right }: {
   return <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', justifyContent: 'space-between', gap: 8,
     paddingHorizontal: 16, backgroundColor: tokens.background }}>
     {onBack ? <Pressable accessibilityRole="button" accessibilityLabel={backLabel} accessibilityHint={`Back from ${title}`} onPress={onBack}
-      style={{ minWidth: 48, minHeight: 48, justifyContent: 'center', paddingRight: 12 }}>
-      <Text style={{ color: tokens.text, fontSize: 16, fontWeight: '600' }}>‹ {backLabel}</Text>
+      style={{ minWidth: 48, minHeight: 44, justifyContent: 'center', paddingRight: 12 }}>
+      <Text style={{ color: tokens.heartText, fontSize: 16, fontWeight: '600' }}><Text style={{ fontSize: 24 }}>‹</Text> {backLabel}</Text>
     </Pressable> : <View style={{ flex: 1 }} />}
     {right}
   </View>;

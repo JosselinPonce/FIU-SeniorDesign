@@ -1,17 +1,21 @@
 import { LocalizedPressable as Pressable } from '../lib/i18n/native';
 import { View } from 'react-native';
+import { useAppLanguage } from '../lib/i18n/LanguageProvider';
 import { useTheme } from '../lib/theme/ThemeProvider';
 import type { AssistantMode } from '../lib/assistant/mode';
 /** Passive event-only Sensi entry. Never checks or invokes a legacy AI provider. */
 export function DashboardAssistantEntry(props: {
-  mode: AssistantMode | null; language: string; disabled: boolean; error: string; onPress(): void;
+  mode: AssistantMode | null; language: string; disabled: boolean; error: string; onPress(): void; onCollapse?(): void;
 }) {
   const { tokens } = useTheme();
-  const modeLabel = 'Gemma on-device';
+  const { t } = useAppLanguage();
   const status = 'Open Sensi. Sensi responds automatically to safety events';
   const disabled = props.disabled;
   return (
-    <Pressable accessibilityRole="button" accessibilityLabel="Driver Assistant" accessibilityHint={`${modeLabel}. ${status}. Drag in any direction to reposition.`}
+    <Pressable accessibilityRole="button" accessibilityLabel="Driver Assistant" accessibilityHint={`${t(status)}. ${t('Drag to reposition. Touch and hold to collapse Sensi.')}`}
+      onLongPress={props.onCollapse}
+      accessibilityActions={props.onCollapse ? [{ name: 'collapse', label: t('Collapse Sensi') }] : undefined}
+      onAccessibilityAction={event => { if (event.nativeEvent.actionName === 'collapse') props.onCollapse?.(); }}
       accessibilityState={{ disabled }} disabled={disabled} onPress={props.onPress}
       style={({ pressed }) => ({ width: 58, height: 58, borderRadius: 29, alignItems: 'center', justifyContent: 'center',
         backgroundColor: disabled ? tokens.disabledSurface : tokens.primary, opacity: pressed ? .85 : 1,

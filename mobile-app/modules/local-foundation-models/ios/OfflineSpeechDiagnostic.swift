@@ -979,7 +979,7 @@ final class OfflineSpeechDiagnostic {
     ]
 #if DEBUG
     report["captureDiagnostics"] = [
-      "audio": current.captureAudio, "pcm": current.meter.pcmDiagnostics.report(started: current.started),
+      "audio": current.captureAudio, "pcm": current.meter.pcmDiagnostics.report(started: current.timings.origin),
       "nativeError": current.callbackError, "firstPartialCallbackMs": current.firstPartialCallbackMs as Any? ?? NSNull()
     ]
     report["englishFinalizationDebug"] = [

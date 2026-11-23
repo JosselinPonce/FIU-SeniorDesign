@@ -172,6 +172,8 @@ export class SignalAnalyzer {
   private buf: number[] = [];
   private fs = 100;
 
+  get hasWindow() { return this.buf.length >= WINDOW_S * this.fs; }
+
   /** One frame. `continuous` = no frames lost before it and the finger is on. */
   feed(ir: ArrayLike<number>, fs: number, continuous: boolean, esp32Bpm: number | null): SignalQuality {
     if (!continuous || fs !== this.fs) {

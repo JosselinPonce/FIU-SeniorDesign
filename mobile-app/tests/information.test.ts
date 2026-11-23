@@ -65,10 +65,11 @@ test('driver editing is discoverable without changing selection or long-press pa
 });
 test('diagnostic entry and child panels use runtime themes without dropping development or audio guards', () => {
   const shell = source('components/SmartWheelScreen.tsx');
-  assert.match(shell, /gemmaDiagnostics=\{__DEV__ \?/);
+  assert.doesNotMatch(shell, /gemmaDiagnostics/);
+  assert.match(source('components/SettingsView.tsx'), /page === 'developer' && __DEV__/);
   const picker = shell.slice(shell.indexOf('if (!drive.driver)'), shell.indexOf('if (editOpening)'));
   assert.doesNotMatch(picker, /Local AI diagnostics/);
-  assert.match(shell, /disabled=\{drive.hasActiveSession \|\| !!drive.safety.check/);
+  assert.match(source('components/SettingsView.tsx'), /blocked=\{d.hasActiveSession \|\| !!sf.check/);
   for (const path of ['components/SensiVoicePlaybackDiagnostic.tsx', 'modules/gemma-poc/GemmaDiagnostic.tsx', 'modules/local-foundation-models/OfflineSpeechTest.tsx']) {
     const ui = source(path);
     assert.match(ui, /useTheme\(\)/);

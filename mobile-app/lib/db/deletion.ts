@@ -88,6 +88,7 @@ export async function deleteDriverEverywhere(profileId: string): Promise<'cloud'
       await db.runAsync('DELETE FROM drive_alerts WHERE session_id = ?', [s.id]);
       await db.runAsync('DELETE FROM session_archives WHERE session_id = ?', [s.id]);
     }
+    await db.runAsync('DELETE FROM drive_demo_events WHERE profile_id = ?', [profileId]);
     await db.runAsync('DELETE FROM drive_sessions WHERE profile_id = ?', [profileId]);
     await db.runAsync('DELETE FROM driver_profiles WHERE id = ?', [profileId]);
     await db.runAsync("DELETE FROM app_settings WHERE key = ?", [`ack:${profileId}`]);
@@ -101,6 +102,7 @@ export async function deleteDriveEverywhere(sessionId: string): Promise<'cloud' 
     await db.runAsync('DELETE FROM telemetry_events WHERE session_id = ?', [sessionId]);
     await db.runAsync('DELETE FROM drive_alerts WHERE session_id = ?', [sessionId]);
     await db.runAsync('DELETE FROM session_archives WHERE session_id = ?', [sessionId]);
+    await db.runAsync('DELETE FROM drive_demo_events WHERE session_id = ?', [sessionId]);
     await db.runAsync('DELETE FROM drive_sessions WHERE id = ?', [sessionId]);
   });
   return deleteOrQueue({ table: 'drive_sessions', id: sessionId, files: [archivePath(sessionId)] });
@@ -114,6 +116,6 @@ export async function wipeEverything(): Promise<{ drivers: number; queued: numbe
   let queued = 0;
   for (const d of drivers) if ((await deleteDriverEverywhere(d.id)) === 'queued') queued += 1;
   // Anything orphaned (e.g. sessions of a profile deleted by an older build).
-  await db.execAsync('DELETE FROM telemetry_events; DELETE FROM drive_alerts; DELETE FROM session_archives; DELETE FROM drive_sessions;');
+  await db.execAsync('DELETE FROM telemetry_events; DELETE FROM drive_alerts; DELETE FROM session_archives; DELETE FROM drive_demo_events; DELETE FROM drive_sessions;');
   return { drivers: drivers.length, queued };
 }

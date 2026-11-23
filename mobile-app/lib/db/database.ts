@@ -18,7 +18,7 @@ export const DB_NAME = 'smart_wheel.db';
  * version the device is on, so an existing install keeps its recorded drives
  * instead of being wiped.
  */
-export const SCHEMA_VERSION = 6;
+export const SCHEMA_VERSION = 7;
 
 let dbPromise: Promise<SQLite.SQLiteDatabase> | null = null;
 
@@ -241,6 +241,35 @@ async function migrate(db: SQLite.SQLiteDatabase): Promise<void> {
         FOREIGN KEY (profile_id) REFERENCES driver_profiles (id) ON DELETE CASCADE
       );
       CREATE INDEX IF NOT EXISTS idx_history_profile ON threshold_history (profile_id, at);
+    `);
+  }
+
+  if (current < 7) {
+    await db.execAsync(`
+      CREATE TABLE IF NOT EXISTS drive_demo_events (
+        id TEXT PRIMARY KEY NOT NULL,
+        episode_id TEXT NOT NULL UNIQUE,
+        session_id TEXT NOT NULL REFERENCES drive_sessions (id) ON DELETE CASCADE,
+        profile_id TEXT NOT NULL REFERENCES driver_profiles (id) ON DELETE CASCADE,
+        source TEXT NOT NULL DEFAULT 'hardware_biometric_simulation' CHECK (source = 'hardware_biometric_simulation'),
+        scenario TEXT NOT NULL CHECK (scenario IN ('high_hr', 'low_spo2')),
+        mode TEXT NOT NULL CHECK (mode IN ('automatic', 'manual')),
+        confirmed_at TEXT NOT NULL,
+        measured_at TEXT NOT NULL,
+        actual_value REAL NOT NULL,
+        simulated_value REAL NOT NULL,
+        applied_offset REAL NOT NULL CHECK (applied_offset >= 0),
+        warning_threshold REAL NOT NULL,
+        threshold_source TEXT NOT NULL CHECK (threshold_source IN ('profile_estimate', 'baseline_informed', 'standard')),
+        acknowledgment_adjusted INTEGER NOT NULL CHECK (acknowledgment_adjusted IN (0, 1)),
+        confirmation_level TEXT NOT NULL CHECK (confirmation_level IN ('warning', 'critical')),
+        slots INTEGER NOT NULL CHECK (slots = 5),
+        accepted_slots INTEGER NOT NULL CHECK (accepted_slots BETWEEN 4 AND slots),
+        abnormal_slots INTEGER NOT NULL CHECK (abnormal_slots <= accepted_slots AND abnormal_slots * 5 >= accepted_slots * 4),
+        sensi_outcome TEXT CHECK (sensi_outcome IN ('ok', 'not_ok', 'no_response')),
+        sync_status TEXT NOT NULL DEFAULT 'pending' CHECK (sync_status = 'pending')
+      );
+      CREATE INDEX IF NOT EXISTS idx_demo_events_session ON drive_demo_events (session_id, confirmed_at);
     `);
   }
 

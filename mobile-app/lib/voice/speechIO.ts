@@ -112,15 +112,20 @@ async function bestVoice(lang: Lang, strict = false): Promise<string | undefined
   return voiceCache[lang] ?? undefined;
 }
 
-/** Ask for microphone + speech permission ahead of time (at drive start), so
- *  the first emergency is never blocked by a permission dialog. */
-export async function prepareVoice(): Promise<{ granted: boolean; onDevice: boolean }> {
+let voicePreparation: ReturnType<typeof requestVoiceReadiness> | undefined;
+
+async function requestVoiceReadiness(): Promise<{ granted: boolean; onDevice: boolean }> {
   try {
     const p = await ExpoSpeechRecognitionModule.requestPermissionsAsync();
     return { granted: p.granted, onDevice: ExpoSpeechRecognitionModule.supportsOnDeviceRecognition() };
   } catch {
     return { granted: false, onDevice: false };
   }
+}
+
+/** Share an in-flight permission check across callers without caching permission state. */
+export function prepareVoice() {
+  return voicePreparation ??= requestVoiceReadiness().finally(() => { voicePreparation = undefined; });
 }
 
 /** Loud prompt mode (see header). No-op off iOS. */
@@ -302,9 +307,16 @@ function createPhoneVoiceIO(strictSelectedVoice: boolean): VoiceIO {
       }
     },
 
-    async listen(lang, ms, hints, captureId, onPhase) {
+    async listen(lang, ms, hints, captureId, onPhase, onNativeDebug) {
       const timing = responsivenessProbe('warning', 'recognition');
       const epoch = cancelEpoch;
+      const reportMilestones: NonNullable<typeof onNativeDebug> = milestones => {
+        try { onNativeDebug?.(milestones); }
+        catch { /* Debug evidence cannot change recognition. */ }
+      };
+      const reportFailure = (failure: 'audio_ownership' | 'adapter') => reportMilestones({
+        cueCompletedMs: null, pcmGateOpenedMs: null, firstForwardedPcmMs: null, partial: false, final: false, failure,
+      });
       const traceEarlyExit = (reason: string, adapterStatus: string) => {
         if (Platform.OS === 'ios' && typeof __DEV__ !== 'undefined' && __DEV__) {
           timing('capture summary', { captureId, recognitionSummary: {
@@ -315,6 +327,7 @@ function createPhoneVoiceIO(strictSelectedVoice: boolean): VoiceIO {
       };
       try { await acquire(); }
       catch (error) {
+        reportFailure('audio_ownership');
         traceEarlyExit('ownership_rejected', epoch === cancelEpoch ? 'error' : 'stale');
         timing('adapter acquisition rejected', { captureId, stage: 'ownership', current: epoch === cancelEpoch });
         throw error;
@@ -368,6 +381,25 @@ function createPhoneVoiceIO(strictSelectedVoice: boolean): VoiceIO {
             nativeRevision: result.nativeRevision, ...(result.sessionAlignment ? { sessionAlignment: result.sessionAlignment } : {}), cueFailed: !!result.listeningCueError,
             outputVolume: result.audioOutputVolume, outputRoute: result.audioOutputRoute?.join(', '),
             nativeMs: result.totalTimeMs, preparationMs: result.preparationTimeMs, listeningMs: result.listeningTimeMs, finalizingMs: result.finalizationTimeMs });
+          if (onNativeDebug) reportMilestones({
+            cueCompletedMs: result.nativeTimingMs?.cueCompleted ?? null,
+            pcmGateOpenedMs: result.nativeTimingMs?.listeningGateOpened ?? null,
+            firstForwardedPcmMs: result.captureDiagnostics?.pcm?.firstForwardedMs ?? null,
+            finalizationStartedMs: result.nativeTimingMs?.finalizationStarted ?? null,
+            firstPartialMs: result.nativeTimingMs?.firstPartialReceived ?? null,
+            finalResultMs: result.nativeTimingMs?.finalResultReceived ?? null,
+            terminalReason: (() => {
+              switch (result.captureTerminalReason) {
+                case 'finalization_incomplete': case 'empty_final_after_partial': case 'no_speech_timeout':
+                case 'cancelled': case 'audio_interrupted': case 'audio_setup_failed': case 'recognition_failed':
+                case 'audio_conversion_failed': case 'audio_cleanup_failed': return result.captureTerminalReason;
+                default: return 'other';
+              }
+            })(),
+            partial: result.firstPartialTimeMs != null,
+            final: !!result.finalTranscript?.trim() && result.finalResultReceived === true,
+            failure: null,
+          });
           stage = 'result_mapping';
           const evidence = recognitionEvidence(captureId, { ...result,
             status: result.locale === LOCALE[lang] && result.requiresOnDeviceRecognition === true ? result.status : 'error',
@@ -396,6 +428,7 @@ function createPhoneVoiceIO(strictSelectedVoice: boolean): VoiceIO {
             transcriptsMatch: evidence.transcript?.trim() === evidence.finalTranscript?.trim() });
           return evidence;
         } catch {
+          reportFailure('adapter');
           traceEarlyExit('native_adapter_failed', epoch === cancelEpoch ? 'error' : 'stale');
           timing('adapter outcome', { captureId, stage, status: epoch === cancelEpoch ? 'error' : 'stale', reason: 'native_adapter_failed', current: epoch === cancelEpoch });
           return recognitionEvidence(captureId, { status: 'error', reason: 'native_adapter_failed', transcript: '', isFinal: false }, epoch === cancelEpoch);

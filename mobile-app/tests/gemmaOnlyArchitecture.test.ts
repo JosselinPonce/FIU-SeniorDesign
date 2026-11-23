@@ -32,18 +32,16 @@ test('Sensi presentation is independent of provider selection; generative classi
   const hook = read('lib/hooks/useDriveSession.ts');
   assert.match(hook, /assistantMode: \(\) => SENSI_MODE/); assert.match(hook, /voiceIO: phoneSensiVoiceIO/);
   assert.doesNotMatch(hook, /setSafetyAssistantMode|safetyAssistantMode\.current/);
-  assert.match(hook, /startAcknowledgment: VOICECHECK_BASIC_OFFLINE \? undefined : phoneSensiAcknowledgment/);
+  assert.doesNotMatch(hook, /phoneSensiRouting|startAcknowledgment:/);
   assert.doesNotMatch(hook, /startSemantic:|beginGemmaWarm:/);
   assert.doesNotMatch(read('lib/voice/voiceCheck.ts'), /semanticCombinedDecision|waitForSemantic|options\.startSemantic/);
   assert.doesNotMatch(read('components/SmartWheelScreen.tsx'), /assistantModeSettings|modeSettings|selectAssistantMode|LocalAITest|<DriverAssistant/);
 });
-test('Settings exposes local provider preferences in Release while retaining voices, rehearsal and diagnostics', () => {
+test('Settings exposes built-in voice, rehearsal and diagnostics without provider menus', () => {
   const settings = read('components/SettingsView.tsx');
-  assert.doesNotMatch(settings, /ASSISTANT_MODES|Assistant Mode|Connected AI|Local AI|DemoAuthPanel|PHONE_CONNECTED_READINESS|onAssistantModeChange/);
-  for (const term of ['Sensi Assistant', '<VoicePicker', 'd.rehearseVoice()', 'props.gemmaDiagnostics']) assert.ok(settings.includes(term), term);
-  assert.match(read('components/SmartWheelScreen.tsx'), /const GemmaDiagnostic = __DEV__ \?/);
-  assert.match(settings, /<SensiProviderSettings/);
-  assert.match(read('components/SensiProviderSettings.tsx'), /__DEV__ \? <SettingsRow divider title="Diagnostics"/);
+  assert.doesNotMatch(settings, /SensiProviderSettings|AI Response Mode|sensi_gemma|gemmaDiagnostics/);
+  for (const term of ['<VoicePicker', 'd.rehearseVoice()', 'SpeechCapabilityStatus', 'Diagnostics']) assert.ok(settings.includes(term), term);
+  assert.doesNotMatch(read('components/SmartWheelScreen.tsx'), /GemmaDiagnostic|gemmaOpen/);
 });
 test('retired implementations are removed from production locations, and no ordinary conversation UI remains', () => {
   for (const path of ['components/DriverAssistant.tsx', 'components/DemoAuthPanel.tsx', 'modules/local-foundation-models/LocalAITest.tsx', 'modules/local-foundation-models/VoiceConversationTest.tsx',
@@ -60,7 +58,8 @@ test('general notices, optional model continuation and isolated non-AI Supabase 
   assert.match(read('components/SmartWheelScreen.tsx'), /!setupState.ready && !ongoing/);
   assert.match(read('lib/onboarding/setup.ts'), /!this.state.notices \|\| !this.state.terms/);
   assert.match(read('lib/onboarding/setup.ts'), /async continueWithoutGemma/);
-  assert.match(read('components/Onboarding.tsx'), /Continue Without Gemma/);
+  assert.doesNotMatch(read('components/Onboarding.tsx'), /Gemma|OpenAI/);
+  assert.doesNotMatch(read('lib/onboarding/builtInPhone.ts'), /gemmaPoc|provision\(/);
   assert.match(read('components/DemoStartup.tsx'), /sensiCloudAuth.restore/);
   assert.match(read('components/DemoStartup.tsx'), /return <>{children}<\/>/);
   for (const file of ['profileSync', 'liveSync', 'deletion']) {

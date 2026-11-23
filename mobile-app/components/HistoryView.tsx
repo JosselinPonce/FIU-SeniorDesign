@@ -12,10 +12,11 @@ import { ActivityIndicator, RefreshControl, ScrollView, StyleSheet, View } from 
 
 import * as repo from '../lib/db/repositories';
 import { deleteDriveEverywhere } from '../lib/db/deletion';
-import type { DriveAlertRow, RobustSessionStats, SessionSummary } from '../lib/db/repositories';
+import type { DriveAlertRow, DriveDemoEventRow, RobustSessionStats, SessionSummary } from '../lib/db/repositories';
 import { archiveInfo, unfoldSession, type ArchiveInfo } from '../lib/archive/archiveStore';
 import type { Archive } from '../lib/archive/codec';
 import { Btn, Card, Pill, Row, SectionTitle, fmtBytes, fmtDuration, fmtNum } from './ui';
+import { RecordedVitals } from './RecordedVitals';
 import { Waveform } from './charts';
 
 const KIND: Record<string, string> = {
@@ -42,6 +43,8 @@ function Detail(props: { session: SessionSummary; onBack: () => void }) {
   const st = makeStyles(tokens);
   const [stats, setStats] = useState<RobustSessionStats | null>(null);
   const [alerts, setAlerts] = useState<DriveAlertRow[]>([]);
+  const [demoEvents, setDemoEvents] = useState<DriveDemoEventRow[]>([]);
+  const [demoLoadFailed, setDemoLoadFailed] = useState(false);
   const [info, setInfo] = useState<ArchiveInfo | null>(null);
   const [archive, setArchive] = useState<Archive | null>(null);
   const [unfolding, setUnfolding] = useState(false);
@@ -55,6 +58,14 @@ function Detail(props: { session: SessionSummary; onBack: () => void }) {
       setInfo(await archiveInfo(s.id));
     })();
   }, [s.id]);
+
+  useEffect(() => {
+    let current = true;
+    void repo.demoEventsForSession(s.id, s.profile_id).then(events => {
+      if (current) { setDemoEvents(events); setDemoLoadFailed(false); }
+    }).catch(() => { if (current) setDemoLoadFailed(true); });
+    return () => { current = false; };
+  }, [s.id, s.profile_id]);
 
   async function unfold() {
     setUnfolding(true);
@@ -103,18 +114,23 @@ function Detail(props: { session: SessionSummary; onBack: () => void }) {
         )}
         <SectionTitle>Oxygen (SpO₂)</SectionTitle>
         {stats && stats.spo2.count > 0 ? (
-          <View style={st.big3}>
-            <Big label="Realistic low" value={`${fmtNum(stats.spo2.p05)}%`} color={C.oxygen} />
-            <Big label="Typical" value={`${fmtNum(stats.spo2.median)}%`} color={C.ink} />
-            <Big label="Realistic high" value={`${fmtNum(stats.spo2.p95)}%`} color={C.oxygen} />
-          </View>
+          <>
+            <View style={st.big3}>
+              <Big label="Realistic low" value={`${fmtNum(stats.spo2.p05)}%`} color={C.oxygen} />
+              <Big label="Typical" value={`${fmtNum(stats.spo2.median)}%`} color={C.ink} />
+              <Big label="Realistic high" value={`${fmtNum(stats.spo2.p95)}%`} color={C.oxygen} />
+            </View>
+            <Text style={st.note}>Absolute min–max: {fmtNum(stats.spo2.min)}–{fmtNum(stats.spo2.max)}% · average {fmtNum(stats.spo2.mean, 1)}%.</Text>
+          </>
         ) : (
           <Text style={st.sub}>—</Text>
         )}
         {stats ? (
-          <Row label="Seconds with a usable reading" value={`${fmtNum(stats.usablePct)}% of ${stats.frames}`} />
+          <Row label="Usable readings" value={`${stats.bpm.count} / ${stats.frames} · ${fmtNum(stats.usablePct)}%`} />
         ) : null}
       </Card>
+
+      <RecordedVitals key={s.id} session={s} />
 
       {alerts.length ? (
         <Card>
@@ -134,6 +150,24 @@ function Detail(props: { session: SessionSummary; onBack: () => void }) {
           </Text>
         </Card>
       ) : null}
+
+      {demoLoadFailed ? <Text style={st.note}>Could not load hardware demo events.</Text> : null}
+      {demoEvents.length ? <Card>
+        <SectionTitle>Simulated Safety Warning — Hardware Demo</SectionTitle>
+        {demoEvents.map(event => {
+          const hr = event.scenario === 'high_hr';
+          const unit = hr ? ' BPM' : '%';
+          return <View key={event.id}>
+            <Row label={hr ? 'High Heart Rate' : 'Low SpO₂'} value={when(event.confirmed_at)} />
+            <Row label={hr ? 'Actual HR' : 'Actual SpO₂ (estimate)'} value={`${fmtNum(event.actual_value, 1)}${unit}`} />
+            <Row label={hr ? 'Simulated HR' : 'Simulated SpO₂'} value={`${fmtNum(event.simulated_value, 1)}${unit}`} />
+            <Row label="Configured warning threshold" value={`${event.warning_threshold}${unit}`} />
+            {event.sensi_outcome ? <Row label="Sensi response" value={event.sensi_outcome === 'ok' ? 'Said OK'
+              : event.sensi_outcome === 'not_ok' ? 'Said not OK' : 'No response'} /> : null}
+            <Row label="Demo event status" value="Saved locally" />
+          </View>;
+        })}
+      </Card> : null}
 
       <Card>
         <SectionTitle>Full waveform</SectionTitle>

@@ -30,5 +30,53 @@ test('shared header menu uses existing preference and setter for all three choic
   }
   const shell=readFileSync(new NodeURL('../components/SmartWheelScreen.tsx',import.meta.url),'utf8');
   const header=shell.slice(shell.indexOf('<View style={st.header}>'),shell.indexOf('<DriverAssistant visible='));
-  assert.match(header,/<AppearanceMenu \/>/); assert.match(header,/onPress=\{switchDriver\}/);
+  assert.match(header,/<DriveProfileMenu/); assert.match(header,/onSwitch=\{switchDriver\}/);
+});
+
+test('profile dropdown reuses preferences and changes dashboard mode without invoking profile actions', () => {
+  const source = readFileSync(new NodeURL('../components/DriveProfileMenu.tsx', import.meta.url), 'utf8');
+  const code = ts.transpileModule(source, { compilerOptions: {
+    module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.ES2022,
+  } }).outputText;
+  for (const development of [true, false]) {
+    let index = 0;
+    const state: unknown[] = [];
+    const calls: string[] = [];
+    const deps: Record<string, any> = {
+      react: { useEffect: (fn: () => void) => fn(), useState: (initial: unknown) => {
+        const i = index++;
+        if (!(i in state)) state[i] = initial;
+        return [state[i], (next: unknown) => { state[i] = next; }];
+      } },
+      'react/jsx-runtime': createRequire(import.meta.url)('react/jsx-runtime'),
+      'react-native': { Modal: 'Modal', View: 'View', ScrollView: 'ScrollView' },
+      '../lib/i18n/native': { LocalizedText: 'Text', LocalizedPressable: 'Pressable' },
+      './LanguageMenu': { useLanguagePicker: () => ({ language: 'en', t: (s: string) => s, open: () => calls.push('language-picker') }) },
+      '../lib/theme/ThemeProvider': { useTheme: () => ({ tokens: {}, preference: 'system', setPreference: (v: string) => calls.push(v) }) },
+      '../lib/ui/profileSummary': { driverInitials: () => 'DS' },
+      './SettingsGroup': { SettingsGroup: 'Group', SettingsRow: 'Row' },
+    };
+    const exports: any = {};
+    new Function('require', 'exports', '__DEV__', code)((id: string) => deps[id], exports, development);
+    const props = { name: 'Demo Sam', dashboardMode: false, blocked: false,
+      onDashboardMode: (demo: boolean) => calls.push(String(demo)), onEdit: () => calls.push('edit'), onSwitch: () => calls.push('switch') };
+    const nodes = (element: any): any[] => Array.isArray(element) ? element.flatMap(nodes)
+      : element?.props ? [element, ...nodes(element.props.children)] : [];
+    const render = () => { index = 0; return nodes(exports.DriveProfileMenu(props)); };
+    const row = (title: string) => render().find(n => n.type === 'Row' && n.props.title === title)?.props;
+    const open = () => render().find(n => n.type === 'Pressable' && n.props.accessibilityLabel.endsWith('Demo Sam')).props.onPress();
+    open();
+    const segment = (label: string) => render().find(n => n.type === 'Pressable' && n.props.accessibilityRole === 'radio' && n.props.children.props.children === label).props;
+    segment('Dark').onPress();
+    row('Language').onPress();
+    if (development) segment('Hardware Demo').onPress();
+    else assert.equal(row('Dashboard Mode'), undefined);
+    assert.deepEqual(calls, development ? ['dark', 'language-picker', 'true'] : ['dark', 'language-picker']);
+    open(); row('Edit Profile').onPress();
+    open(); row('Switch Driver').onPress();
+    assert.deepEqual(calls.slice(-2), ['edit', 'switch']);
+    open();
+    props.blocked = true;
+    assert.equal(render().find(n => n.type === 'Modal').props.visible, false);
+  }
 });

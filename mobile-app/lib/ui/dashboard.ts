@@ -8,6 +8,20 @@ export function vitalPresentation(value: number | null, lastRx: Date | null, con
     : { value, state: 'stale' as const, label: 'Stale · last reading' };
 }
 
+/** A personal-reference comparison is available only for a reliable, current drive reading. */
+export function liveBaselineHeartRate(input: {
+  bpm: number | null;
+  lastRx: Date | null;
+  connected: boolean;
+  now: number;
+  active: boolean;
+  reliable: boolean;
+}) {
+  if (!input.active || !input.reliable) return null;
+  const reading = vitalPresentation(input.bpm, input.lastRx, input.connected, input.now);
+  return reading.state === 'live' ? reading.value : null;
+}
+
 export type WarningBounds = { low?: number; high?: number };
 /** Instantaneous display qualification only; never emits a monitoring episode. */
 export function vitalRangePresentation(value: number | null, lastRx: Date | null, connected: boolean, now: number, bounds?: WarningBounds) {

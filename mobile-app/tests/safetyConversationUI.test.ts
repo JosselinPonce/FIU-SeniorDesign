@@ -179,6 +179,29 @@ for (const [source, expected] of [
   });
 }
 
+test('hardware diagnostic displays a separate named, full-number approval with no automatic action', () => {
+  const { render } = harness(844, true);
+  const confirmCalls: string[] = [];
+  const episodeId = 'hardware-fixture';
+  const conversation = { episodeId, messages: [], finished: true, simulation: true };
+  const tree = render({
+    drive: {
+      safety: { conversation, check: null },
+      hardwareTest: { safety: { conversation }, confirmation: { id: episodeId, name: 'Saved Contact', phone: '+12025550124' } },
+      hardwareTestControls: { confirm: (id: string) => confirmCalls.push(id) },
+    },
+    onContinue() {},
+  });
+  const nodes = walk(tree);
+  assert.ok(nodes.some(n => n.props?.children === 'Real Hardware Safety Test'));
+  assert.equal(nodes.some(n => n.type === 'BasicOfflineStatus'), false);
+  assert.ok(nodes.some(n => n.type === 'Text' && n.props.children?.includes?.('+12025550124')));
+  assert.ok(nodes.some(n => n.props?.children === 'Confirm saved emergency contact'));
+  assert.deepEqual(confirmCalls, []);
+  nodes.find(n => n.props?.title === 'Open iPhone Dialer').props.onPress();
+  assert.deepEqual(confirmCalls, [episodeId]);
+  assert.equal(nodes.some(n => n.type === 'RealContactDemoConfirmation'), false);
+});
 
 test('Center indicator follows published voice phases, including cancellation and playback failure', () => {
   const { render } = harness();
@@ -242,11 +265,11 @@ test('Developer timing tools retain recorded acknowledgment provenance after clo
   assert.equal(value(nodes, 'Last acknowledgment: '), 'Basic Offline');
   const diagnostics = readFileSync(new NodeURL('../components/ResponsivenessDiagnostics.tsx', import.meta.url), 'utf8');
   const settings = readFileSync(new NodeURL('../components/SettingsView.tsx', import.meta.url), 'utf8');
-  assert.match(diagnostics, /<VoiceCheckProviderStatus messages=\{messages\} recordedSource=\{recordedSource\}/);
+  assert.doesNotMatch(diagnostics, /VoiceCheckProviderStatus|Response provider/);
   assert.match(settings, /page === 'developer' && __DEV__/);
 });
 
-test('provider panel sits below the header in live and simulated VoiceCheck at a short iPhone viewport', () => {
+test('built-in VoiceCheck keeps its header, controls and state without a provider panel', () => {
   const { render } = harness(330, false, undefined, 1, 320);
   for (const [episodeId, simulation] of [['live-a', false], ['rehearsal', true], ['live-b', false]] as const) {
     const messages = [{ id: episodeId, role: 'assistant', text: 'Guidance' }];
@@ -258,11 +281,10 @@ test('provider panel sits below the header in live and simulated VoiceCheck at a
       const panel = nodes.find(node => node.type === 'BasicOfflineStatus');
       const indicator = nodes.find(node => node.type?.name === 'VoiceCheckListeningIndicator');
       const subtitle = nodes.find(node => node.props?.children === 'Safety check');
-      assert.equal(panel.props.messages, messages);
+      assert.equal(panel, undefined);
       assert.equal(nodes.some(node => node.type === 'LiveSensiProvider'), false);
       assert.equal(indicator.props.phase, phase);
-      assert.ok(nodes.indexOf(subtitle) < nodes.indexOf(panel));
-      assert.ok(nodes.indexOf(panel) < nodes.indexOf(indicator));
+      assert.ok(nodes.indexOf(subtitle) < nodes.indexOf(indicator));
       assert.ok(nodes.indexOf(indicator) < nodes.findIndex(node => node.type === 'Thread'));
       assert.ok(nodes.indexOf(indicator) < nodes.findIndex(node => node.type === 'Btn'));
       assert.equal(nodes.some(node => node.props?.children === 'Simulation'), simulation);

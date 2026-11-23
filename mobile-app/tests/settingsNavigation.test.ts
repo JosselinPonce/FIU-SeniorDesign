@@ -55,7 +55,7 @@ function harness(development: boolean, active = false, theme = light, settings =
     '../lib/assistant/phoneConnectedReadiness': { PHONE_CONNECTED_READINESS: { verified: false } },
     '../lib/assistant/connectedPilotPolicy': { CONNECTED_PILOT_STATUS: 'pilot' },
   };
-  for (const n of ['SensiProviderSettings', 'SensiCloudAccess','VoiceCheckTesting','SimulationProgress','GemmaModelSettings','SpeechCapabilityStatus','EmergencyDialerDemo','Information','DemoAuthPanel','VoicePicker','CalibrationCard','ThresholdHistory','ResponsivenessDiagnostics','SensiVoicePlaybackDiagnostic']) {
+  for (const n of ['SensiProviderSettings', 'SensiCloudAccess','VoiceCheckTesting','SimulationProgress','GemmaModelSettings','SpeechCapabilityStatus','EmergencyDialerDemo','Information','DemoAuthPanel','VoicePicker','CalibrationCard','ThresholdHistory','ResponsivenessDiagnostics','SensiVoicePlaybackDiagnostic','HardwareSafetyDiagnostic']) {
     deps['./'+n] = { [n === 'Information' ? 'InformationButton' : n]: n };
   }
   const compiled = ts.transpileModule(readFileSync(new NodeURL('../components/SettingsView.tsx', import.meta.url), 'utf8'), {
@@ -88,7 +88,7 @@ test('category controls retain profile/storage/connection callbacks without a pr
   assert.equal(nodes.some(n => n.type === 'SectionTitle' && n.props.children === 'Appearance'),false);
   function open(title: string) { f.render().find(n => n.props?.title === title).props.onPress(); return f.render(); }
   nodes = open('Driver Profile'); nodes.find(n => n.props?.title === 'Edit Driver Profile').props.onPress(); f.back();
-  nodes = open('Data & Privacy'); nodes.find(n => n.type === 'Pressable' && n.key === 'full').props.onPress(); f.back();
+  nodes = open('Data & Privacy'); nodes = open('What to Save'); nodes.find(n => n.type === 'SettingsRow' && n.key === 'full').props.onPress(); f.back(); f.render(); f.back();
   nodes = open('Sensi Assistant'); assert.equal(nodes.some(n => n.type === 'Pressable' && n.key === 'connected'), false); assert.ok(nodes.some(n => n.type === 'ScreenHeading' && n.props.title === 'Sensi Assistant')); f.back();
   nodes = open('Connections'); nodes.find(n => n.type === 'Row' && n.props.label === 'Auto-connect to the Pi').props.value.props.onValueChange(false);
   assert.deepEqual(f.calls, ['edit',['storage','full'],'disconnect',['auto',false]]);
@@ -110,7 +110,8 @@ test('advanced preserves development gates and simulator availability; active-dr
     assert.ok(f.render().some(n => n.props?.title === 'Driver Profile'));
   }
   const f = harness(false,true); f.render().find(n => n.props?.title === 'Data & Privacy').props.onPress();
-  assert.equal(f.render().find(n => n.type === 'Pressable' && n.key === 'full').props.disabled, true);
+  f.render().find(n => n.props?.title === 'What to Save').props.onPress();
+  assert.equal(f.render().find(n => n.type === 'SettingsRow' && n.key === 'full').props.disabled, true);
 });
 test('voice display label includes tier once without changing identifiers', () => {
   assert.equal(voiceDisplayLabel('Zoe (Premium)','Premium'),'Zoe (Premium)');
@@ -146,7 +147,12 @@ test('Safety Testing is nested under Health & Safety; simulator has a single set
   const f = harness(true);
   f.render().find(n => n.props?.title === 'Health & Safety').props.onPress();
   const health = f.render();
-  assert.ok(health.findIndex(n => n.props?.title === 'Safety Testing') < health.findIndex(n => n.type === 'SectionTitle' && n.props.children === 'Safety checks'));
+  const group = health.find(n => n.type === 'SettingsGroup');
+  assert.deepEqual(group.props.children.map((row: any) => row.props.title), ['Safety Testing', 'Threshold details', 'Calibrate with a Reference Device']);
+  assert.ok(!health.some(n => n.type === 'CalibrationCard'));
+  health.find(n => n.props?.title === 'Calibrate with a Reference Device').props.onPress();
+  assert.ok(f.render().some(n => n.type === 'CalibrationCard'));
+  f.back(); f.render();
   health.find(n => n.props?.title === 'Safety Testing').props.onPress();
   const nodes = f.render();
   assert.ok(nodes.some(n => n.type === 'ScreenHeader' && n.props.title === 'Safety Testing'));
@@ -163,7 +169,7 @@ test('onboarding replay retains existing callback and language selection never o
   f.back(); f.render().find(n => n.props?.title === 'Sensi Assistant').props.onPress();
   const languages: string[] = [];
   (f.props.drive as any).updateVoiceCheckLanguage = async (language: string) => { languages.push(language); };
-  f.render().find(n => n.type === 'SensiProviderSettings').props.navigate('sensi_voice');
+  f.render().find(n => n.props?.title === 'Voice & Language').props.onPress();
   const nodes = f.render();
   assert.equal(nodes.some(n => n.props?.title === 'VoiceCheck language'), false);
   await nodes.find(n => n.props?.title === 'Español').props.onPress();
@@ -171,19 +177,17 @@ test('onboarding replay retains existing callback and language selection never o
 });
 
 
-test('Release exposes model maintenance and selected-language capability outside Debug diagnostics', () => {
+test('Release voice settings and diagnostics keep their safety gates and omit model maintenance', () => {
   for (const active of [false, true]) {
-    const f = harness(false, active); f.render().find(n => n.props?.title === 'Sensi Assistant').props.onPress();
-    const overview = f.render().find(n => n.type === 'SensiProviderSettings');
-    assert.equal(overview.props.blocked, active);
-    overview.props.navigate('sensi_gemma');
-    assert.equal(f.render().find(n => n.type === 'ScreenHeading').props.title, 'On-Device Gemma');
-    assert.equal(f.back(), true);
-    assert.equal(f.render().find(n => n.type === 'ScreenHeading').props.title, 'Sensi Assistant');
-    f.render().find(n => n.type === 'SensiProviderSettings').props.navigate('sensi_voice');
+    const f = harness(false, active);
+    f.render().find(n => n.props?.title === 'Sensi Assistant').props.onPress();
+    const overview = f.render();
+    assert.ok(!overview.some(n => /Gemma|AI Response Mode|Cloud Processing/.test(n.props?.title ?? '')));
+    overview.find(n => n.props?.title === 'Voice & Language').props.onPress();
     const nodes = f.render();
     assert.equal(nodes.find(n => n.type === 'SpeechCapabilityStatus').props.language, 'en');
     assert.equal(nodes.some(n => n.type === 'SensiVoicePlaybackDiagnostic'), false);
+    assert.equal(nodes.find(n => n.props?.title === 'Español').props.disabled, active);
   }
 });
 
@@ -259,4 +263,17 @@ test('scenario cards expand one at a time and preview both readings without star
     assert.equal(title('Start safety check'), undefined);
     assert.deepEqual(f.calls, []);
   }
+});
+
+test('Data & Privacy keeps recording and sync routes and redirects a retired storage route', () => {
+  const f = harness(false);
+  f.render().find(n => n.props?.title === 'Data & Privacy').props.onPress();
+  const data = f.render();
+  assert.ok(!data.some(n => n.props?.title === 'Where to Store'));
+  assert.ok(data.some(n => n.props?.title === 'What to Save'));
+  data.find(n => n.props?.title === 'Cloud Synchronization').props.onPress();
+  assert.ok(f.render().some(n => n.props?.title === 'Upload waiting profiles and drives'));
+  const stale = harness(false);
+  (stale.props as any).initialPage = 'where_to_store';
+  assert.ok(stale.render().some(n => n.type === 'ScreenHeader' && n.props.title === 'Data & Privacy'));
 });

@@ -465,14 +465,15 @@ export class SafetyController {
     if (!valid && this.lastValidAt === null) return;
     if (valid) this.lastValidAt = rx.getTime();
     if (valid && this.state.monitoring !== 'active') this.set({ monitoring: 'active' });
-    const events = this.checking ? [] : this.engine.feed({
+    const reading: Reading | null = this.checking ? null : {
       t: rx.getTime(),
       bpm: f.usable ? f.heartRate : null,
       spo2: f.usable ? f.spo2 : null,
       quality,
       finger: f.finger,
       good: sq && sq.hrBeats !== null ? sq.good : null,
-    });
+    };
+    const events = reading ? this.engine.feed(reading) : [];
     for (const e of events) this.handle(e);
     if (this.engine.rejected !== this.state.rejected) this.set({ rejected: this.engine.rejected });
 
@@ -497,6 +498,7 @@ export class SafetyController {
         this.set({ advisory: true });
       }
     }
+    return reading;
   }
 
   private handle(e: EngineEvent) {
@@ -539,7 +541,12 @@ export class SafetyController {
     return this.runCheck(ep, 'rehearsal');
   }
 
-  private async runCheck(ep: Episode, mode: 'live' | 'rehearsal' | 'demo' = 'live'): Promise<CheckResult> {
+  /** Debug callers use a separate controller instance without model or persistence dependencies. */
+  runIsolatedCheck(ep: Episode, onOfferAccepted: () => void, biometricSimulationDemo = false): Promise<CheckResult> | undefined {
+    if (typeof __DEV__ !== 'undefined' && __DEV__) return this.runCheck(ep, 'rehearsal', onOfferAccepted, biometricSimulationDemo);
+  }
+
+  private async runCheck(ep: Episode, mode: 'live' | 'rehearsal' | 'demo' = 'live', onOfferAccepted?: () => void, biometricSimulationDemo = false): Promise<CheckResult> {
     if (ep.kind === 'no_contact' || this.checking) return { outcome: 'ok', urgent: false, channel: 'none', attempts: 0, confidence: null, contactCall: 'not_requested' };
     this.checking = true;
     this.continuation = null;
@@ -578,6 +585,7 @@ export class SafetyController {
     }
     // Report what the voice check is doing so the screen can show it.
     const io: VoiceIO = {
+      observeDebug: base.observeDebug,
       pause: () => base.pause?.() ?? Promise.resolve(),
       prepareRecognition: (lang, id) => { if (current()) base.prepareRecognition?.(lang, id); },
       speak: async (text, lang, delivery) => {
@@ -627,7 +635,7 @@ export class SafetyController {
         const result = base.listen(lang, ms, hints, id, phase => {
           if (pending && epoch === recognitionEpoch && current() && captureId === id && this.voice === voice && voice.isAwaitingResponse(id))
             this.set({ check: { episode: ep, phase, question, captureId: id } });
-        });
+        }, base.observeNativeDebug?.(id, question));
         return result.finally(() => {
           trace('capture settled', { captureId: id, question, current: current(),
             captureMatches: captureId === id, cancelled: epoch !== recognitionEpoch });
@@ -641,6 +649,7 @@ export class SafetyController {
       basicOfflineAcknowledgments: this.deps.basicOfflineAcknowledgments,
       contactAvailable: contact.phone !== null,
       onQuestion: (q, id) => { question = q; captureId = id; },
+      biometricSimulationDemo,
       contactName: selected !== 'core' ? profile?.emergency_name ?? undefined : undefined,
       cancelAcknowledgment: () => acknowledgment?.cancel(),
       startAcknowledgment: context => {
@@ -709,6 +718,7 @@ export class SafetyController {
         else if (!contact.phone) handoff = contact.error ?? 'missing_contact';
         else if (mode !== 'live') {
           handoff = 'simulated';
+          if (result.contactCall === 'accepted_offer') onOfferAccepted?.();
           const intent = this.realDemoIntent;
           if (mode === 'demo' && result.contactCall === 'accepted_offer' && intent && this.simulationOwner === intent.owner && intent.generation === this.generation
               && intent.profileId === profileId && intent.phone === contact.phone && profile?.updated_at === intent.revision) {
@@ -733,7 +743,7 @@ export class SafetyController {
       if (current() && handoff) this.set({ last: { ...last, handoff } });
       if (current()) {
         if (mode === 'live' && canOfferSafetyContinuation(result) && !voice.emergencyServicesExcluded && !handoff) this.continuation = { episodeId: ep.id, current };
-        if (mode !== 'live') dialogue.messages.push({ id: `${ep.id}-${++messageSequence}`, role: 'system', text: simulationCompletion(result, !!this.state.pendingDemoContact) });
+        if (mode !== 'live' && !onOfferAccepted) dialogue.messages.push({ id: `${ep.id}-${++messageSequence}`, role: 'system', text: simulationCompletion(result, !!this.state.pendingDemoContact) });
         dialogue.finished = true; publishDialogue();
       }
       return result;

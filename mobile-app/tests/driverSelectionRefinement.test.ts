@@ -21,7 +21,7 @@ function nodes(tree: any): any[] {
 }
 function harness() {
   const hooks: any[] = []; let cursor = 0;
-  const selected: any[] = [], saved: any[] = [], help: any[] = [];
+  const selected: any[] = [], saved: any[] = [], help: any[] = [], alerts: any[] = [], used: any[] = [];
   let reloads = 0;
   const deps: Record<string, any> = {
     'expo/node_modules/@expo/vector-icons/Feather': { __esModule: true, default: 'FeatherIcon' },
@@ -34,12 +34,13 @@ function harness() {
     },
     'react/jsx-runtime': require('react/jsx-runtime'),
     'react-native': { ...Object.fromEntries(['SafeAreaView','ScrollView','View','Modal'].map(name => [name,name])), StyleSheet: { create: (s: any) => s } },
-    '../lib/i18n/native': { LocalizedText: 'Text', LocalizedPressable: 'Pressable', LocalizedTextInput: 'TextInput', LocalizedAlert: { alert() { throw Error('Unexpected alert'); } } },
+    '../lib/i18n/native': { LocalizedText: 'Text', LocalizedPressable: 'Pressable', LocalizedTextInput: 'TextInput', LocalizedAlert: { alert(...args: any[]) { alerts.push(args); } } },
     '../lib/theme/ThemeProvider': { useTheme: () => ({ tokens: light, colors: presentationColors(light) }) },
     '../lib/theme/tokens': { presentationColors }, '../lib/db/profileMeasurements': measurements,
     '../lib/db/profileEditing': { profileFormValues }, '../lib/ui/profileSummary': summary,
     '../lib/analysis/profileModel': { CONDITIONS, MEDICATIONS, bmiCategory },
     '../lib/db/repositories': { getSetting: async () => 'en', parseList: (value: string) => JSON.parse(value),
+      createProfile: async (input: any) => ({ ...profile, ...input, id: 'created' }),
       updateProfile: async (...args: any[]) => { saved.push(args); } },
     '../lib/db/deletion': { deleteDriverEverywhere() { throw Error('Unexpected deletion'); } },
     '../lib/i18n/LanguageProvider': { useAppLanguage: () => ({ t: (text: string) => text }) },
@@ -57,8 +58,8 @@ function harness() {
   deps['./Information'] = load('Information'); deps['./ScreenHeader'] = load('ScreenHeader');
   const picker = load('DriverPicker').DriverPicker, confirmation = load('DriverConfirmation').DriverConfirmation;
   const profiles = [profile, { ...profile, id: 'driver-b', display_name: 'Blair Test', updated_at: 'revision-b' }];
-  return { profiles, selected, saved, help, reloads: () => reloads,
-    picker() { cursor = 0; return picker({ profiles, onPick: (value: unknown) => selected.push(value), onCreated: async () => { reloads++; } }); },
+  return { profiles, selected, saved, help, alerts, used, reloads: () => reloads,
+    picker(activeDriverId?: string) { cursor = 0; return picker({ profiles, activeDriverId, onUseCreated: (value: any) => used.push(value), onPick: (value: unknown) => selected.push(value), onCreated: async () => { reloads++; } }); },
     confirmation(props: any) { cursor = 0; return confirmation(props); },
     renderElement(element: any) { return element.type(element.props); },
   };
@@ -97,7 +98,7 @@ test('card selection and internal Edit are sibling targets; editing saves the co
   await nodes(tree).find(node => node.props?.title === 'Save driver').props.onPress();
   assert.equal(f.saved.length, 1); assert.equal(f.saved[0][0], 'driver-b'); assert.equal(f.saved[0][1].custom_id, 'INTERNAL-ONLY');
   assert.equal(f.saved[0][2], 'revision-b'); assert.equal(f.reloads(), 1); assert.equal(f.selected.length, 1);
-  tree = f.picker(); assert.ok(nodes(tree).some(node => node.type === 'Text' && node.props.children === 'Add a driver'));
+  tree = f.picker(); assert.ok(nodes(tree).some(node => node.type === 'Text' && node.props.children === 'Add New Driver'));
 });
 
 test('compact confirmation keeps navigation and one-shot confirmation while rendering only masked contact digits', () => {
@@ -165,4 +166,25 @@ test('confirmation uses matching monochrome outline icons rather than emoji, wit
   assert.ok(all.some(node => node.props?.children === 'VoiceCheck language'));
   assert.ok(all.some(node => node.props?.children === 'Emergency contact'));
   assert.ok(all.some(node => node.props?.children === '••• ••• 0123'));
+});
+
+test('an active-driver list opens a blank creation screen and never switches without explicit confirmation', async () => {
+  const f = harness();
+  let tree = nodes(f.picker('driver-a'));
+  assert.ok(tree.some(n => n.props?.children === 'Active driver'));
+  const add = tree.find(n => n.type === 'Pressable' && n.props?.children?.props?.children === 'Add New Driver');
+  add.props.onPress();
+  tree = nodes(f.picker('driver-a'));
+  assert.equal(tree.find(n => n.type?.name === 'ScreenHeader').props.title, 'Create Driver Profile');
+  assert.ok(!tree.some(n => ['driver-a', 'driver-b'].includes(n.key)));
+  const name = tree.find(n => n.props?.placeholder === 'Name *');
+  assert.equal(name.props.value, '');
+  name.props.onChangeText('New driver');
+  await nodes(f.picker('driver-a')).find(n => n.props?.title === 'Create Profile').props.onPress();
+  assert.equal(f.used.length, 0);
+  assert.deepEqual(f.selected, []);
+  const buttons = f.alerts[0][2];
+  assert.equal(buttons[0].style, 'cancel');
+  buttons.find((button: any) => button.text === 'Switch Driver').onPress();
+  assert.equal(f.used[0].id, 'created');
 });

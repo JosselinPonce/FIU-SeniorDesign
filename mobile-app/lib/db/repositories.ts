@@ -481,6 +481,19 @@ export async function eventsForSession(
 }
 
 
+export type RecordedVital = Pick<TelemetryEvent, 'received_at' | 'bpm' | 'spo2'>;
+
+/** Only the processed readings in the requested portion of the saved drive. */
+export async function recordedVitals(sessionId: string, start: number, end: number): Promise<RecordedVital[]> {
+  const db = await getDatabase();
+  return db.getAllAsync<RecordedVital>(
+    `SELECT received_at, bpm, spo2 FROM telemetry_events
+     WHERE session_id = ? AND received_at >= ? AND received_at < ?
+     ORDER BY received_at, sequence_number, id`,
+    [sessionId, new Date(start).toISOString(), new Date(end).toISOString()],
+  );
+}
+
 /** Min/max/average heart rate and SpO2 across a session. */
 export async function sessionStats(sessionId: string): Promise<SessionStats> {
   const db = await getDatabase();
@@ -631,3 +644,64 @@ export async function alertsForSession(sessionId: string): Promise<DriveAlertRow
   ]);
 }
 
+
+
+export type DemoThresholdSource = 'profile_estimate' | 'baseline_informed' | 'standard';
+export type DriveDemoEventInput = {
+  id: string;
+  episode_id: string;
+  session_id: string;
+  profile_id: string;
+  scenario: 'high_hr' | 'low_spo2';
+  mode: 'automatic' | 'manual';
+  confirmed_at: string;
+  measured_at: string;
+  actual_value: number;
+  simulated_value: number;
+  applied_offset: number;
+  warning_threshold: number;
+  threshold_source: DemoThresholdSource;
+  acknowledgment_adjusted: 0 | 1;
+  confirmation_level: 'warning' | 'critical';
+  slots: number;
+  accepted_slots: number;
+  abnormal_slots: number;
+};
+
+export type DriveDemoEventRow = DriveDemoEventInput & {
+  source: 'hardware_biometric_simulation';
+  sensi_outcome: 'ok' | 'not_ok' | 'no_response' | null;
+  sync_status: 'pending';
+};
+
+export async function saveDriveDemoEvent(event: DriveDemoEventInput): Promise<void> {
+  const db = await getDatabase();
+  await db.runAsync(
+    `INSERT INTO drive_demo_events (id, episode_id, session_id, profile_id, scenario, mode, confirmed_at,
+       measured_at, actual_value, simulated_value, applied_offset, warning_threshold, threshold_source,
+       acknowledgment_adjusted, confirmation_level, slots, accepted_slots, abnormal_slots)
+     SELECT ?, ?, s.id, s.profile_id, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+     FROM drive_sessions s WHERE s.id = ? AND s.profile_id = ?
+     ON CONFLICT(episode_id) DO NOTHING`,
+    [event.id, event.episode_id, event.scenario, event.mode, event.confirmed_at,
+      event.measured_at, event.actual_value, event.simulated_value, event.applied_offset, event.warning_threshold,
+      event.threshold_source, event.acknowledgment_adjusted, event.confirmation_level, event.slots,
+      event.accepted_slots, event.abnormal_slots, event.session_id, event.profile_id],
+  );
+}
+
+export async function saveDriveDemoOutcome(event: DriveDemoEventInput, outcome: NonNullable<DriveDemoEventRow['sensi_outcome']>): Promise<void> {
+  const db = await getDatabase();
+  await db.runAsync(
+    `UPDATE drive_demo_events SET sensi_outcome = ? WHERE episode_id = ? AND session_id = ? AND profile_id = ? AND sensi_outcome IS NULL`,
+    [outcome, event.episode_id, event.session_id, event.profile_id],
+  );
+}
+
+export async function demoEventsForSession(sessionId: string, profileId: string): Promise<DriveDemoEventRow[]> {
+  const db = await getDatabase();
+  return db.getAllAsync<DriveDemoEventRow>(
+    'SELECT * FROM drive_demo_events WHERE session_id = ? AND profile_id = ? ORDER BY confirmed_at, id',
+    [sessionId, profileId],
+  );
+}

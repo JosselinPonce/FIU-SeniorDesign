@@ -1,28 +1,20 @@
 import { LocalizedPressable as Pressable, LocalizedText as Text } from '../lib/i18n/native';
 import { useEffect, useRef, useState } from 'react';
-import { AppState, Image, Linking, Modal, SafeAreaView, ScrollView, StyleSheet, View } from 'react-native';
+import { Image, SafeAreaView, ScrollView, StyleSheet, View } from 'react-native';
 import { useTheme } from '../lib/theme/ThemeProvider';
-import type { SensiSetup } from '../lib/onboarding/setup';
-import { GEMMA_TERMS_URL, GEMMA_POLICY_URL } from '../lib/onboarding/setup';
-import { GEMMA_TERMS_TEXT, GEMMA_POLICY_TEXT } from '../lib/onboarding/gemmaTerms';
-import { GEMMA_ARTIFACT } from '../modules/gemma-poc/artifact';
+import type { sensiSetup } from '../lib/onboarding/builtInPhone';
 import { prepareVoice } from '../lib/voice/speechIO';
 import { BrandMark } from './BrandMark';
-import { SettingsGroup, SettingsRow } from './SettingsGroup';
 import { VoicePicker } from './VoicePicker';
 import { Btn } from './ui';
 import { LanguageMenu } from './LanguageMenu';
-import { CloudPrivacyInfo } from './CloudPrivacyInfo';
-import { RESPONSE_MODE_SUBTITLES } from '../lib/ui/sensiPresentation';
-import { SENSI_PROVIDERS } from '../lib/assistant/sensiPreferences';
 import * as repo from '../lib/db/repositories';
 
-const TITLES = ['Welcome to DriveSense', 'How DriveSense Works', 'Safety and Privacy', 'Meet Sensi', 'Gemma License and Download', 'Setup Complete'];
-export function Onboarding({ onDone, onChooseDriver, controller, review = false }: { onDone(): void; onChooseDriver?(): void; controller: SensiSetup; review?: boolean }) {
+const TITLES = ['Welcome to DriveSense', 'How DriveSense Works', 'Safety and Privacy', 'Meet Sensi', 'Setup Complete'];
+export function Onboarding({ onDone, onChooseDriver, controller, review = false }: { onDone(): void; onChooseDriver?(): void; controller: typeof sensiSetup; review?: boolean }) {
   const { tokens: t } = useTheme();
   const [state, setState] = useState(controller.state);
   const [reviewPage, setReviewPage] = useState(0);
-  const [legal, setLegal] = useState<'terms' | 'policy' | null>(null);
   const [linkError, setLinkError] = useState('');
   const [voice, setVoice] = useState<'unknown' | 'granted' | 'denied'>('unknown');
   const [education, setEducation] = useState(0);
@@ -49,32 +41,25 @@ export function Onboarding({ onDone, onChooseDriver, controller, review = false 
     setEducation(next);
     if (!review) savePreference('setup_education_step', String(next));
   }
-  useEffect(() => {
-    const unsubscribe = controller.subscribe(setState);
-    const app = AppState.addEventListener('change', next => { if (next !== 'active' && controller.state.busy) controller.cancel(); });
-    return () => { unsubscribe(); app.remove(); if (controller.state.busy) controller.cancel(); };
-  }, [controller]);
-  const page = review ? reviewPage : state.page;
-  const model = controller.runtime.state;
-  const progress = model.progress;
-  const percent = progress ? Math.min(100, Math.max(0, progress.completed / progress.total * 100)) : 0;
+  useEffect(() => controller.subscribe(setState), [controller]);
+  const page = review ? reviewPage : Math.min(state.page, 4);
   const text = { color: t.textSecondary, fontSize: 16, lineHeight: 24 };
   const heading = { color: t.text, fontSize: 18, fontWeight: '700' as const };
   const point = (title: string, body: string) => <View key={title} style={{ padding: 16, borderRadius: 16, backgroundColor: t.surface, gap: 5 }}><Text style={heading}>{title}</Text><Text style={text}>{body}</Text></View>;
-  function acknowledgment(kind: 'notices' | 'terms', label: string) {
-    const checked = state[kind];
+  function acknowledgment(label: string) {
+    const checked = state.notices;
     return <Pressable accessibilityRole="checkbox" accessibilityLabel={label} accessibilityState={{ checked, disabled: state.busy || review }}
-      disabled={state.busy || review} onPress={() => void controller.acknowledge(kind, !checked)}
+      disabled={state.busy || review} onPress={() => void controller.acknowledge(!checked)}
       style={{ minHeight: 52, padding: 16, borderWidth: 1, borderColor: checked ? t.accent : t.border, borderRadius: 14, flexDirection: 'row', gap: 12, alignItems: 'center' }}>
       <Text accessible={false} style={{ color: t.text, fontSize: 22 }}>{checked ? '☑' : '☐'}</Text><Text style={[text, { flex: 1, color: t.text }]}>{label}</Text>
     </Pressable>;
   }
   const go = (next: number) => { if (review) setReviewPage(next); else void controller.go(next); };
-  const nextDisabled = state.busy || (!review && ((page === 2 && !state.notices) || (page === 4 && !state.modelReady)));
+  const nextDisabled = state.busy || (!review && (page === 2 || page === 4) && !state.notices);
   return <SafeAreaView style={{ flex: 1, backgroundColor: t.background }}>
     <View style={{ paddingHorizontal: 20, paddingVertical: 6, gap: 6 }}>
       <LanguageMenu />
-      <Text style={{ color: t.textSecondary }}>DriveSense setup · {page + 1} of 6{review ? ' · Review' : ''}</Text>
+      <Text style={{ color: t.textSecondary }}>DriveSense setup · {page + 1} of 5{review ? ' · Review' : ''}</Text>
       <View accessible={false} style={{ flexDirection: 'row', gap: 6 }}>{TITLES.map((title, i) => <View key={title} style={{ height: 4, flex: 1, borderRadius: 2, backgroundColor: i <= page ? t.accent : t.border }} />)}</View>
     </View>
     <ScrollView key={page} contentContainerStyle={{ padding: 20, paddingTop: 12, gap: 16, flexGrow: 1 }}>
@@ -104,19 +89,13 @@ export function Onboarding({ onDone, onChooseDriver, controller, review = false 
         {point('A prototype, not a diagnosis', 'DriveSense is a prototype driver-safety system, not a medical device or diagnostic service. Measurements may be inaccurate or temporarily unavailable.')}
         {point('Road safety comes first', 'Prioritize the road. Pull over somewhere safe before interacting with the screen.')}
         {point('Calls require your authorization', 'Emergency-contact phone handoff requires your explicit request or agreement. Opening the iPhone dialer does not guarantee a connected call.')}
-        {point('On-device inference, connected application features', 'Gemma inference runs on your device. Optional, authorized OpenAI acknowledgments send a short safety-check response to the cloud. Other features may use Supabase for authentication, storage or synchronization. Not all data stays on-device.')}
+        {point('On-device safety checks', 'Sensi processes safety-check speech on this phone. Drive recording and dashboard synchronization are separate features.')}
         {point('Your profile and recordings', 'Your profile helps set your starting range. Start Drive records a trip: vitals only by default, or optional full waveform. Existing recording, synchronization and deletion controls remain in Settings.')}
         <Text style={[text, { fontSize: 13 }]}>These are prototype safety and privacy notices, not a legally reviewed agreement.</Text>
-        {acknowledgment('notices', 'I have read and acknowledge these DriveSense safety and privacy notices.')}
+        {acknowledgment('I have read and acknowledge these DriveSense safety and privacy notices.')}
       </> : null}
       {page === 3 ? <>
-        <Text style={text}>Sensi checks how you feel after a confirmed sensor event. Answer by voice, typing or buttons. Core safety guidance and calling consent follow fixed rules in every mode.</Text>
-        <SettingsGroup>
-          {SENSI_PROVIDERS.map((provider, index) => <SettingsRow key={provider.id} divider={index > 0}
-            title={provider.label} subtitle={provider.id === 'automatic' ? 'Uses available providers in order' : RESPONSE_MODE_SUBTITLES[provider.id]} />)}
-        </SettingsGroup>
-        <CloudPrivacyInfo />
-        <Text style={text}>Choose a mode in Sensi Assistant settings. Sign-in and cloud consent are optional, separate choices.</Text>
+        <Text style={text}>Sensi is your built-in driving safety assistant. After a confirmed warning, answer by voice, typing or buttons. Contact assistance requires your explicit authorization.</Text>
         {!review ? <Btn title={voice === 'granted' ? 'Voice permission allowed' : voice === 'denied' ? 'Retry voice permission' : 'Allow voice responses (optional)'}
           disabled={voice === 'granted'} onPress={() => { void prepareVoice().then(result => setVoice(result.granted ? 'granted' : 'denied')); }} /> : null}
         {voice === 'denied' ? <Text style={text}>Voice access is unavailable. Typed and button responses remain available; permission can be changed in system Settings.</Text> : null}
@@ -131,32 +110,7 @@ export function Onboarding({ onDone, onChooseDriver, controller, review = false 
         <VoicePicker lang={voiceLanguage} driverName="" />
       </> : null}
       {page === 4 ? <>
-        {!review ? <Btn title="Continue Without Gemma" kind="ghost" disabled={state.busy || !state.notices} onPress={() => { void controller.continueWithoutGemma().then(done => { if (done) onDone(); }); }} /> : null}
-        <Text style={text}>Gemma 3 270M Instruct · QAT Q4_0 GGUF · approximately 241 MB. Optional download: at least 483 MB free storage required. Download once, then use offline. Existing verified installations are reused.</Text>
-        <Text style={text}>Gemma is subject to Google's Gemma Terms of Use and Prohibited Use Policy. By accepting, you agree to comply with those terms and use restrictions.</Text>
-        <Btn title="Read Gemma Terms of Use" kind="ghost" onPress={() => setLegal('terms')} />
-        <Btn title="Read Gemma Prohibited Use Policy" kind="ghost" onPress={() => setLegal('policy')} />
-        {acknowledgment('terms', 'I accept the Gemma Terms of Use, including the Prohibited Use Policy and its use restrictions.')}
-        <Text selectable style={[text, { fontSize: 12 }]}>{GEMMA_ARTIFACT.filename}</Text>
-        {!review ? <>
-          <Text accessibilityLiveRegion="polite" style={heading}>{state.busy ? model.phase : state.modelReady ? 'Sensi model ready' : state.recovery ? 'Setup needs attention' : 'Ready to install'}</Text>
-          {progress ? <View style={{ gap: 8 }}>
-            <Text style={text}>{progress.stage === 'download' ? 'Downloaded' : 'SHA-256 checked'} {(progress.completed / 1_000_000).toFixed(1)} / {(progress.total / 1_000_000).toFixed(1)} MB · {percent.toFixed(1)}%</Text>
-            <View accessibilityRole="progressbar" accessibilityValue={{ min: 0, max: 100, now: Math.round(percent) }} style={{ height: 8, borderRadius: 4, overflow: 'hidden', backgroundColor: t.border }}>
-              <View style={{ width: `${percent}%`, height: 8, backgroundColor: t.accent }} />
-            </View>
-          </View> : null}
-          <Text style={text}>Verification: {model.installed ? 'complete' : 'required'} · Installation: {model.installed ? 'verified file available' : 'not complete'}</Text>
-          <Text style={text}>Runtime: {state.modelReady ? 'readiness confirmed' : model.loaded ? 'initialized; finishing cleanup' : state.busy && model.phase === 'Loading model' ? 'initializing…' : 'not yet confirmed'}</Text>
-          <Text style={[text, { fontSize: 13 }]}>Keep the app open during setup. An interrupted partial transfer is discarded safely; a retry uses the same storage location. A valid existing model is checked before any download.</Text>
-          <Btn title={state.modelReady ? 'Sensi is ready' : state.error ? 'Retry setup' : 'Accept terms and install Sensi'} disabled={state.busy || state.modelReady || !state.terms || !state.notices} onPress={() => { void controller.prepare(); }} />
-          {state.busy ? <Btn title="Cancel setup operation" kind="ghost" onPress={() => controller.cancel()} /> : null}
-        </> : <Text style={text}>Setup was completed. Gemma is checked before use. Fixed safety responses remain available if the model cannot run.</Text>}
-      </> : null}
-      {page === 5 ? <>
-        {point(review ? 'Setup previously completed' : state.modelReady ? 'Sensi’s offline model is ready' : 'DriveSense is ready', review
-          ? 'Readiness is checked on launch. Safety interactions retain fixed fallback acknowledgments if inference becomes unavailable.'
-          : state.modelReady ? 'The approved model passed integrity verification and initialized successfully on this device. Setup did not start a safety conversation.' : 'Basic safety responses are available without Gemma. You can install the optional model later in Settings.')}
+        {point(review ? 'Setup previously completed' : 'DriveSense is ready', 'Safety checks are available with voice and manual response options.')}
         <Text style={text}>Continue to select an existing driver or create your driver profile. Existing profiles and recordings are preserved.</Text>
       </> : null}
       {review ? <>
@@ -164,31 +118,17 @@ export function Onboarding({ onDone, onChooseDriver, controller, review = false 
         {onChooseDriver ? <Btn title="Choose or create a driver" kind="ghost" onPress={onChooseDriver} /> : null}
       </> : null}
       {state.error && !review ? <Text accessibilityRole="alert" selectable style={{ color: t.danger, fontSize: 16, lineHeight: 24 }}>{state.error}</Text> : null}
-      {linkError && !legal ? <Text accessibilityRole="alert" style={text}>{linkError}</Text> : null}
+      {linkError ? <Text accessibilityRole="alert" style={text}>{linkError}</Text> : null}
     </ScrollView>
     <View style={{ flexDirection: 'row', gap: 12, padding: 20, paddingTop: 12, borderTopWidth: StyleSheet.hairlineWidth, borderColor: t.border }}>
       {page > 0 ? <Btn title="Back" kind="ghost" disabled={state.busy} onPress={() => { if (page === 1 && education > 0) educationPage(education - 1); else go(page - 1); }} style={{ flex: 1 }} /> : null}
-      <Btn title={page === 5 ? 'Continue to DriveSense' : 'Next'} disabled={nextDisabled} style={{ flex: 2 }} onPress={() => {
+      <Btn title={page === 4 ? 'Continue to DriveSense' : 'Next'} disabled={nextDisabled} style={{ flex: 2 }} onPress={() => {
         if (page === 1 && education < 2) educationPage(education + 1);
-        else if (page < 5) go(page + 1);
+        else if (page < 4) go(page + 1);
         else if (review) onDone();
         else void controller.complete().then(done => { if (done) onDone(); });
       }} />
     </View>
-    <Modal visible={legal !== null} animationType="slide" onRequestClose={() => setLegal(null)}>
-      <SafeAreaView style={{ flex: 1, backgroundColor: t.background }}>
-        <ScrollView contentContainerStyle={{ padding: 24, gap: 20 }}>
-          <Text accessibilityRole="header" style={heading}>{legal === 'policy' ? 'Gemma Prohibited Use Policy' : 'Gemma Terms of Use'}</Text>
-          <Text accessibilityRole="link" style={{ color: t.text, textDecorationLine: 'underline' }} onPress={() => {
-            void Linking.openURL(legal === 'policy' ? GEMMA_POLICY_URL : GEMMA_TERMS_URL).catch(() => setLinkError('Could not open the website. The official text is available below.'));
-          }}>Open official Google source</Text>
-          {linkError ? <Text accessibilityRole="alert" style={text}>{linkError}</Text> : null}
-          <Text selectable style={text}>{legal === 'policy' ? GEMMA_POLICY_TEXT : GEMMA_TERMS_TEXT}</Text>
-          <Text style={text}>Official legal text is shown in its original language.</Text>
-        </ScrollView>
-        <View style={{ padding: 20 }}><Btn title="Return to setup" onPress={() => setLegal(null)} /></View>
-      </SafeAreaView>
-    </Modal>
   </SafeAreaView>;
 }
 

@@ -2,24 +2,39 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { URL as NodeURL } from 'node:url';
+import { translateText } from '../lib/i18n/translate.ts';
 import { greetingPosition } from '../lib/ui/launcherGreeting.ts';
-test('single-line pill flips beside launcher and stays inside viewport edges after resize', () => {
-  assert.equal(greetingPosition({x:20,y:100},390,600,130,32).x,86);
-  assert.equal(greetingPosition({x:330,y:100},390,600,130,32).x,192);
-  for(const [width,height] of [[390,600],[600,240],[180,200]]) {
-    for(const icon of [{x:0,y:0},{x:width-58,y:height-58}]) {
-      const p=greetingPosition(icon,width,height,130,32);
-      assert.ok(p.x>=0 && p.x+130<=width); assert.ok(p.y>=0 && p.y+32<=height);
+test('the compact bubble overlaps the upper corner and mirrors on the opposite edge', () => {
+  const left = greetingPosition({ x: 0, y: 100 }, 390, 600, 76, 44);
+  const right = greetingPosition({ x: 332, y: 100 }, 390, 600, 76, 44);
+  assert.deepEqual(left, { x: 48, y: 66 });
+  assert.deepEqual(right, { x: 266, y: 66 });
+  for (const [width, height] of [[320, 500], [393, 630], [430, 730], [600, 190]]) {
+    for (const bubbleHeight of [44, 94, 132]) {
+      for (const icon of [{ x: 0, y: 0 }, { x: width - 58, y: height - 58 }]) {
+        const bubble = greetingPosition(icon, width, height, 152, bubbleHeight);
+        assert.ok(bubble.x >= 6 && bubble.x + 152 <= width - 6);
+        assert.ok(bubble.y >= 6 && bubble.y + bubbleHeight <= height - 6);
+      }
     }
   }
 });
-test('pill stays visible without timers or dismissal and never receives touches', () => {
-  const text=readFileSync(new NodeURL('../components/DraggableSensiLauncher.tsx',import.meta.url),'utf8');
-  assert.doesNotMatch(text,/setTimeout|clearTimeout|claim\(|hideGreeting|greetingVisible|onTouchStart/);
-  assert.match(text,/measured && loaded \? <View pointerEvents="none"/);
-  assert.match(text,/<Text numberOfLines=\{1\}[^>]*>Hi, I'm Sensi!/);
-  const p = greetingPosition({x:60,y:100},180,300,130,32);
-  assert.ok(p.y + 32 < 100, 'uses space above when neither side fits');
+test('greeting follows launcher motion, is dismissible, and has no timer', () => {
+  const text = readFileSync(new NodeURL('../components/DraggableSensiLauncher.tsx', import.meta.url), 'utf8');
+  assert.doesNotMatch(text, /setTimeout|clearTimeout|onTouchStart/);
+  assert.match(text, /translation.addListener\(update\)/);
+  assert.match(text, /accessibilityLabel="Dismiss Sensi greeting" onPress=\{dismissGreeting\}/);
+  assert.ok(text.includes("Hi! I'm\\nSensi!"));
+  assert.equal(translateText("Hi! I'm\nSensi!", 'es'), "¡Hola! ¡Soy\nSensi!");
+  assert.match(text, /borderColor: tokens.border/);
+  assert.match(text, /backgroundColor: tokens.surface/);
+  assert.match(text, /color: tokens.text, fontSize: 13/);
+  assert.match(text, /right: 10, width: 44, height: 44/);
+  assert.match(text, /pointerEvents="none" style=\{\{ marginTop: 4, paddingLeft: 6, paddingRight: 22, paddingVertical: 3/);
+  assert.doesNotMatch(text, /tailTranslation|rotate:/);
+  assert.doesNotMatch(text, /allowFontScaling=|numberOfLines=/);
+  assert.match(text, /greetingVisible && !collapsed/);
+  assert.match(text, /children\(collapse, showGreeting\)/);
 });
 test('Monitoring Details follows the active drive ID and keeps its manual state above Home navigation', () => {
   const screen = readFileSync(new NodeURL('../components/SmartWheelScreen.tsx', import.meta.url), 'utf8');

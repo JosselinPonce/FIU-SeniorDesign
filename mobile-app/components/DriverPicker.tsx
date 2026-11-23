@@ -40,6 +40,10 @@ export function DriverPicker(props: {
   profiles: DriverProfile[];
   onPick: (p: DriverProfile) => void;
   onCreated: () => Promise<void>;
+  activeDriverId?: string;
+  onBack?: () => void;
+  onEditActive?: () => void;
+  onUseCreated?: (profile: DriverProfile) => void;
   editProfile?: DriverProfile;
   onSaveProfile?: (input: repo.NewProfileInput) => Promise<void>;
   onCancelEdit?: () => void;
@@ -82,6 +86,7 @@ export function DriverPicker(props: {
 
   /** Long-press a driver: reopen the form with their details. */
   function edit(p: DriverProfile) {
+    if (p.id === props.activeDriverId && props.onEditActive) { props.onEditActive(); return; }
     languageTouched.current = true;
     setEditing(p);
     const values = profileFormValues(p);
@@ -105,7 +110,7 @@ export function DriverPicker(props: {
       }
       setBusy(true);
       const save = props.onSaveProfile ?? (editing ? (input: repo.NewProfileInput) => repo.updateProfile(editing.id, input, editing.updated_at) : repo.createProfile);
-      await save({
+      const saved = await save({
         custom_id: editing?.custom_id ?? props.editProfile?.custom_id ?? null,
         display_name: form.display_name,
         ...metricMeasurements(measurements),
@@ -118,6 +123,7 @@ export function DriverPicker(props: {
         emergency_phone: form.emergency_phone,
       });
       if (props.onSaveProfile) return;
+      const wasCreating = !editing && !props.editProfile;
       setForm(blank);
       setMeasurements(measurementsFromMetric());
       setGender(null);
@@ -127,6 +133,12 @@ export function DriverPicker(props: {
       setEditing(null);
       setAdding(false);
       await props.onCreated();
+      if (wasCreating && saved && props.onUseCreated) {
+        Alert.alert('Profile created', 'Would you like to switch to the new driver?', [
+          { text: 'Not now', style: 'cancel' },
+          { text: 'Switch Driver', onPress: () => props.onUseCreated?.(saved) },
+        ]);
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -147,17 +159,18 @@ export function DriverPicker(props: {
     />
   );
 
+  const title = adding ? editing || props.editProfile ? 'Edit Driver Profile' : 'Create Driver Profile' : props.activeDriverId ? 'Switch Driver' : "Who's driving?";
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: tokens.background }}>
-    <ScreenHeader title={adding ? editing || props.editProfile ? 'Edit Driver Profile' : 'New driver' : "Who's driving?"}
-      onBack={adding && (props.profiles.length > 0 || props.onCancelEdit) ? () => { if (props.onCancelEdit) props.onCancelEdit(); else { setAdding(false); setEditing(null); } } : undefined}
+    <ScreenHeader title={title}
+      onBack={adding && (props.profiles.length > 0 || props.onCancelEdit) ? () => { if (props.onCancelEdit) props.onCancelEdit(); else { setAdding(false); setEditing(null); } } : props.onBack}
       right={<LanguageMenu />} />
     <ScrollView contentContainerStyle={st.container} automaticallyAdjustKeyboardInsets={true} keyboardDismissMode="interactive" keyboardShouldPersistTaps="handled">
-      <ScreenHeading title={adding ? editing || props.editProfile ? 'Edit Driver Profile' : 'New driver' : "Who's driving?"}
+      <ScreenHeading title={title}
         accessory={<InformationButton compact title="Driver profiles" body="Readings belong to the confirmed driver. Edit profile details before monitoring." />} />
-      <Text style={st.lead}>{props.editProfile ? 'Changes apply to this driver. Existing drives, calibration and learned baselines are preserved.' : 'Select a profile to continue.'}</Text>
+      <Text style={st.lead}>{props.editProfile ? 'Changes apply to this driver. Existing drives, calibration and learned baselines are preserved.' : adding && !editing ? 'Set up a profile for a new driver.' : 'Select a profile to continue.'}</Text>
 
-      {(props.editProfile ? [] : props.profiles).map((p) => (
+      {(adding ? [] : props.profiles).map((p) => (
         <View key={p.id} style={st.profileRow}>
         <Pressable
           accessibilityRole="button"
@@ -171,6 +184,7 @@ export function DriverPicker(props: {
           </View>
           <View style={{ flex: 1, minWidth: 0 }}>
             <Text localize={false} style={st.name}>{p.display_name}</Text>
+            {p.id === props.activeDriverId ? <Text style={st.meta}>Active driver</Text> : null}
             <Text style={st.meta}>
               {[
                 p.age ? `${p.age} y` : null,
@@ -194,7 +208,7 @@ export function DriverPicker(props: {
       {!adding ? (
         <Pressable accessibilityRole="button" onPress={() => { setMeasurements(measurementsFromMetric()); setAdding(true); }}
           style={{ backgroundColor: tokens.graphite, borderRadius: 14, minHeight: 48, justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: tokens.border }}>
-          <Text style={{ color: tokens.pearl, fontSize: 16, fontWeight: '700' }}>Add a driver</Text>
+          <Text style={{ color: tokens.pearl, fontSize: 16, fontWeight: '700' }}>Add New Driver</Text>
         </Pressable>
       ) : (
         <Card>
@@ -315,7 +329,7 @@ export function DriverPicker(props: {
           {input('emergency_phone', 'Phone', false)}
           {!form.emergency_phone.trim() ? <Text style={st.hint}>No emergency contact number is configured. Saved-contact phone handoff will be unavailable.</Text> : null}
           {error ? <Text style={st.error}>{error}</Text> : null}
-          <Btn title="Save driver" onPress={create} busy={busy} />
+          <Btn title={editing || props.editProfile ? 'Save driver' : 'Create Profile'} onPress={create} busy={busy} />
           {editing && !props.editProfile ? (
             <Btn
               title={`Delete ${editing.display_name}`}

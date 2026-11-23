@@ -18,10 +18,12 @@ test('only connected recent readings display live; stale and disconnected readin
 });
 test('dashboard composition orders connectivity, start, compact vitals, detail navigation and drive details', () => {
   const view = source('components/DriveView.tsx');
-  const parts = ['<Chain drive={d}', 'props.guard(d.startSession)', '<CompactVitalCard metric="heart" label="Heart Rate"',
-    '<CompactVitalCard metric="oxygen" label="SpO₂ (estimate)"', 'title="View Detailed Vitals"', '<SectionTitle>Drive details'];
-  const positions = parts.map(part => view.indexOf(part));
+  const dashboard = view.slice(view.indexOf('<ScrollView contentContainerStyle={st.container}'));
+  const parts = ['<Chain drive={d}', '{recordingControls}', '{vitalTiles()}', 'title="View Detailed Vitals"', '<SectionTitle>Drive details'];
+  const positions = parts.map(part => dashboard.indexOf(part));
   assert.ok(positions.every(pos => pos >= 0)); assert.deepEqual([...positions].sort((a,b) => a-b), positions);
+  assert.match(view, /<CompactVitalCard metric="heart" label="Heart Rate"/);
+  assert.match(view, /<CompactVitalCard metric="oxygen" label="SpO₂ \(estimate\)"/);
   assert.match(view, /disabled=\{!d.isConnected\}/);
   assert.match(view, /onPress=\{\(\) => props.guard\(d.endSession\)\}/);
   assert.match(view, /value=\{d.bpm\}.*average=\{d.avgBpm\} points=\{d.bpmSeries\}/);
@@ -43,7 +45,7 @@ test('shell keeps safety workflow but disables ordinary assistant launch', () =>
   assert.equal((shell.match(/const drive = useDriveSession\(\)/g) ?? []).length, 1);
   assert.equal((shell.match(/<DriverAssistant visible=/g) ?? []).length, 0);
   assert.match(shell, /<VoiceCheckModal drive=\{drive\}/);
-  assert.match(shell, /<DashboardAssistantEntry[\s\S]*?onPress=\{openAssistant\}/);
+  assert.match(shell, /<DashboardAssistantEntry[\s\S]*?showGreeting\(\); openAssistant\(\)/);
   assert.match(shell, /openSensi\(drive.safety, setAssistantOpen\)/);
   assert.match(shell, /<SafeAreaView style=\{st.root\}/);
   assert.match(shell, /\['drive', 'Drive'\]/); assert.match(shell, /\['history', 'History'\]/); assert.match(shell, /\['settings', 'Settings'\]/);
@@ -67,7 +69,7 @@ test('dashboard uses official branding, an unadorned primary control and accessi
   assert.match(brand, /Driven by Safety\. Powered by Insight\./);
   assert.doesNotMatch(brand, /sport edition/i);
   const drive = source('components/DriveView.tsx');
-  assert.match(drive, /<Chain drive=\{d\} \/>\s*<View style=\{\{ gap: 8/);
+  assert.match(drive, /<Chain drive=\{d\} \/>\s*\{recordingControls\}/);
   assert.match(drive, /label="Cloud sync"/);
   assert.match(drive, /awaiting first upload/);
   assert.match(drive, /hop\(d.isConnected && \(piOk \|\| direct\), 'Phone'/);
@@ -110,11 +112,13 @@ test('details and back use presentation state only while session and safety rema
 test('header uses a compact named selector with the original switching handler', () => {
   const shell = source('components/SmartWheelScreen.tsx');
   const header = shell.slice(shell.indexOf('<View style={st.header}>'), shell.indexOf('<DriverAssistant visible='));
-  assert.equal((header.match(/drive.driver.display_name/g) ?? []).length, 2);
-  assert.match(header, /onPress=\{switchDriver\}/);
-  assert.match(header, /accessibilityLabel=\{`Switch driver\. Current driver:/);
-  assert.match(header, /accessible=\{false\} style=\{st.switchText\}>⌄/);
-  assert.match(shell, /switch: \{ minHeight: 44, minWidth: 44/);
+  assert.match(header, /<DriveProfileMenu name=\{drive.driver.display_name\}/);
+  assert.match(header, /onSwitch=\{switchDriver\}/);
+  assert.doesNotMatch(header, /<AppearanceMenu|<LanguageMenu/);
+  const menu = source('components/DriveProfileMenu.tsx');
+  assert.match(menu, /driverInitials\(name\)/);
+  assert.match(menu, /accessibilityLabel=.*Driver profile menu/);
+  assert.match(menu, /minHeight: 44/);
 });
 test('Sensi introduction is interface-only and wheel control remains separate from branding', () => {
   const assistant = source('components/SensiSafetyConversation.tsx');
@@ -139,9 +143,9 @@ test('launcher overlays the home viewport above tabs with an icon-only target an
   assert.match(shell, /!assistantOpen \? <DraggableSensiLauncher/);
   const entry = source('components/DashboardAssistantEntry.tsx');
   assert.doesNotMatch(entry, /Dismiss Sensi greeting|<Text/);
-  assert.match(shell, /<DraggableSensiLauncher defaultAnchor=\{vitalsAnchor\}>/);
+  assert.match(shell, /<DraggableSensiLauncher[^>]*defaultAnchor=\{vitalsAnchor\} scrollStart=\{dashboardScrollStart\}>/);
   assert.doesNotMatch(shell, /SENSI_RAIL_WIDTH|paddingRight:/);
-  assert.match(shell, /<AppearanceMenu \/>/);
+  assert.match(shell, /<DriveProfileMenu/);
   assert.doesNotMatch(entry, /CONNECTED_PILOT_STATUS|CONNECTED_UNAVAILABLE/);
   assert.match(entry, /Sensi responds automatically to safety events/);
 });

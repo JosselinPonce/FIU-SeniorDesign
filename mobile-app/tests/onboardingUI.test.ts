@@ -9,7 +9,7 @@ import ts from 'typescript';
 import { light, dark } from '../lib/theme/tokens.ts';
 import { GEMMA_ARTIFACT } from '../modules/gemma-poc/artifact.ts';
 import { GEMMA_TERMS_TEXT, GEMMA_POLICY_TEXT } from '../lib/onboarding/gemmaTerms.ts';
-import { GEMMA_TERMS_URL, GEMMA_POLICY_URL } from '../lib/onboarding/setup.ts';
+import { GEMMA_TERMS_URL, GEMMA_POLICY_URL, LEGACY_SETUP_KEY, NOTICE_VERSION, SETUP_KEY } from '../lib/onboarding/setup.ts';
 const require = createRequire(import.meta.url);
 const source = (path: string) => readFileSync(new NodeURL('../' + path, import.meta.url), 'utf8');
 function harness(page: number, tokens = light, accepted = false, busy = false, education = 0, review = false) {
@@ -26,7 +26,7 @@ function harness(page: number, tokens = light, accepted = false, busy = false, e
     './CloudPrivacyInfo': { CloudPrivacyInfo: 'CloudPrivacyInfo' }, '../lib/ui/sensiPresentation': sensiPresentation, '../lib/assistant/sensiPreferences': { SENSI_PROVIDERS },
     './LanguageMenu': { LanguageMenu: 'LanguageMenu' },
     '../lib/db/repositories': { getSetting: async () => null, setSetting: async (key: string, value: string) => { calls.push(['saved', key, value]); } },
-    react: { useState: (initial: any) => { const current = index++; return [current === 1 && review ? page : current === 5 ? education : initial, (value: any) => calls.push(['state', value])]; }, useRef: (value: any) => ({ current: value }), useEffect: (fn: any) => fn() },
+    react: { useState: (initial: any) => { const current = index++; return [current === 1 && review ? page : current === 4 ? education : initial, (value: any) => calls.push(['state', value])]; }, useRef: (value: any) => ({ current: value }), useEffect: (fn: any) => fn() },
     'react/jsx-runtime': require('react/jsx-runtime'),
     'react-native': { ...Object.fromEntries(['Image', 'Modal', 'Pressable', 'SafeAreaView', 'ScrollView', 'Text', 'View'].map(n => [n, n])),
       StyleSheet: { hairlineWidth: 1 }, AppState: { addEventListener: (_: any, fn: any) => { background = fn; return { remove() {} }; } },
@@ -51,16 +51,19 @@ function harness(page: number, tokens = light, accepted = false, busy = false, e
   visit(tree);
   return { tree, nodes, controller, calls, background, text: nodes.filter(n => n.type === 'Text').flatMap(n => n.props.children).join(' ') };
 }
-test('Continue Without Gemma is explicit, requires general notices and invokes no provisioning', async () => {
+test('setup completion requires notice consent and has no model step', async () => {
   const f = harness(4, light, true);
-  const button = f.nodes.find(n => n.type === 'Btn' && n.props.title === 'Continue Without Gemma');
-  assert.ok(button); assert.equal(button.props.disabled, false); button.props.onPress();
+  const button = f.nodes.find(n => n.props?.title === 'Continue to DriveSense');
+  assert.equal(button.props.disabled, false);
+  button.props.onPress();
   await Promise.resolve(); await Promise.resolve();
-  assert.ok(f.calls.includes('without model')); assert.ok(f.calls.includes('done')); assert.ok(!f.calls.includes('prepare'));
-  assert.equal(harness(4).nodes.find(n => n.props?.title === 'Continue Without Gemma').props.disabled, true);
+  assert.ok(f.calls.includes('complete'));
+  assert.ok(f.calls.includes('done'));
+  assert.ok(!f.calls.includes('prepare'));
+  assert.equal(harness(4).nodes.find(n => n.props?.title === 'Continue to DriveSense').props.disabled, true);
 });
-for (const tokens of [light, dark]) test(`${tokens === light ? 'Warm Pearl' : 'Soft Graphite'} onboarding preserves notices and offers optional model continuation`, () => {
-  for (let page = 0; page < 6; page++) {
+for (const tokens of [light, dark]) test(`${tokens === light ? 'Warm Pearl' : 'Soft Graphite'} onboarding preserves notices and excludes model installation`, () => {
+  for (let page = 0; page < 5; page++) {
     const f = harness(page, tokens);
     assert.equal(f.tree.type, 'SafeAreaView'); assert.equal(f.tree.props.style.backgroundColor, tokens.background);
     assert.equal(f.nodes.some(n => n.type === 'Btn' && n.props.title === 'Skip'), false);
@@ -94,35 +97,26 @@ test('onboarding exposes app language immediately and persists spoken defaults s
   assert.ok(voice.calls.some(call => Array.isArray(call) && call[0] === 'saved' && call[1] === 'voicecheck_default_language' && call[2] === 'es'));
   assert.equal(voice.calls.some(call => Array.isArray(call) && call[1] === 'app_language'), false);
 });
-test('notices and model terms have separate explicit checkbox and navigation gates', () => {
-  for (const page of [2, 4]) {
-    const f = harness(page); const checkbox = f.nodes.find(n => n.props.accessibilityRole === 'checkbox');
-    assert.equal(checkbox.props.accessibilityState.checked, false); checkbox.props.onPress();
-    assert.deepEqual(f.calls.at(-1), ['ack', page === 2 ? 'notices' : 'terms', true]);
-    assert.equal(f.nodes.find(n => n.type === 'Btn' && n.props.title === 'Next').props.disabled, true);
-    if (page === 4) {
-      assert.equal(f.nodes.find(n => n.type === 'Btn' && /install Sensi/.test(n.props.title)).props.disabled, true);
-      assert.ok(f.nodes.some(n => n.props.title === 'Read Gemma Terms of Use'));
-      assert.ok(f.nodes.some(n => n.props.title === 'Read Gemma Prohibited Use Policy'));
-    }
+test('safety notices retain an explicit checkbox gate and setup exposes no model tools', () => {
+  const f = harness(2);
+  const checkbox = f.nodes.find(n => n.props.accessibilityRole === 'checkbox');
+  assert.equal(checkbox.props.accessibilityState.checked, false);
+  checkbox.props.onPress();
+  assert.deepEqual(f.calls.at(-1), ['ack', true]);
+  assert.equal(f.nodes.find(n => n.props?.title === 'Next').props.disabled, true);
+  for (let page = 0; page < 5; page++) {
+    assert.doesNotMatch(harness(page).text, /Gemma|OpenAI|model installation/i);
   }
 });
-test('install progress includes bytes, integrity/runtime status and cancellation on background', () => {
-  const f = harness(4, light, true, true);
-  assert.match(f.text, /120.0.*241.4.*MB/); assert.match(f.text, /Verification:/); assert.match(f.text, /Runtime:/);
-  assert.ok(f.nodes.some(n => n.props.accessibilityRole === 'progressbar'));
-  f.background('background'); assert.ok(f.calls.includes('cancel'));
-  const g = harness(4, light, true, false);
-  g.nodes.find(n => n.type === 'Btn' && /install Sensi/.test(n.props.title)).props.onPress();
-  assert.ok(g.calls.includes('prepare'));
-});
-test('copy accurately separates foreground monitoring, recording, local inference and connected data', () => {
+
+test('copy separates foreground monitoring, recording, built-in safety, and synchronization', () => {
   assert.match(harness(1).text, /Start Drive controls trip recording/);
   assert.match(harness(1).text, /locked-phone VoiceCheck are not supported/);
-  assert.match(harness(2).text, /not a medical device/); assert.match(harness(2).text, /Supabase/);
+  assert.match(harness(2).text, /not a medical device/);
+  assert.match(harness(2).text, /dashboard synchronization are separate/);
   assert.match(harness(2).text, /explicit request or agreement/);
-  assert.match(harness(3).text, /confirmed sensor event/); assert.match(harness(3).text, /fixed rules/);
-  assert.match(GEMMA_TERMS_TEXT, /Section 3/); assert.match(GEMMA_POLICY_TEXT, /You may not use/);
+  assert.match(harness(3).text, /built-in driving safety assistant/);
+  assert.match(harness(3).text, /explicit authorization/);
 });
 test('setup is launch-only, deferred for existing work, and preserves the normal profile selection path', () => {
   const shell = source('components/SmartWheelScreen.tsx');
@@ -137,15 +131,47 @@ test('setup is launch-only, deferred for existing work, and preserves the normal
 
 
 test('review reuses every onboarding page without setup writes, downloads or completion', async () => {
-  for (let page = 0; page < 6; page++) {
+  for (let page = 0; page < 5; page++) {
     const f = harness(page, light, true, false, 2, true);
     assert.ok(f.nodes.some(n => n.props?.title === 'Return to application'));
     f.nodes.find(n => n.props?.title === 'Return to application').props.onPress();
     f.nodes.find(n => n.props?.title === 'Choose or create a driver').props.onPress();
-    const next = f.nodes.find(n => n.props?.title === (page === 5 ? 'Continue to DriveSense' : 'Next'));
+    const next = f.nodes.find(n => n.props?.title === (page === 4 ? 'Continue to DriveSense' : 'Next'));
     assert.equal(next.props.disabled, false); next.props.onPress();
     await Promise.resolve(); await Promise.resolve();
     assert.equal(f.calls.some(c => c === 'prepare' || c === 'complete' || c === 'cancel' || Array.isArray(c) && ['saved','go','ack'].includes(c[0])), false);
     assert.ok(f.calls.includes('done')); assert.ok(f.calls.includes('drivers'));
   }
+});
+
+test('built-in admission restores completed legacy notices and new setup saves no model state', async () => {
+  const code = ts.transpileModule(source('lib/onboarding/builtInPhone.ts'), { compilerOptions: {
+    module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022,
+  } }).outputText;
+  function setup(settings: Map<string, string>) {
+    const exports: any = {};
+    const modules: Record<string, unknown> = {
+      '../db/repositories': { getSetting: async (key: string) => settings.get(key) ?? null,
+        setSetting: async (key: string, value: string) => { settings.set(key, value); } },
+      './setup': { LEGACY_SETUP_KEY, NOTICE_VERSION, SETUP_KEY },
+    };
+    new Function('require', 'exports', code)((name: string) => { assert.ok(name in modules); return modules[name]; }, exports);
+    return exports.sensiSetup;
+  }
+  const previous = setup(new Map([[SETUP_KEY, JSON.stringify({
+    version: 2, noticeVersion: NOTICE_VERSION, notices: true, completed: true, page: 5, artifact: 'legacy',
+  })]]));
+  await previous.boot();
+  assert.equal(previous.state.ready, true);
+  const saved = new Map<string, string>();
+  const current = setup(saved);
+  await current.boot();
+  await current.go(4);
+  assert.equal(current.state.page, 0);
+  await current.acknowledge(true);
+  await current.go(4);
+  assert.equal(await current.complete(), true);
+  assert.deepEqual(JSON.parse(saved.get(SETUP_KEY)!), {
+    version: 3, noticeVersion: NOTICE_VERSION, page: 4, notices: true, completed: true,
+  });
 });

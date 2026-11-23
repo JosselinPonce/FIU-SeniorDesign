@@ -1,16 +1,14 @@
 import { useTheme } from '../lib/theme/ThemeProvider';
 import { useState } from 'react';
 import { Text, View } from 'react-native';
-import { responsiveness, SENSI_ACKNOWLEDGMENT_PRESENTATION } from '../lib/voice/responsivenessDiagnostics';
+import { responsiveness } from '../lib/voice/responsivenessDiagnostics';
 import { checkSpanishTranscriberCapability, spanishTranscriberReadiness, type SpanishTranscriberCapability } from '../modules/local-foundation-models';
-import type { ConversationMessage } from '../modules/local-foundation-models/assistantConversation';
-import { VoiceCheckProviderStatus } from './VoiceCheckProviderStatus';
 import { Btn } from './ui';
 import { DiagnosticDetails, DiagnosticResult } from './DiagnosticUI';
 import { SpanishTranscriberMicrophoneDiagnostic } from './SpanishTranscriberMicrophoneDiagnostic';
 
 /** Explicit refresh avoids rendering or subscriber work in audio callbacks. */
-export function ResponsivenessDiagnostics({ blocked = false, messages = [] }: { blocked?: boolean; messages?: readonly ConversationMessage[] }) {
+export function ResponsivenessDiagnostics({ blocked = false }: { blocked?: boolean }) {
   const { tokens } = useTheme();
   const [snapshot, setSnapshot] = useState(() => responsiveness.snapshot());
   const [checkingTranscriber, setCheckingTranscriber] = useState(false);
@@ -27,8 +25,6 @@ export function ResponsivenessDiagnostics({ blocked = false, messages = [] }: { 
   }
   if (!__DEV__) return null;
   const enabled = responsiveness.isEnabled();
-  const recordedSource = snapshot.slice().reverse().find(record => record.operation === SENSI_ACKNOWLEDGMENT_PRESENTATION)
-    ?.events.find(event => event.point === 'displayed')?.details.source;
   const update = () => setSnapshot(responsiveness.snapshot());
   return <View style={{ gap: 8 }}>
     <Text style={{ color: tokens.textSecondary }}>Developer responsiveness comparison · {enabled ? 'recording' : 'off'}</Text>
@@ -36,9 +32,6 @@ export function ResponsivenessDiagnostics({ blocked = false, messages = [] }: { 
     <Btn title={enabled ? 'Stop timing capture (clear)' : 'Start timing capture'} kind="ghost" onPress={() => { responsiveness.setEnabled(!enabled); update(); }} />
     <Btn title="Refresh timing snapshot" kind="ghost" onPress={update} />
     <Btn title="Clear timing snapshot" kind="ghost" onPress={() => { responsiveness.clear(); update(); }} />
-    <DiagnosticDetails title="Response provider">
-      <VoiceCheckProviderStatus messages={messages} recordedSource={recordedSource} />
-    </DiagnosticDetails>
     <DiagnosticDetails title="Timing evidence">
     <Text style={{ color: tokens.textSecondary }}>Times are milliseconds. startedMs is relative to capture/reset; event elapsedMs is relative to its operation. Missing events are unknown, not zero. Microphone events report native capture startup, not proof of the first usable audio sample. Return times include bridge and cleanup.</Text>
     <Text selectable style={{ color: tokens.textSecondary }}>{JSON.stringify(snapshot, null, 2)}</Text></DiagnosticDetails>

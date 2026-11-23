@@ -152,8 +152,8 @@ test('diagnostic entry stays development-only; shared provisioning requires onbo
   assert.doesNotMatch(phone, /hash.update|readBytes|base64/);
   assert.doesNotMatch(phone, /SafetyController|VoiceCheck|supabase|openai|handoffContact/);
   const shell = read('../components/SmartWheelScreen.tsx');
-  assert.match(shell, /const GemmaDiagnostic = __DEV__ \?/);
-  assert.match(shell, /gemmaOpen && GemmaDiagnostic && !drive.hasActiveSession/);
+  assert.doesNotMatch(shell, /GemmaDiagnostic/);
+  assert.doesNotMatch(shell, /gemmaOpen/);
   assert.doesNotMatch(read('../lib/voice/voiceCheck.ts'), /gemma-poc/);
 });
 

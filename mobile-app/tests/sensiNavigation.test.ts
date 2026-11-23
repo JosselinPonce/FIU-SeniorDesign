@@ -67,14 +67,14 @@ test('tap with an active VoiceCheck preserves the current conversation and captu
   assert.equal(sensiDestination({ check, conversation: null }), 'safety');
 });
 for (const tokens of [light, dark]) {
-  test(`${tokens === light ? 'Warm Pearl' : 'Soft Graphite'}: unavailable Gemma still shows a read-only themed standby with honest readiness`, () => {
+  test(`${tokens === light ? 'Warm Pearl' : 'Soft Graphite'}: standby retains honest readiness and Try Sensi without a model row`, () => {
     const ui = harness('missing', tokens); let closed = false, tried = 0;
     const tree = ui.SensiStandby({ visible: true, mode: 'local', onClose: () => { closed = true; }, onTrySafetyCheck: () => { tried++; },
       drive: { driver: { id: 'driver' }, hasActiveSession: false, isConnected: false, connection: 'disconnected', voice: null } });
     const rendered = nodes(tree);
     const text = rendered.filter(node => node.type === 'Text').map(node => node.props.children).flat().join(' ');
     assert.match(text, /Hi, I'm Sensi!/); assert.match(text, /driving safety companion/);
-    assert.match(text, /Sensi AI \(Gemma\)/); assert.match(text, /Sensor connection needed/);
+    assert.doesNotMatch(text, /Gemma|Installation unverified/); assert.match(text, /Sensor connection needed/);
     assert.match(text, /Checked when a safety check starts/);
     assert.match(text, /Manual responses/); assert.doesNotMatch(text, /Voice recognition|Typed and button responses\./);
     assert.equal(rendered.find(node => node.type === 'SafeAreaView').props.style.backgroundColor, tokens.background);
@@ -82,7 +82,7 @@ for (const tokens of [light, dark]) {
     const buttons = rendered.filter(node => node.type === 'Btn'); assert.deepEqual(buttons.map(node => node.props.title), ['Try Sensi']);
     buttons[0].props.onPress(); assert.equal(tried, 1);
     assert.equal(rendered.filter(node => node.type === 'SensiGlyph').length, 1);
-    assert.equal(rendered.filter(node => node.type === 'View' && node.props.accessible && node.props.accessibilityLabel).length, 4);
+    assert.equal(rendered.filter(node => node.type === 'View' && node.props.accessible && node.props.accessibilityLabel).length, 3);
     assert.equal(rendered.find(node => node.type === 'ScrollView').props.contentContainerStyle.padding, 16);
     assert.ok(!rendered.some(node => node.props.numberOfLines));
     rendered.find(node => node.type === 'ScreenHeader').props.onBack(); assert.equal(closed, true);
@@ -108,27 +108,7 @@ test('Settings remains a separate tab; homepage handler cannot start/reset a che
 });
 
 
-for (const [model, observation, status] of [
-  ['checking', {}, 'Checking model status'],
-  ['missing', {}, 'Not installed'],
-  ['present', {}, 'Installation unverified'],
-  ['unavailable', {}, 'Unavailable'],
-  ['present', { runtime: { busy:true,phase:'Downloading and verifying model',progress:{stage:'download',completed:50,total:100,elapsedMs:1},error:'',installed:false,loaded:false } }, 'Downloading'],
-  ['present', { runtime: { busy:true,phase:'Loading model',progress:null,error:'',installed:true,loaded:false } }, 'Installation unverified'],
-  ['present', { runtime: { busy:false,phase:'Error',progress:null,error:'Initialization failed',installed:true,loaded:false } }, 'Unavailable'],
-  ['present', { runtime: { busy:false,phase:'Ready',progress:null,error:'',installed:true,loaded:true } }, 'Installation unverified'],
-] as const) test(`home renders observed Gemma state honestly: ${model} ${status}`, () => {
-  const ui=harness(model,light,observation as Partial<ReadinessSnapshot>);
-  const tree=ui.SensiStandby({ visible:true,drive:{driver:{id:'driver'},connection:'connected',link:{source:'esp32'},safety:{monitoring:'active'}},onTrySafetyCheck(){},onClose(){} });
-  const rendered=nodes(tree);
-  const row=rendered.find(n=>n.type==='View' && n.props.accessible && n.props.accessibilityLabel?.startsWith('Sensi AI (Gemma).'));
-  assert.ok(row);assert.ok(row.props.accessibilityLabel.includes(status));
-  if(status==='Downloading')assert.match(row.props.accessibilityLabel,/50%/);
-  const text=rendered.filter(n=>n.type==='Text').flatMap(n=>n.props.children).join(' ');
-  assert.match(text,/Safety checks available/);assert.match(text,/Manual responses/);
-});
-
-test('compact home hierarchy has exactly four indicators and no recognition or explanatory row text', () => {
+test('compact home hierarchy has exactly three indicators and no recognition or explanatory row text', () => {
   const ui=harness('present');
   const rendered=nodes(ui.SensiStandby({visible:true,drive:{driver:{id:'p'},connection:'connected',link:{source:'esp32'},safety:{monitoring:'active'}},onClose(){},onTrySafetyCheck(){}}));
   const text=rendered.filter(n=>n.type==='Text').flatMap(n=>n.props.children).join(' ');
@@ -138,9 +118,9 @@ test('compact home hierarchy has exactly four indicators and no recognition or e
   const headers=rendered.filter(n=>n.props.accessibilityRole==='header').map(n=>n.props.children);
   assert.deepEqual(headers,["Hi, I'm Sensi!",'System Readiness']);
   const rows=rendered.filter(n=>n.type==='View'&&n.props.accessible&&n.props.accessibilityLabel);
-  assert.deepEqual(rows.map(n=>n.props.accessibilityLabel.split('. ')[0]),['Steering-wheel sensors','Sensi AI (Gemma)','Voice responses','Manual responses']);
-  assert.equal(rendered.filter(n=>n.type==='Feather').length,4);
-  assert.match(rows[1].props.accessibilityLabel,/Installation unverified/);
+  assert.deepEqual(rows.map(n=>n.props.accessibilityLabel.split('. ')[0]),['Steering-wheel sensors','Voice responses','Manual responses']);
+  assert.equal(rendered.filter(n=>n.type==='Feather').length,3);
+  assert.match(rows[1].props.accessibilityLabel,/Checked when a safety check starts/);
   assert.equal(rendered.filter(n=>n.type==='SensiGlyph').length,1);
 });
 
@@ -157,13 +137,13 @@ test('compact name/status rows wrap without fixed text heights or truncation', (
 });
 
 for (const tokens of [light, dark]) test(`home applies shared semantic color to each status and icon in ${tokens === light ? 'light' : 'dark'} mode`, () => {
-  const ui = harness('present', tokens, { installation: 'installed', responses: 'available' });
+  const ui = harness('present', tokens, { responses: 'available' });
   const rendered = nodes(ui.SensiStandby({ visible: true, drive: { driver: { id: 'p' }, connection: 'connecting', safety: {} }, onClose() {}, onTrySafetyCheck() {} }));
   const rows = rendered.filter(n => n.type === 'View' && n.props.accessible && n.props.accessibilityLabel);
-  for (const [i, status, color] of [[0, 'Connecting', tokens.warning], [1, 'Installed', tokens.connected], [2, 'Available', tokens.connected], [3, 'Available', tokens.connected]] as const) {
+  for (const [i, status, color] of [[0, 'Connecting', tokens.warning], [1, 'Available', tokens.connected], [2, 'Available', tokens.connected]] as const) {
     const row = rows[i]; assert.ok(row.props.accessibilityLabel.includes(status));
     const contents = nodes(row); assert.equal(contents.find(n => n.type === 'Feather').props.color, color);
-    const text = contents.find(n => n.type === 'Text' && Array.isArray(n.props.children) && n.props.children[0] === status);
+    const text = contents.find(n => n.type === 'Text' && n.props.children === status);
     assert.ok(text); assert.equal(text.props.style.color, color);
   }
   assert.ok(rendered.some(n => n.type === 'Text' && n.props.children === 'Connecting sensors'));

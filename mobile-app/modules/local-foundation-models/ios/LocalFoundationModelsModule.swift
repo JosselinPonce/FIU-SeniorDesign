@@ -398,7 +398,7 @@ final class SpanishOfflineRecognition {
       nativeError = ["domain": domain, "code": code]
     }
     report["captureDiagnostics"] = [
-      "audio": capture.captureAudio, "pcm": capture.meter.pcmDiagnostics.report(started: capture.started),
+      "audio": capture.captureAudio, "pcm": capture.meter.pcmDiagnostics.report(started: capture.timings.origin),
       "nativeError": nativeError, "firstPartialCallbackMs": capture.firstPartialCallbackMs as Any? ?? NSNull()
     ]
 #endif
@@ -619,9 +619,9 @@ final class SpanishOfflineRecognition {
       capture.timings.mark("cueCompleted")
       try Task.checkCancellation()
       guard capture.engine.isRunning else { throw fail("Microphone stopped during the ready cue.", reason: "audio_interrupted") }
-      capture.timings.mark("listeningGateOpened")
       capture.listeningStarted = ProcessInfo.processInfo.systemUptime
       guard capture.meter.beginListening(now: capture.listeningStarted!, seconds: window / 1000) else { throw CancellationError() }
+      capture.timings.mark("listeningGateOpened")
       capture.onCaptureStopped = { phase("finalizing") }
       deadline(capture, seconds: window / 1000 + 0.2, reason: "no_speech_timeout")
       phase("listening")

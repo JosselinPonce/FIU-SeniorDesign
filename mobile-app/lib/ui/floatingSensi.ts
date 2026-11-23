@@ -32,3 +32,20 @@ export function readSavedPosition(value: string | null, legacy: string | null = 
 export function defaultVitalsPosition(width: number, height: number, anchor: { y: number; height: number } | null) {
   return clampPosition(width - 58 - 16, anchor ? anchor.y + (anchor.height - 58) / 2 : height * 0.25, width, height, 58, 58);
 }
+
+export type LauncherPreference = { x: number; y: number; collapsed: boolean };
+
+/** Round old free-position preferences to the closest edge. */
+export function readLauncherPreference(value: string | null, legacy: string | null = null): LauncherPreference | null {
+  const position = readSavedPosition(value, legacy);
+  if (!position) return null;
+  let collapsed = false;
+  try { collapsed = JSON.parse(value ?? 'null')?.collapsed === true; } catch { /* legacy value */ }
+  return { x: position.x < 0.5 ? 0 : 1, y: position.y, collapsed };
+}
+
+export function dockLauncher(x: number, y: number, width: number, height: number, size: number, collapsed: boolean, itemWidth = size): LauncherPreference {
+  const point = clampPosition(x, y, width, height, itemWidth, size);
+  const horizontal = Math.max(0, width - itemWidth);
+  return { x: point.x < horizontal / 2 ? 0 : 1, y: point.y / Math.max(1, height - size), collapsed };
+}
