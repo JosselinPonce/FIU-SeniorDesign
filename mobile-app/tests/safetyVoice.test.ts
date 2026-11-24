@@ -3,10 +3,23 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { URL as NodeURL } from 'node:url';
 import ts from 'typescript';
+import { SafetyController, type SafetyState } from '../lib/analysis/safetyController.ts';
 import { AudioOwnership } from '../lib/voice/audioOwnership.ts';
 import { recognitionEvidence } from '../lib/voice/coreRecognition.ts';
 import { voiceCheckSpokenText } from '../lib/voice/voiceCheckPresentation.ts';
-function harness(options: { deactivate?: () => void; idle?: () => Promise<boolean>; native?: Record<string, unknown>; aligned?: boolean; development?: boolean; playback?: (text: string, options: { onDone(): void }) => void; stop?: () => Promise<void> } = {}) {
+type MockUtterance = {
+  voice: string;
+  language: string;
+  rate: number;
+  volume: number;
+  useApplicationAudioSession: boolean;
+  onStart(): void;
+  onDone(): void;
+  onStopped(): void;
+  onError(): void;
+};
+
+function harness(options: { deactivate?: () => void; idle?: () => Promise<boolean>; native?: Record<string, unknown>; aligned?: boolean; development?: boolean; spanishVoice?: boolean; playback?: (text: string, options: MockUtterance) => void; stop?: () => Promise<void> } = {}) {
   const audio=new AudioOwnership();const spoken: string[]=[]; const categories: any[]=[]; const rates: number[]=[];
   const timings: { point: string; details: any }[] = [];
   const source=readFileSync(new NodeURL('../lib/voice/speechIO.ts',import.meta.url),'utf8');
@@ -16,8 +29,9 @@ function harness(options: { deactivate?: () => void; idle?: () => Promise<boolea
     './voiceCheckPresentation': { voiceCheckSpokenText },
     './audioOwnership':{appAudio:audio},'./responsivenessDiagnostics':{responsivenessProbe:()=>(point: string, details: any)=>timings.push({ point, details }),responsiveness:{},debugSessionAlignmentEnabled:()=>!!options.aligned},
     'react-native':{Platform:{OS:'ios'}},
-    'expo-speech':{getAvailableVoicesAsync:async()=>[{identifier:'installed.premium.voice',name:'Fixture',language:'en-US',quality:'Premium'}],
-      speak: (text: string, utterance: any) => {
+    'expo-speech':{getAvailableVoicesAsync:async()=>[{identifier:'installed.premium.voice',name:'Fixture',language:'en-US',quality:'Premium'},
+      ...(options.spanishVoice ? [{ identifier: 'installed.spanish.voice', name: 'Spanish Fixture', language: 'es-US', quality: 'Default' }] : [])],
+      speak: (text: string, utterance: MockUtterance) => {
         spoken.push(utterance.voice); rates.push(utterance.rate);
         if (options.playback) options.playback(text, utterance); else utterance.onDone();
       }, stop: options.stop ?? (async () => {}),isSpeakingAsync: options.idle ?? (async()=>false)},
@@ -441,3 +455,105 @@ test('pre-guidance speech is bounded and mandatory playback waits for the native
   f.exports.releaseAudio();
   await tick();
 });
+
+
+for (const [lang, response, phrase] of [
+  ['en', "I'm feeling a little dizzy.", "I'm sorry you're feeling dizzy."],
+  ['en', 'no', 'Thank you for telling me.'],
+  ['es', 'no', 'Gracias por decírmelo.'],
+] as const) {
+  const locale = lang === 'es' ? 'es-US' : 'en-US';
+  function recognition() {
+    let calls = 0;
+    return {
+      subscribeOfflineSpeechProgress: () => ({ remove() {} }),
+      listenOffline: async () => {
+        const text = calls++ === 0 ? response : 'no';
+        return { status: 'success', transcript: text, finalTranscript: text, isFinal: true,
+          finalResultReceived: true, locale, requiresOnDeviceRecognition: true };
+      },
+      cancelOfflineListening: async () => {},
+    };
+  }
+  function parameters({ language, voice, rate, volume, useApplicationAudioSession }: MockUtterance) {
+    return { language, voice, rate, volume, useApplicationAudioSession };
+  }
+
+  for (const outcome of ['success', 'error', 'cancel'] as const) test(`${lang}: ${phrase} reaches TTS after recognition (${outcome})`, async () => {
+    let standardParameters: ReturnType<typeof parameters> | undefined;
+    const standard = harness({ spanishVoice: true, native: recognition(), playback(text, utterance) {
+      if (text === phrase) standardParameters = parameters(utterance);
+      utterance.onStart();
+      utterance.onDone();
+    } });
+    const ordinary = standard.exports.phoneSensiVoiceIO();
+    await ordinary.speak('Wellness question', lang);
+    assert.equal((await ordinary.listen(lang, 6000, [], 'standard')).status, 'success');
+    await ordinary.speak(phrase, lang);
+    assert.equal(standardParameters?.language, locale);
+    standard.exports.releaseAudio();
+
+    const spoken: string[] = [];
+    const updates: SafetyState[] = [];
+    let acknowledgment: MockUtterance | undefined;
+    let dispatched: ReturnType<typeof parameters> | undefined;
+    let finishCleanup: (() => void) | undefined;
+    const contextual = harness({ spanishVoice: true, native: recognition(),
+      idle: async () => {
+        if (finishCleanup) return false;
+        return new Promise<boolean>(resolve => { finishCleanup = () => resolve(false); });
+      },
+      playback(text, utterance) {
+        spoken.push(text);
+        utterance.onStart();
+        if (text !== phrase) { utterance.onDone(); return; }
+        dispatched = parameters(utterance);
+        acknowledgment = utterance;
+      },
+      stop: async () => { acknowledgment?.onStopped(); },
+    });
+    const controller = new SafetyController({
+      assistantMode: () => 'gemma', basicOfflineAcknowledgments: true,
+      // Skip inter-sentence pacing so this test isolates callback and ownership ordering.
+      voiceIO: () => ({ ...contextual.exports.phoneSensiVoiceIO(), pause: async () => {} }),
+      releaseAudio: contextual.exports.releaseAudio,
+      haptic() {}, save: async () => {}, saveAck: async () => {},
+      onChange: state => updates.push(state), newId: () => 'phase3-test',
+    });
+    controller.configure({ id: 'driver', custom_id: 'fixture', updated_at: '1', created_at: '',
+      display_name: 'Driver', language: lang, emergency_name: 'Contact', emergency_phone: '+12025550124',
+      age: 40, gender: 'female', height_cm: 165, weight_kg: 65 }, null);
+
+    const pending = controller.rehearse();
+    await tick();
+    assert.ok(finishCleanup, 'recognition must be checked for idle before further playback');
+    assert.ok(!spoken.includes(phrase));
+    finishCleanup();
+    await tick();
+    assert.ok(acknowledgment, 'contextual utterance must be dispatched after recognition cleanup');
+    assert.deepEqual(dispatched, standardParameters);
+    const latest = () => updates.at(-1)?.conversation?.messages.find(message => message.text === phrase)?.playback;
+    assert.equal(latest(), 'playing');
+    assert.equal(spoken.at(-1), phrase, 'guidance waits for this utterance to settle');
+
+    if (outcome === 'cancel') {
+      controller.cancelCheck();
+      acknowledgment.onDone(); // A late completion cannot publish success or start guidance.
+      await pending;
+      assert.equal(updates.at(-1)?.conversation, null);
+      assert.equal(spoken.at(-1), phrase);
+      assert.ok(!updates.some(state => state.conversation?.messages.some(message => message.text === phrase && message.playback === 'completed')));
+      return;
+    }
+
+    if (outcome === 'success') acknowledgment.onDone(); else acknowledgment.onError();
+    const result = await pending;
+    assert.equal(result.outcome, 'not_ok');
+    assert.equal(result.contactCall, 'declined_offer');
+    assert.equal(latest(), outcome === 'success' ? 'completed' : 'failed');
+    const position = spoken.indexOf(phrase);
+    assert.equal(spoken.filter(text => text === phrase).length, 1);
+    assert.match(spoken[position + 1]!, /pull over|detente/i);
+    assert.match(spoken[position + 2]!, /911|nine one one|nueve uno uno/i);
+  });
+}

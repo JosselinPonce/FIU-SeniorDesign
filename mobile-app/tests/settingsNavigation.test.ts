@@ -5,6 +5,7 @@ import { URL as NodeURL } from 'node:url';
 import { createRequire } from 'node:module';
 import ts from 'typescript';
 import { SETTINGS_CATEGORIES, isSensiDetail, settingsTitle } from '../lib/ui/settingsNavigation.ts';
+import { translateText } from '../lib/i18n/translate.ts';
 import { voiceDisplayLabel } from '../lib/ui/voiceLabel.ts';
 import { light, dark, presentationColors } from '../lib/theme/tokens.ts';
 import { settingsSwitchColors } from '../lib/ui/settingsSwitch.ts';
@@ -172,7 +173,7 @@ test('onboarding replay retains existing callback and language selection never o
   f.render().find(n => n.props?.title === 'Voice & Language').props.onPress();
   const nodes = f.render();
   assert.equal(nodes.some(n => n.props?.title === 'VoiceCheck language'), false);
-  await nodes.find(n => n.props?.title === 'Español').props.onPress();
+  await nodes.find(n => n.props?.title === 'Spanish').props.onPress();
   assert.deepEqual(languages, ['es']); assert.deepEqual(f.calls, ['intro']);
 });
 
@@ -187,7 +188,7 @@ test('Release voice settings and diagnostics keep their safety gates and omit mo
     const nodes = f.render();
     assert.equal(nodes.find(n => n.type === 'SpeechCapabilityStatus').props.language, 'en');
     assert.equal(nodes.some(n => n.type === 'SensiVoicePlaybackDiagnostic'), false);
-    assert.equal(nodes.find(n => n.props?.title === 'Español').props.disabled, active);
+    assert.equal(nodes.find(n => n.props?.title === 'Spanish').props.disabled, active);
   }
 });
 
@@ -276,4 +277,20 @@ test('Data & Privacy keeps recording and sync routes and redirects a retired sto
   const stale = harness(false);
   (stale.props as any).initialPage = 'where_to_store';
   assert.ok(stale.render().some(n => n.type === 'ScreenHeader' && n.props.title === 'Data & Privacy'));
+});
+
+
+test('VoiceCheck language labels follow app text while selection keeps the driver voice identifier', () => {
+  const f = harness(false);
+  for (const title of ['Sensi Assistant', 'Voice & Language']) {
+    f.render().find(node => node.props?.title === title).props.onPress();
+  }
+  for (const voice of ['en', 'es'] as const) {
+    f.props.drive.driver.language = voice;
+    const choices = f.render().filter(node => node.type === 'Btn' && node.props.accessibilityRole === 'radio');
+    assert.deepEqual(choices.map(node => node.key), ['en', 'es']);
+    assert.deepEqual(choices.map(node => node.props.accessibilityState.selected), [voice === 'en', voice === 'es']);
+    assert.deepEqual(choices.map(node => translateText(node.props.title, 'en')), ['English', 'Spanish']);
+    assert.deepEqual(choices.map(node => translateText(node.props.title, 'es')), ['Inglés', 'Español']);
+  }
 });

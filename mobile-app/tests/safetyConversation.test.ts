@@ -36,8 +36,8 @@ for(const mode of ['local','connected'] as const){
   test(`${mode}: deterministic safety dialogue is mirrored without model access; standalone continuation is disabled`,async()=>{
     const f=fixture(mode,['yes']);f.trigger();await f.settle();
     const d=f.last().conversation!;assert.equal(d.mode,mode);assert.equal(d.finished,true);
-    assert.deepEqual(d.messages.map(m=>m.role),['assistant','assistant','assistant','driver','assistant','assistant','assistant']);
-    assert.match(d.messages[0]!.text,/your heart rate/);assert.equal(d.messages[3]!.text,'yes');
+    assert.deepEqual(d.messages.map(m=>m.role),['assistant','assistant','driver','assistant','assistant','assistant']);
+    assert.match(d.messages[0]!.text,/your heart rate/);assert.equal(d.messages[1]!.text,'Are you feeling okay?');assert.equal(d.messages[2]!.text,'yes');
     assert.equal(d.messages[0]!.playback,'completed');
     assert.equal(f.c.safetyContinuation(d.episodeId),false);assert.equal(f.c.consumeSafetyContinuation(d.episodeId),false);
     assert.equal(f.c.consumeSafetyContinuation(d.episodeId),false);assert.equal(f.calls.length,0);

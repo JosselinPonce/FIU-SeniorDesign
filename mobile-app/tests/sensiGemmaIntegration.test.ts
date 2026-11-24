@@ -34,8 +34,8 @@ test('pending or timed-out Gemma never delays guidance and cannot publish late s
   const result = await check.run('bpm_high');
   assert.equal(result.outcome, 'not_ok'); assert.equal(result.contactCall, 'declined_offer');
   assert.match(spoken.join(' '), /Please pull over/);
-  assert.deepEqual(spoken.slice(3), ["Please pull over as soon as it is safe.", "If you need emergency help, call 911.", "Thank you for telling me.", "Would you like me to call Mom?"]);
-  late.resolve('I hear you.'); await tick(); assert.equal(spoken.length, 7);
+  assert.deepEqual(spoken.slice(2), ["Please pull over as soon as it is safe.", "If you need emergency help, call 911.", "Thank you for telling me.", "Would you like me to call Mom?"]);
+  late.resolve('I hear you.'); await tick(); assert.equal(spoken.length, 6);
   const expired = startSafetyAcknowledgment(() => new Promise(() => {}), context, 10);
   t.mock.timers.tick(10); assert.equal(expired.get('en'), "Thank you for telling me."); expired.cancel();
 });

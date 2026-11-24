@@ -206,7 +206,6 @@ function createPhoneVoiceIO(strictSelectedVoice: boolean): VoiceIO {
   let cancelListen: (() => void) | null = null;
   let cancelEpoch = 0;
   let cleanupNeeded = false;
-  let promptVoice: { lang: Lang; id: string } | undefined;
   let prepared: { id: string; lang: Lang; pending?: Promise<void>; session?: Promise<boolean>; timing: ReturnType<typeof responsivenessProbe> } | null = null;
   async function acquire() {
     const epoch = cancelEpoch;
@@ -243,10 +242,8 @@ function createPhoneVoiceIO(strictSelectedVoice: boolean): VoiceIO {
       const timing = responsivenessProbe('warning', 'playback');
       const epoch = cancelEpoch;
       const beforeGuidance = delivery === 'pre_guidance_acknowledgment';
-      // Optional speech never starts an audio session or attempts recovery.
-      if (beforeGuidance && (!releaseSafetyAudio || safetyOwner !== owner || cleanupNeeded || cleanupFailed || promptVoice?.lang !== lang)) {
-        return { status: 'unavailable' as const };
-      }
+      // Recognition marks cleanup pending even on success. Use the same
+      // ownership and idle checks as guidance before dispatching acknowledgment.
       await acquire();
       timing('audio ownership acquired');
       const preparation = prepared;
@@ -272,7 +269,7 @@ function createPhoneVoiceIO(strictSelectedVoice: boolean): VoiceIO {
       const aligned = await preparation?.session ?? false;
       if (epoch !== cancelEpoch) throw new Error("Voice check cancelled");
       let voice: string | undefined;
-      try { voice = beforeGuidance ? promptVoice?.id : await bestVoice(lang, strictSelectedVoice); }
+      try { voice = await bestVoice(lang, strictSelectedVoice); }
       catch (error) {
         if (!strictSelectedVoice) throw error;
         timing('selected voice unavailable; retaining deterministic button and recognition path');
@@ -280,7 +277,6 @@ function createPhoneVoiceIO(strictSelectedVoice: boolean): VoiceIO {
       }
       timing('voice selected', { voiceId: voice ?? undefined, locale: LOCALE[lang] });
       if (epoch !== cancelEpoch) throw new Error("Voice check cancelled");
-      if (!beforeGuidance) promptVoice = voice ? { lang, id: voice } : undefined;
       if (!aligned) promptAudio();
       timing('playback session setup returned');
       try { await bounded(new Promise<void>((resolve, reject) => {

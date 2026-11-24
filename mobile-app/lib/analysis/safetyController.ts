@@ -542,11 +542,11 @@ export class SafetyController {
   }
 
   /** Debug callers use a separate controller instance without model or persistence dependencies. */
-  runIsolatedCheck(ep: Episode, onOfferAccepted: () => void, biometricSimulationDemo = false): Promise<CheckResult> | undefined {
-    if (typeof __DEV__ !== 'undefined' && __DEV__) return this.runCheck(ep, 'rehearsal', onOfferAccepted, biometricSimulationDemo);
+  runIsolatedCheck(ep: Episode, onOfferAccepted: () => void): Promise<CheckResult> | undefined {
+    if (typeof __DEV__ !== 'undefined' && __DEV__) return this.runCheck(ep, 'rehearsal', onOfferAccepted);
   }
 
-  private async runCheck(ep: Episode, mode: 'live' | 'rehearsal' | 'demo' = 'live', onOfferAccepted?: () => void, biometricSimulationDemo = false): Promise<CheckResult> {
+  private async runCheck(ep: Episode, mode: 'live' | 'rehearsal' | 'demo' = 'live', onOfferAccepted?: () => void): Promise<CheckResult> {
     if (ep.kind === 'no_contact' || this.checking) return { outcome: 'ok', urgent: false, channel: 'none', attempts: 0, confidence: null, contactCall: 'not_requested' };
     this.checking = true;
     this.continuation = null;
@@ -649,7 +649,6 @@ export class SafetyController {
       basicOfflineAcknowledgments: this.deps.basicOfflineAcknowledgments,
       contactAvailable: contact.phone !== null,
       onQuestion: (q, id) => { question = q; captureId = id; },
-      biometricSimulationDemo,
       contactName: selected !== 'core' ? profile?.emergency_name ?? undefined : undefined,
       cancelAcknowledgment: () => acknowledgment?.cancel(),
       startAcknowledgment: context => {

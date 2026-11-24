@@ -16,7 +16,7 @@ test('observed finalized tired statement takes NOT OK and cannot itself authoriz
       contactAvailable: true, onAnswer: answer => displayed.push(answer.text),
     });
     const result = await check.run('bpm_high'); assert.equal(result.outcome, 'not_ok'); assert.equal(result.contactCall, 'declined_offer');
-    assert.equal(displayed[0], text); assert.equal(said.length, 6); assert.match(said.join(' '), /pull over.*Would you like/);
+    assert.equal(displayed[0], text); assert.equal(said.length, 5); assert.match(said.join(' '), /pull over.*Would you like/);
     assert.ok(said.every(t => !/didn't hear|No answer was confirmed/.test(t)));
   }
 });

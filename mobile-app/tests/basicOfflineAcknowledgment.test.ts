@@ -161,7 +161,7 @@ test('cancelling during the pre-guidance utterance prevents subsequent speech an
   }, 'en', '', { basicOfflineAcknowledgments: true, contactAvailable: true });
   const pending = check.run('bpm_high');
   await started;
-  assert.ok(spoken.includes('You can tell me how you’re feeling.'));
+  assert.ok(spoken.includes('Are you feeling okay?'));
   assert.equal(spoken.at(-1), "I'm concerned you're struggling to stay awake.");
   check.cancel();
   await assert.rejects(pending, /cancelled/i);

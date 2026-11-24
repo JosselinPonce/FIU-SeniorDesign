@@ -223,7 +223,7 @@ export function SettingsView(props: {
         <Text style={st.note}>Sensi checks how you feel after confirmed sensor events. You can answer by voice, typing or buttons. Calling your saved contact requires your explicit agreement.</Text>
         <Text style={st.modeTitle}>VoiceCheck Language</Text>
         <View accessibilityRole="radiogroup" style={{ flexDirection: 'row', gap: 12 }}>
-          {(['en', 'es'] as const).map(language => <Btn key={language} title={language === 'es' ? 'Español' : 'English'}
+          {(['en', 'es'] as const).map(language => <Btn key={language} title={language === 'es' ? 'Spanish' : 'English'}
             kind={d.driver?.language === language ? undefined : 'ghost'}
             accessibilityRole="radio" accessibilityState={{ selected: (d.driver?.language ?? 'en') === language }}
             disabled={languageBusy || d.hasActiveSession || !!sf.check || !!sf.demo || !d.driver}

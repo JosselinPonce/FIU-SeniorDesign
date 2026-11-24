@@ -13,7 +13,7 @@ const examples = [
   ["No, I'm feeling really really tired",'not_ok'],["No, I'm feeling really tired",'not_ok'],["I'm good, I just had a long day",'ok'],
   ["I'm fine, just had a rough day",'ok'],["I'm okay, but I'm dizzy",'not_ok'],["I'm exhausted",'not_ok'],['I can barely stay awake','not_ok'],
   ["I feel fine, but I might pass out",'not_ok'],["I don't know, something feels off",'unclear'],['No, no estoy bien','not_ok'],
-  ['No, estoy muy muy cansada','not_ok'],['Sí, estoy bien, solo cansada','ok'],['Estoy bien, pero me mareo','not_ok'],['No sé, me siento rara','unclear'],
+  ['No, estoy muy muy cansada','not_ok'],['Sí, estoy bien, solo cansada','not_ok'],['Estoy bien, pero me mareo','not_ok'],['No sé, me siento rara','unclear'],
   ["No, I'm not feeling well",'not_ok'],['No me siento muy bien','not_ok'],["I'm okay but I am weak",'not_ok'],["I'm okay, I'm not dizzy",'ok'],
   ['I am not dizzy','unclear'],['not really dizzy','unclear'],["I'm feeling really, really tired!",'not_ok'],
 ] as const;
@@ -166,7 +166,7 @@ for(const lang of ['en','es'] as const)test(`${lang}: one sentence per utterance
       contactAvailable:true,contactName:'Mom',startAcknowledgment:context=>{ack=startSafetyAcknowledgment(async()=>output,context);},acknowledgment:()=>ack!.get(lang),
     });
   const result=await check.run('bpm_high');assert.equal(result.contactCall,'declined_offer');assert.equal(n,2);
-  assert.deepEqual(spoken.slice(3),lang==='en'?['Please pull over as soon as it is safe.','If you need emergency help, call 911.',output,'Would you like me to call Mom?']:['Por favor detente cuando sea seguro.','Si necesitas ayuda de emergencia, llama al 911.',output,'¿Quieres que llame a Mom?']);
+  assert.deepEqual(spoken.slice(2),lang==='en'?['Please pull over as soon as it is safe.','If you need emergency help, call 911.',output,'Would you like me to call Mom?']:['Por favor detente cuando sea seguro.','Si necesitas ayuda de emergencia, llama al 911.',output,'¿Quieres que llame a Mom?']);
   assert.equal(spoken.filter(t=>t.includes('911')).length,1);assert.equal(spoken.filter(t=>/Would you like|¿Quieres/.test(t)).length,1);
 });
 
@@ -190,7 +190,7 @@ for(const stage of ['start','get','cancel'] as const)test(`semantic ${stage} fai
   assert.ok(said.includes('Please pull over as soon as it is safe.'));assert.ok(said.includes('If you need emergency help, call 911.'));
 });
 
-for(const [language,text] of [['en',"I'm good, I just had a long day"],['es','Sí, estoy bien, solo cansada']] as const)test(`${language}: clear OK with fatigue context skips both inference paths and offers no call`,async()=>{
+for(const [language,text] of [['en',"I'm good, I just had a long day"],['es','Sí, estoy bien, solo ha sido un día largo']] as const)test(`${language}: clear OK with long-day context skips both inference paths and offers no call`,async()=>{
   let inference=0;const said:string[]=[];
   const check=new VoiceCheck({cancel(){},speak:async s=>{said.push(s);},listen:async(_l,_m,_h,id)=>final(id,text)},language,'',{
     contactAvailable:true,startAcknowledgment:()=>{inference++;},startSemantic:()=>{inference++;return{get:()=>null,cancel(){}};},
@@ -211,9 +211,38 @@ test('false-OK regression: headache behind a positive phrase is not_ok', () => {
   assert.equal(understand("no estoy bien, me duele la cabeza").intent, 'not_ok'); // already passed? keep as pin
   assert.equal(understand("i'm fine but i feel dizzy").intent, 'not_ok');
 });
-test('mild fatigue with positive phrase stays ok', () => {
-  assert.equal(understand("i'm okay just a bit tired").intent, 'ok');
-  assert.equal(understand("estoy bien solo un poco cansado").intent, 'ok');
+for (const [language, text, intent, context] of [
+  ['en', "I'm OK, I feel fine.", 'ok', 'none'],
+  ['en', "I'm OK I feel fine", 'ok', 'none'],
+  ['en', "I'm OK, just a little tired.", 'not_ok', 'fatigue'],
+  ['en', "I'm fine, but I feel dizzy.", 'not_ok', 'dizziness'],
+  ['en', "No, I'm okay.", 'ok', 'none'],
+  ['en', "Yes, but I'm feeling weak.", 'not_ok', 'discomfort'],
+  ['es', 'Estoy bien, gracias.', 'ok', 'none'],
+  ['es', 'Estoy bien me siento muy bien', 'ok', 'none'],
+  ['es', 'Estoy bien, pero tengo un poco de sueño.', 'not_ok', 'fatigue'],
+  ['es', 'Estoy bien, pero me siento mareada.', 'not_ok', 'dizziness'],
+  ['en', "I'm OK, I'm not tired.", 'ok', 'none'],
+  ['es', 'Estoy bien, no estoy cansada.', 'ok', 'none'],
+  ['en', "I'm OK but I can barely stay awake.", 'not_ok', 'fatigue'],
+  ['es', 'Estoy bien, apenas puedo mantenerme despierto.', 'not_ok', 'fatigue'],
+  ['es', 'Estoy bien solo un poco cansado.', 'not_ok', 'fatigue'],
+] as const) test(`${language}: ${text} has a clear first-turn wellness result without call consent`, async () => {
+  const answer = understand(text);
+  assert.deepEqual([answer.intent, answer.context, answer.urgent, answer.contactCallRequested], [intent, context, false, false]);
+  let captures = 0;
+  const check = new VoiceCheck({
+    cancel() {},
+    speak: async () => {},
+    listen: async (_language, _ms, _hints, id) => {
+      assert.equal(++captures, 1, 'a clear wellness answer should not be repeated');
+      return final(id, text);
+    },
+  }, language, '');
+  const result = await check.run('bpm_high');
+  assert.equal(result.outcome, intent);
+  assert.equal(result.attempts, 1);
+  assert.equal(check.authorizesContact(result), false);
 });
 test('genuine symptom idioms are not_ok', () => {
   assert.equal(understand("I am feeling under the weather").intent, 'not_ok');

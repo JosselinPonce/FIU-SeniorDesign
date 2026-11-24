@@ -103,12 +103,12 @@ function fixture(language: 'en' | 'es', options: {
 for (const lang of ['en', 'es'] as const) test(`${lang}: immediate sentence guidance overlaps actual adapter inference and preserves consent and audio ownership`, async () => {
   const f = fixture(lang); const pending = f.controller.rehearse(); await tick();
   assert.equal(f.generations, 1); assert.equal(f.loads, 1);
-  assert.equal(f.spoken.length, 4); assert.match(f.spoken[3]!, /pull over|detente/);
+  assert.equal(f.spoken.length, 3); assert.match(f.spoken[2]!, /pull over|detente/);
   assert.equal(f.spoken.some(t => /Would you like|¿Quieres/.test(t)), false, 'offer waits for guidance');
   f.guidance.resolve(); const result = await pending;
   assert.equal(result.outcome, 'not_ok'); assert.equal(result.contactCall, 'accepted_offer');
   assert.equal(f.state.conversation?.acknowledgmentSource, 'gemma'); assert.equal(f.state.last?.handoff, 'simulated');
-  assert.equal(f.spoken.length, 7);
+  assert.equal(f.spoken.length, 6);
   assert.deepEqual(f.state.conversation?.messages.filter(m => m.role === 'assistant').map(m => m.text), f.spoken, 'visible assistant messages exactly match TTS');
   assert.equal(f.handoffs, 0); assert.equal(f.saves, 0); assert.equal(f.downloads, 0);
   await assert.rejects(openAuthorizedPhoneInterface('+12025550123', { source: 'rehearsal', episodeId: 'rehearsal' }, () => true, async () => {}), /blocked/);

@@ -8,6 +8,7 @@ import { acknowledgmentProviderLabel, RESPONSE_MODE_SUMMARIES } from '../lib/ui/
 import type { SensiPreference } from '../lib/assistant/sensiPreferences.ts';
 import type { ConversationMessage } from '../modules/local-foundation-models/assistantConversation.ts';
 import { translateText } from '../lib/i18n/translate.ts';
+import { nearThreadBottom, playbackLabel } from '../lib/assistant/threadPresentation.ts';
 import { light } from '../lib/theme/tokens.ts';
 import { safetyButtonText, simulationCompletion } from '../lib/assistant/safetyConversation.ts';
 import { contactHandoffMessage } from '../modules/local-foundation-models/conversationPolicy.ts';
@@ -26,7 +27,7 @@ function harness(height = 844, development = false, preference?: SensiPreference
     '../lib/assistant/phoneSensiRouting': { sensiPreferences: preferences },
     '../lib/ui/sensiPresentation': { acknowledgmentProviderLabel, RESPONSE_MODE_SUMMARIES },
     'expo/node_modules/@expo/vector-icons/Feather': { default: 'Feather' },
-    react:{useSyncExternalStore: (_: unknown, read: () => string) => read(), useRef:()=>({current:false}),useState:()=>[false,()=>{}],useEffect:(fn:()=>void)=>fn()},
+    react:{useSyncExternalStore: (_: unknown, read: () => string) => read(), useRef:(current: unknown)=>({current}),useState:()=>[false,()=>{}],useEffect:(fn:()=>void)=>fn()},
     'react/jsx-runtime':require('react/jsx-runtime'),
     'react-native':{ScrollView:'ScrollView',useWindowDimensions:()=>({width,height,fontScale}),Platform:{OS:'ios'},KeyboardAvoidingView:'KeyboardAvoidingView',Modal:'Modal',SafeAreaView:'SafeAreaView',Text:'Text',View:'View'},
     '../lib/assistant/safetyConversation':{safetyButtonText,simulationCompletion},
@@ -36,7 +37,8 @@ function harness(height = 844, development = false, preference?: SensiPreference
     './SafetyTypedResponse':{SafetyTypedResponse:'TypedResponse'},
     '../lib/voice/basicOfflineAcknowledgment': { VOICECHECK_BASIC_OFFLINE: true },
     './LiveSensiProvider': { LiveSensiProvider: 'LiveSensiProvider', BasicOfflineStatus: 'BasicOfflineStatus' },
-    './SensiConversationThread':{SensiConversationThread:'Thread'},'./ui':{Btn:'Btn'},
+    './SensiConversationThread':{SensiConversationThread:'Thread'},
+    '../lib/assistant/threadPresentation': { nearThreadBottom, playbackLabel },'./ui':{Btn:'Btn'},
   };
   function load(component: string) {
     const source = readFileSync(new NodeURL(`../components/${component}.tsx`, import.meta.url), 'utf8');
@@ -51,7 +53,7 @@ function harness(height = 844, development = false, preference?: SensiPreference
     }, exports, development);
     return exports;
   }
-  return { render: load('SensiSafetyConversation').SensiSafetyConversation, provider: load('VoiceCheckProviderStatus').VoiceCheckProviderStatus };
+  return { thread: load('SensiConversationThread').SensiConversationThread, render: load('SensiSafetyConversation').SensiSafetyConversation, provider: load('VoiceCheckProviderStatus').VoiceCheckProviderStatus };
 }
 test('standby and active safety use one modal host and navigation does not change a check', () => {
   const { render } = harness(); let closed = 0;
@@ -220,7 +222,7 @@ test('Center indicator follows published voice phases, including cancellation an
       check: phase ? { episode: { id: 'episode' }, question: 'wellness', phase } : null,
     } }, onContinue() {} });
     const nodes = walk(tree);
-    assert.equal(nodes.find(n => n.type === 'LanguageScope').props.language, 'es');
+    assert.ok(!nodes.some(n => n.type === 'LanguageScope'));
     assert.ok(nodes.some(n => n.props?.children === 'Simulation'));
     const instance = nodes.find(n => n.type?.name === 'VoiceCheckListeningIndicator');
     const indicator = walk(instance.type(instance.props));
@@ -289,5 +291,61 @@ test('built-in VoiceCheck keeps its header, controls and state without a provide
       assert.ok(nodes.indexOf(indicator) < nodes.findIndex(node => node.type === 'Btn'));
       assert.equal(nodes.some(node => node.props?.children === 'Simulation'), simulation);
     }
+  }
+});
+
+
+for (const app of ['en', 'es'] as const) for (const voice of ['en', 'es'] as const) {
+  test(`Safety conversation routes app text (${app}) separately from voice transcript (${voice})`, () => {
+    const { render, thread } = harness();
+    const spoken = voice === 'en' ? 'Would you like me to call Mom?' : '¿Quieres que llame a Mom?';
+    const driver = voice === 'en' ? 'Yes, please' : 'Sí, por favor';
+    const status = contactHandoffMessage('opened');
+    const messages = [
+      { id: '1', role: 'assistant', text: spoken, playback: 'playing' },
+      { id: '2', role: 'driver', text: driver },
+      { id: '3', role: 'system', text: status },
+    ];
+    const conversation = { episodeId: 'episode', language: voice, finished: false, messages };
+    const check = { episode: { id: 'episode' }, question: 'contact_offer', captureId: 'capture', phase: 'speaking' };
+    const active = walk(render({ drive: { safety: { conversation, check } }, onContinue() {} }));
+    const completed = walk(render({ drive: { safety: { conversation: { ...conversation, finished: true },
+      last: { episode: { id: 'episode' }, handoff: 'opened' } } }, onContinue() {} }));
+    assert.ok(![...active, ...completed].some(node => node.type === 'LanguageScope'));
+
+    const appStrings = (node: any): string[] => {
+      const content = node.props.children;
+      const strings = (Array.isArray(content) ? content : [content]).filter(value => typeof value === 'string');
+      return strings.map(text => node.props.localize === false ? text : translateText(text, app));
+    };
+    const accept = active.find(node => node.type === 'Btn' && node.props.title === 'Yes, open phone');
+    assert.equal(translateText(accept.props.title, app), app === 'es' ? 'Sí, abrir teléfono' : 'Yes, open phone');
+    const expectedStatus = app === 'es' ? 'Se abrió el número de tu contacto. Toca Llamar para conectar.' : status;
+    const statusNode = completed.find(node => node.type === 'Text' && Array.isArray(node.props.children) && node.props.children.includes(status));
+    assert.ok(appStrings(statusNode).includes(expectedStatus));
+
+    const instance = active.find(node => node.type?.name === 'VoiceCheckListeningIndicator');
+    const indicator = walk(instance.type(instance.props));
+    const currentUtterance = indicator.find(node => node.type === 'Text' && node.props.children === spoken);
+    assert.deepEqual(appStrings(currentUtterance), [spoken]);
+    const bubbles = walk(thread(active.find(node => node.type === 'Thread').props));
+    for (const [original, expected] of [[spoken, spoken], [driver, driver], [status, expectedStatus]]) {
+      const line = bubbles.find(node => node.type === 'Text' && node.props.children === original);
+      assert.deepEqual(appStrings(line), [expected]);
+    }
+  });
+}
+
+test('Safety handoff status, cancellation, confirmation and errors have Spanish copy', () => {
+  const statuses = ['opened', 'open_failed', 'cancelled', 'missing_contact', 'invalid_phone', 'not_authorized', 'simulated'];
+  for (const text of [...statuses.map(status => contactHandoffMessage(status)),
+    'Confirm saved test contact', 'Confirm saved emergency contact', 'Continuing opens the real iPhone calling interface for this number.',
+    'Open iPhone Dialer', 'The iPhone dialer could not be requested.', 'Checking the saved contact…',
+    'Cancel demonstration', 'Cancel hardware test', 'Open saved contact?', 'Real-contact demonstration expired or could not open.',
+    'Phone interface requested. Call connection is not confirmed.', 'Confirmation expires after 30 seconds. This can lead to a real call.',
+    'Contact handoff recovery could not be authorized.', 'Request contact handoff again',
+  ]) {
+    assert.notEqual(translateText(text, 'es'), text, text);
+    assert.equal(translateText(text, 'en'), text);
   }
 });

@@ -1,4 +1,3 @@
-import { VoiceCheckLanguageScope } from '../lib/i18n/LanguageProvider';
 import { RealContactDemoConfirmation } from './RealContactDemoConfirmation';
 import { responsivenessProbe, SENSI_ACKNOWLEDGMENT_PRESENTATION, traceVoiceCheckUI } from '../lib/voice/responsivenessDiagnostics';
 import { LocalizedText as Text } from '../lib/i18n/native';
@@ -128,55 +127,51 @@ export function SensiSafetyConversation({ drive, onContinue, standby, onStandbyC
   return <Modal visible transparent animationType="fade" onRequestClose={() => {
     if (dialogue.finished) drive.dismissSafetyConversation(dialogue.episodeId);
   }}>
-    <VoiceCheckLanguageScope language={dialogue.language ?? (drive.driver?.language === 'es' ? 'es' : 'en')}>
-      <SafeAreaView style={{ flex: 1, backgroundColor: t.background }}>
-        <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-          <View style={{ flex: 1 }} onLayout={({ nativeEvent }) => setViewport(nativeEvent.layout.height)}>
-            <View style={{ paddingHorizontal: 16, paddingVertical: compact ? 4 : 9, flexShrink: 0, flexDirection: 'row',
-              flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', columnGap: 10 }}>
-              <View>
-                <Text accessibilityRole="header" style={{ color: t.text, fontSize: compact ? 22 : 28, fontWeight: '800' }}>Sensi</Text>
-                <Text style={{ color: t.textSecondary, fontSize: 13 }}>Safety check</Text>
-              </View>
-              {dialogue.simulation && !hardware && !homeDemo?.liveEpisode ? <Text style={{ backgroundColor: t.warningSurface, color: t.warning, borderRadius: 10,
-                overflow: 'hidden', paddingHorizontal: 9, paddingVertical: 4, fontSize: 12, fontWeight: '700' }}>Simulation</Text> : null}
-              {homeDemo ? <Text style={{ color: t.textSecondary, fontSize: 12, flexBasis: '100%' }}>{homeDemo.liveEpisode
-                ? 'Hardware Demo Mode · Simulated biometric abnormality' : 'Hardware Demo Mode · Simulated high HR'}</Text> : null}
-              {hardware ? <Text style={{ color: t.textSecondary, fontSize: 12, flexBasis: '100%' }}>Real Hardware Safety Test</Text> : null}
-              {dialogue.realContactDemo && !hardware ? <Text style={{ color: t.textSecondary, fontSize: 12, flexBasis: '100%' }}>
-                Real-contact demo · iOS confirmation required
-              </Text> : null}
+    <SafeAreaView style={{ flex: 1, backgroundColor: t.background }}>
+      <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+        <View style={{ flex: 1 }} onLayout={({ nativeEvent }) => setViewport(nativeEvent.layout.height)}>
+          <View style={{ paddingHorizontal: 16, paddingVertical: compact ? 4 : 9, flexShrink: 0, flexDirection: 'row',
+            flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', columnGap: 10 }}>
+            <View>
+              <Text accessibilityRole="header" style={{ color: t.text, fontSize: compact ? 22 : 28, fontWeight: '800' }}>Sensi</Text>
+              <Text style={{ color: t.textSecondary, fontSize: 13 }}>Safety check</Text>
             </View>
-            <VoiceCheckListeningIndicator phase={active ? check.phase : undefined} finished={dialogue.finished}
-              answerPending={answerPending} audioUnavailable={active && !!check.fallbackText} spokenMessage={spokenMessage} compact={compact} shortViewport={availableHeight < 390} />
-
-            <SensiConversationThread messages={dialogue.simulation ? dialogue.messages.filter(message => !(message.role === 'system' && /^(?:Simulation complete\.|Noncalling simulation complete\.|Contact consent received\.)/.test(message.text))) : dialogue.messages} provisional="" compactPlayback />
-
-            {active ? <View style={{ paddingHorizontal: 12, paddingTop: 8, gap: 6, borderTopWidth: 1, borderColor: t.border }}>
-              {homeDemo?.liveEpisode && check.question === 'contact_offer' && homeDemo.testContact ? <>
-                <Text localize={false} style={{ color: t.text }}>{homeDemo.testContact.name} · {homeDemo.testContact.phone}</Text>
-                <Text style={{ color: t.textSecondary }}>Saying yes or tapping Yes opens the iPhone dialer and may start a real call.</Text>
-              </> : null}
-              <View style={{ flexDirection: stackActions ? 'column' : 'row', gap: 8 }}>
-                <Btn title={check.question === 'contact_offer' && homeDemo?.liveEpisode ? 'Yes, open iPhone dialer'
-                  : hardware && check.question === 'contact_offer' ? 'Yes, review saved contact' : safetyButtonText(check.question, true)}
-                  style={stackActions ? undefined : { flex: 1, minHeight: 48, paddingHorizontal: 8 }} disabled={answerPending} onPress={() => answer(true)} />
-                <Btn title={safetyButtonText(check.question, false)} kind="ghost"
-                  style={stackActions ? undefined : { flex: 1, minHeight: 48, paddingHorizontal: 8 }} disabled={answerPending} onPress={() => answer(false)} />
-              </View>
-              <ScrollView keyboardShouldPersistTaps="handled" style={{ flexGrow: 0, flexShrink: 1, maxHeight: Math.max(76, availableHeight * 0.28) }}
-                contentContainerStyle={{ paddingBottom: 8 }}>
-                <SafetyTypedResponse secondary scope={{ episodeId: dialogue.episodeId, question: check.question, captureId: check.captureId }} submit={drive.respondAlertText} />
-                {controls}
-              </ScrollView>
-            </View> : <ScrollView keyboardShouldPersistTaps="handled" style={{ flexGrow: 0, flexShrink: 1,
-              maxHeight: availableHeight * 0.48, borderTopWidth: 1, borderTopColor: t.border }} contentContainerStyle={{ padding: 12, gap: 8 }}>
-              {controls}
-            </ScrollView>}
+            {dialogue.simulation && !hardware ? <Text style={{ backgroundColor: t.warningSurface, color: t.warning, borderRadius: 10,
+              overflow: 'hidden', paddingHorizontal: 9, paddingVertical: 4, fontSize: 12, fontWeight: '700' }}>Simulation</Text> : null}
+            {homeDemo ? <Text style={{ color: t.textSecondary, fontSize: 12, flexBasis: '100%' }}>{homeDemo.liveEpisode
+              ? 'Hardware Demo Mode · Simulated biometric abnormality' : 'Hardware Demo Mode · Simulated high HR'}</Text> : null}
+            {hardware ? <Text style={{ color: t.textSecondary, fontSize: 12, flexBasis: '100%' }}>Real Hardware Safety Test</Text> : null}
+            {(dialogue.realContactDemo || homeDemo) && !hardware ? <Text style={{ color: t.textSecondary, fontSize: 12, flexBasis: '100%' }}>
+              Real-contact demo · iOS confirmation required
+            </Text> : null}
           </View>
+          <VoiceCheckListeningIndicator phase={active ? check.phase : undefined} finished={dialogue.finished}
+            answerPending={answerPending} audioUnavailable={active && !!check.fallbackText} spokenMessage={spokenMessage} compact={compact} shortViewport={availableHeight < 390} />
 
+          <SensiConversationThread messages={dialogue.simulation ? dialogue.messages.filter(message => !(message.role === 'system' && /^(?:Simulation complete\.|Noncalling simulation complete\.|Contact consent received\.)/.test(message.text))) : dialogue.messages} provisional="" compactPlayback />
+
+          {active ? <View style={{ paddingHorizontal: 12, paddingTop: 8, gap: 6, borderTopWidth: 1, borderColor: t.border }}>
+            {homeDemo?.liveEpisode && check.question === 'contact_offer' && homeDemo.testContact ? <>
+              <Text localize={false} style={{ color: t.text }}>{homeDemo.testContact.name} · {homeDemo.testContact.phone}</Text>
+              <Text style={{ color: t.textSecondary }}>Saying yes or tapping Yes opens the iPhone dialer and may start a real call.</Text>
+            </> : null}
+            <View style={{ flexDirection: stackActions ? 'column' : 'row', gap: 8 }}>
+              <Btn title={hardware && check.question === 'contact_offer' ? 'Yes, review saved contact' : safetyButtonText(check.question, true)}
+                style={stackActions ? undefined : { flex: 1, minHeight: 48, paddingHorizontal: 8 }} disabled={answerPending} onPress={() => answer(true)} />
+              <Btn title={safetyButtonText(check.question, false)} kind="ghost"
+                style={stackActions ? undefined : { flex: 1, minHeight: 48, paddingHorizontal: 8 }} disabled={answerPending} onPress={() => answer(false)} />
+            </View>
+            <ScrollView keyboardShouldPersistTaps="handled" style={{ flexGrow: 0, flexShrink: 1, maxHeight: Math.max(76, availableHeight * 0.28) }}
+              contentContainerStyle={{ paddingBottom: 8 }}>
+              <SafetyTypedResponse secondary scope={{ episodeId: dialogue.episodeId, question: check.question, captureId: check.captureId }} submit={drive.respondAlertText} />
+              {controls}
+            </ScrollView>
+          </View> : <ScrollView keyboardShouldPersistTaps="handled" style={{ flexGrow: 0, flexShrink: 1,
+            maxHeight: availableHeight * 0.48, borderTopWidth: 1, borderTopColor: t.border }} contentContainerStyle={{ padding: 12, gap: 8 }}>
+            {controls}
+          </ScrollView>}
+        </View>
       </KeyboardAvoidingView>
-      </SafeAreaView>
-    </VoiceCheckLanguageScope>
+    </SafeAreaView>
   </Modal>;
 }

@@ -89,6 +89,20 @@ test('call-offer consent uses natural local rules, not wellness probabilities', 
   assert.equal(understandCallAnswer(null), 'silent');
 });
 
+test('polite contact declines are bounded to a complete offer response', () => {
+  for (const text of ["I'm OK, thank you.", 'I’m fine thanks', "No, I'm good.", 'No need, thank you.',
+    'Estoy bien, gracias.', 'No, gracias.', 'No hace falta, gracias.']) {
+    assert.equal(understandCallAnswer(text), 'no', text);
+  }
+  for (const text of ["I'm OK, thank you, maybe call my mom", "I'm fine, thanks, yes please",
+    'Estoy bien, gracias, pero sí llama a mi mamá', 'No hace falta, gracias, llama al 911',
+    '"No, gracias"', 'No sé, quizás', "I'm okay"]) {
+    assert.equal(understandCallAnswer(text), 'unclear', text);
+  }
+  assert.equal(understandCallAnswer('yes, please'), 'yes');
+  assert.equal(understandCallAnswer('sí, por favor'), 'yes');
+});
+
 test('bounded natural wellness prefixes support direct requests without weakening exclusions', () => {
   for (const text of ["No, I'm a little dizzy, can you call my mom?", "I'm a bit dizzy, could you please call my mom?",
     "I feel slightly sick, would you call my emergency contact?", "I'm feeling a little dizzy, please call Mom"]) {

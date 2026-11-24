@@ -40,7 +40,7 @@ export function VoiceCheckListeningIndicator({ phase, finished, answerPending, a
         {state.label}
       </Text>
     </View>
-    {state.icon === 'volume-2' && spokenMessage ? <Text numberOfLines={compact ? 1 : 2}
+    {state.icon === 'volume-2' && spokenMessage ? <Text localize={false} numberOfLines={compact ? 1 : 2}
       style={{ color: t.textSecondary, textAlign: 'center', maxWidth: 480 }}>{spokenMessage}</Text> : null}
   </View>;
 }

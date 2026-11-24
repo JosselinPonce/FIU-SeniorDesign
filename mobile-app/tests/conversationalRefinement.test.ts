@@ -37,15 +37,15 @@ for (const lang of ['en', 'es'] as const) {
         }, context); }, acknowledgment: () => ack.get(lang), cancelAcknowledgment: () => ack.cancel(),
       });
       const pending = check.run('bpm_high'); await tick();
-      assert.equal(starts, 1); assert.equal(said.length, 4);
-      assert.equal(said[3], guidance[lang].split(/(?<=\.) /)[0]); assert.equal(check.authorizesContact({ outcome: 'not_ok', urgent: false, channel: 'voice', attempts: 1, confidence: null, contactCall: 'accepted_offer' }), false);
+      assert.equal(starts, 1); assert.equal(said.length, 3);
+      assert.equal(said[2], guidance[lang].split(/(?<=\.) /)[0]); assert.equal(check.authorizesContact({ outcome: 'not_ok', urgent: false, channel: 'voice', attempts: 1, confidence: null, contactCall: 'accepted_offer' }), false);
       playing.resolve(); const result = await pending;
-      assert.equal(said.length, 7, 'one utterance per planned sentence');
+      assert.equal(said.length, 6, 'one utterance per planned sentence');
       const fallback = lang === 'en' ? "Thank you for telling me." : 'Gracias por decírmelo.';
-      assert.deepEqual(said.slice(3), [...guidance[lang].split(/(?<=\.) /), mode === 'ready' ? output[lang] : fallback, lang === 'en' ? 'Would you like me to call Mom?' : '¿Quieres que llame a mamá?']);
+      assert.deepEqual(said.slice(2), [...guidance[lang].split(/(?<=\.) /), mode === 'ready' ? output[lang] : fallback, lang === 'en' ? 'Would you like me to call Mom?' : '¿Quieres que llame a mamá?']);
       assert.equal(result.outcome, 'not_ok'); assert.equal(result.contactCall, 'declined_offer');
       assert.equal(check.authorizesContact(result), false);
-      generation.resolve(output[lang]); await tick(); assert.equal(said.length, 7, 'late output never adds another turn');
+      generation.resolve(output[lang]); await tick(); assert.equal(said.length, 6, 'late output never adds another turn');
       ack.cancel();
     });
   }
@@ -57,8 +57,8 @@ for (const lang of ['en', 'es'] as const) {
         return recognitionEvidence(id, { status: 'success', transcript: text, finalTranscript: text, isFinal: true, finalResultReceived: true }); },
     }, lang, 'Driver');
     const result = await check.run('bpm_high');
-    assert.equal(said.slice(3,6).join(' '), lang === 'en' ? "I didn't catch that. Are you feeling okay? Say yes or no." : 'No te entendí. ¿Te sientes bien? Di sí o no.');
-    assert.ok(said.slice(3,6).join(' ').split(/\s+/).length <= 14); assert.ok(!said.slice(3,6).join(' ').includes('Driver'));
+    assert.equal(said.slice(2,5).join(' '), lang === 'en' ? "I didn't catch that. Are you feeling okay? Say yes or no." : 'No te entendí. ¿Te sientes bien? Di sí o no.');
+    assert.ok(said.slice(2,5).join(' ').split(/\s+/).length <= 14); assert.ok(!said.slice(2,5).join(' ').includes('Driver'));
     assert.equal(result.outcome, 'ok'); assert.equal(result.channel, 'voice'); assert.equal(result.contactCall, 'not_requested');
   });
   test(`${lang}: cancellation during coordinated playback prevents capture and consent`, async () => {
@@ -68,8 +68,8 @@ for (const lang of ['en', 'es'] as const) {
       listen: async (_l, _m, _h, id) => recognitionEvidence(id, { status: 'success', transcript: statement[lang], finalTranscript: statement[lang], isFinal: true, finalResultReceived: true }),
     }, lang, '', { contactAvailable: true, acknowledgment: () => output[lang] });
     const pending = check.run('spo2_low'); const rejected = assert.rejects(pending, /cancelled/);
-    await tick(); assert.equal(said[3], guidance[lang].split(/(?<=\.) /)[0]); check.cancel(); playing.resolve(); await rejected;
-    assert.equal(said.length, 4); assert.equal(check.cancelledResult?.contactCall, 'cancelled');
+    await tick(); assert.equal(said[2], guidance[lang].split(/(?<=\.) /)[0]); check.cancel(); playing.resolve(); await rejected;
+    assert.equal(said.length, 3); assert.equal(check.cancelledResult?.contactCall, 'cancelled');
   });
 }
 

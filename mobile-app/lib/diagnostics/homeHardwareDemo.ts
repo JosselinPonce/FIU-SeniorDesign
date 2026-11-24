@@ -1,3 +1,5 @@
+import { SENSI_MODE } from '../assistant/mode.ts';
+import { VOICECHECK_BASIC_OFFLINE } from '../voice/basicOfflineAcknowledgment.ts';
 import { FlagEngine, QUALITY_MIN, thresholds, type ConfirmationObservation, type Thresholds, type Episode } from '../analysis/flagEngine.ts';
 import { SafetyController, contactPhone, type SafetyState } from '../analysis/safetyController.ts';
 import { SENSOR_STALE_MS, SensorContinuity } from '../analysis/sensorContinuity.ts';
@@ -374,8 +376,8 @@ export class HomeHardwareDemo {
     };
     const controller = new SafetyController({
       interactionCurrent: () => this.ownsRun(owner, run),
-      assistantMode: () => 'gemma',
-      basicOfflineAcknowledgments: true,
+      assistantMode: () => SENSI_MODE,
+      basicOfflineAcknowledgments: VOICECHECK_BASIC_OFFLINE,
       voiceIO: () => this.deps.voiceIO(),
       releaseAudio: release,
       save: async () => {}, saveAck: async () => {}, haptic: () => {},
@@ -406,7 +408,7 @@ export class HomeHardwareDemo {
         run.permit = new RealContactDemoPermit(() => this.ownsRun(owner, run), expiresAt, this.now);
         if (live) void this.openDialer(owner, run, run.permit);
         else this.set({ confirmation: { ...owner.contact, id: episode.id }, phase: 'review' });
-      }, live);
+      });
       if (this.ownsRun(owner, run)) {
         if (this.state.phase === 'checking') this.set({ phase: 'finished' });
         if (event && result && this.deps.saveOutcome) {

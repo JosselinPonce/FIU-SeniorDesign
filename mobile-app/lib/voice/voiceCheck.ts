@@ -98,10 +98,11 @@ type Reason = 'bpm_high' | 'bpm_low' | 'spo2_low';
 
 const TEXT = {
   en: {
-    ask: (name: string, r: Reason, openAnswer?: boolean) =>
+    intro: (name: string, r: Reason) =>
       `${name ? `${name}, ` : ''}${
         r === 'bpm_high' ? 'your heart rate has been unusually high' : r === 'bpm_low' ? 'your heart rate has been unusually low' : 'your oxygen level has been low'
-      }. Are you feeling okay? ${openAnswer ? "You can tell me how you’re feeling." : "Please say yes, or no."}`,
+      }.`,
+    question: 'Are you feeling okay?',
     again: "I didn't catch that. Are you feeling okay? Say yes or no.",
     ok: "Okay. I'll keep an eye on things. Drive safely.",
     notOk: 'Please pull over as soon as it is safe. If you need emergency help, call 911.',
@@ -109,10 +110,11 @@ const TEXT = {
     hints: ['yes', 'no', "I'm okay", "I'm fine", 'not okay', 'I need help', 'help', 'call 911'],
   },
   es: {
-    ask: (name: string, r: Reason, openAnswer?: boolean) =>
+    intro: (name: string, r: Reason) =>
       `${name ? `${name}, ` : ''}${
         r === 'bpm_high' ? 'tu ritmo cardíaco ha estado inusualmente alto' : r === 'bpm_low' ? 'tu ritmo cardíaco ha estado inusualmente bajo' : 'tu nivel de oxígeno ha estado bajo'
-      }. ¿Te sientes bien? ${openAnswer ? "Puedes decirme cómo te sientes." : "Por favor di sí, o no."}`,
+      }.`,
+    question: '¿Te sientes bien?',
     again: 'No te entendí. ¿Te sientes bien? Di sí o no.',
     ok: 'Muy bien. Sigo pendiente. Maneja con cuidado.',
     notOk: 'Por favor detente cuando sea seguro. Si necesitas ayuda de emergencia, llama al 911.',
@@ -151,10 +153,10 @@ export class VoiceCheck {
   private readonly lang: Lang;
   private readonly name: string;
   // Legacy semantic callback options are accepted for compatibility but never invoked.
-  private readonly options: { basicOfflineAcknowledgments?: boolean; startSemantic?: (context: SemanticContext, budget?: number) => SemanticTask; reAskWaitMs?: number; contactAvailable?: boolean; onQuestion?: (q: CheckQuestion, captureId: string) => void; onAnswer?: (answer: AcceptedSafetyAnswer) => void; cancelAcknowledgment?: () => void; startAcknowledgment?: (context: AcknowledgmentContext) => void; acknowledgment?: (context: AcknowledgmentContext) => string; contactName?: string; biometricSimulationDemo?: boolean };
+  private readonly options: { basicOfflineAcknowledgments?: boolean; startSemantic?: (context: SemanticContext, budget?: number) => SemanticTask; reAskWaitMs?: number; contactAvailable?: boolean; onQuestion?: (q: CheckQuestion, captureId: string) => void; onAnswer?: (answer: AcceptedSafetyAnswer) => void; cancelAcknowledgment?: () => void; startAcknowledgment?: (context: AcknowledgmentContext) => void; acknowledgment?: (context: AcknowledgmentContext) => string; contactName?: string };
 
   constructor(io: VoiceIO, lang: Lang, name: string,
-    options: { basicOfflineAcknowledgments?: boolean; startSemantic?: (context: SemanticContext, budget?: number) => SemanticTask; reAskWaitMs?: number; contactAvailable?: boolean; onQuestion?: (q: CheckQuestion, captureId: string) => void; onAnswer?: (answer: AcceptedSafetyAnswer) => void; cancelAcknowledgment?: () => void; startAcknowledgment?: (context: AcknowledgmentContext) => void; acknowledgment?: (context: AcknowledgmentContext) => string; contactName?: string; biometricSimulationDemo?: boolean } = {}) {
+    options: { basicOfflineAcknowledgments?: boolean; startSemantic?: (context: SemanticContext, budget?: number) => SemanticTask; reAskWaitMs?: number; contactAvailable?: boolean; onQuestion?: (q: CheckQuestion, captureId: string) => void; onAnswer?: (answer: AcceptedSafetyAnswer) => void; cancelAcknowledgment?: () => void; startAcknowledgment?: (context: AcknowledgmentContext) => void; acknowledgment?: (context: AcknowledgmentContext) => string; contactName?: string } = {}) {
     this.io = io;
     this.lang = lang;
     this.name = name;
@@ -365,11 +367,8 @@ export class VoiceCheck {
     let result: CheckResult | null = null;
     let statement: string | null = null;
     let unclearStatement: string | null = null;
-    const opening = typeof __DEV__ !== 'undefined' && __DEV__ && this.options.biometricSimulationDemo
-      ? this.lang === 'en' ? 'This safety check was triggered by a simulated biometric abnormality. Are you feeling okay?'
-        : 'Esta comprobación se inició por una anomalía biométrica simulada. ¿Te sientes bien?'
-      : t.ask(this.name, reason, this.options.basicOfflineAcknowledgments);
-    for (const [index, prompt] of [opening, t.again].entries()) {
+    const intro = t.intro(this.name, reason);
+    for (const [index, prompt] of [`${intro} ${t.question}`, t.again].entries()) {
       const uncertainty = index > 0 && this.options.basicOfflineAcknowledgments && unclearStatement
         ? basicOfflineAcknowledgment(offlineContext(unclearStatement, this.lang), this.lang, 'unclear') : null;
       const heard = await this.ask(uncertainty ? prompt.replace(/^[^.]+\./, uncertainty) : prompt, 'wellness', [...t.hints]);
@@ -450,11 +449,7 @@ export class VoiceCheck {
 
     const contactName = this.options.contactName?.trim();
     const label = contactName && contactName.length <= 60 && /^[\p{L}\p{M} .'’-]+$/u.test(contactName) ? contactName : null;
-    const offer = typeof __DEV__ !== 'undefined' && __DEV__ && this.options.biometricSimulationDemo
-      ? this.lang === 'en'
-        ? `Should I open the iPhone dialer for ${label ?? 'your saved test contact'} now? This may start a real call.`
-        : `¿Abro ahora el marcador del iPhone para ${label ?? 'tu contacto de prueba guardado'}? Esto puede iniciar una llamada real.`
-      : this.lang === 'en'
+    const offer = this.lang === 'en'
       ? label ? `Would you like me to call ${label}?` : 'Would you like me to call your emergency contact?'
       : label ? `¿Quieres que llame a ${label}?` : '¿Quieres que llame a tu contacto de emergencia?';
     const retry = this.lang === 'en'

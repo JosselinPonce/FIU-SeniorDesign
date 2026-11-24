@@ -5,6 +5,12 @@ import { createRequire } from 'node:module';
 import { URL as NodeURL } from 'node:url';
 import ts from 'typescript';
 import { HomeHardwareDemo, type HomeHardwareDemoSnapshot } from '../lib/diagnostics/homeHardwareDemo.ts';
+import { SafetyController, type SafetyState } from '../lib/analysis/safetyController.ts';
+import { SENSI_MODE } from '../lib/assistant/mode.ts';
+import { VOICECHECK_BASIC_OFFLINE } from '../lib/voice/basicOfflineAcknowledgment.ts';
+import { recognitionEvidence } from '../lib/voice/coreRecognition.ts';
+import { openConfirmedDemoPhoneInterface } from '../lib/voice/phoneHandoff.ts';
+import type { VoiceIO } from '../lib/voice/voiceCheck.ts';
 import { thresholds } from '../lib/analysis/flagEngine.ts';
 import { profilePrior, personalBand } from '../lib/analysis/profileModel.ts';
 import type { Frame } from '../lib/ble/protocol.ts';
@@ -22,7 +28,7 @@ const flush = () => new Promise<void>(resolve => setImmediate(resolve));
 const prior = profilePrior({ age: 40, sex: 'female', weight_kg: 70, height_cm: 165, conditions: [], medications: [] });
 const reference = thresholds(prior, personalBand(prior, null));
 
-function fixture(prepareVoice = async () => ({ granted: true, onDevice: true })) {
+function fixture(prepareVoice = async () => ({ granted: true, onDevice: true }), voice?: VoiceIO) {
   let now = 10_000;
   let selected = { ...driver };
   let saved = { ...driver };
@@ -42,7 +48,7 @@ function fixture(prepareVoice = async () => ({ granted: true, onDevice: true }))
     readDriver: async () => { if (readBarrier) await readBarrier; return saved; },
     prepareVoice,
     thresholds: () => reference,
-    voiceIO: () => ({ speak: async text => { spoken.push(text); }, listen: async () => new Promise(() => {}), cancel() {} }),
+    voiceIO: () => voice ?? { speak: async text => { spoken.push(text); }, listen: async () => new Promise(() => {}), cancel() {} },
     releaseAudio: () => { releases++; },
     openURL: async url => { urls.push(url); },
     change: next => { state = next; },
@@ -304,12 +310,11 @@ test('sensor-derived high HR confirms the projection and opens the real adapter 
   assert.equal(f.state().liveEpisode, true);
   assert.match(wellness.episodeId, /^home-biometric-simulation-/);
   assert.equal(f.state().safety?.check?.episode.value, reference.highWarn + 3);
-  assert.ok(f.spoken.some(text => /simulated biometric abnormality/.test(text)));
+  assert.deepEqual(f.spoken, ['Driver, your heart rate has been unusually high.', 'Are you feeling okay?']);
   assert.deepEqual(f.urls, []);
   assert.equal(f.demo.answer('not_ok', wellness), true);
   await flush();
-  assert.ok(f.spoken.some(text => /open the iPhone dialer/.test(text)));
-  assert.ok(f.spoken.some(text => /may start a real call/.test(text)));
+  assert.equal(f.spoken.at(-1), 'Would you like me to call Test Contact?');
   const offer = f.scope();
   assert.equal(f.demo.answer('call_yes', wellness), false);
   assert.deepEqual(f.urls, []);
@@ -320,6 +325,105 @@ test('sensor-derived high HR confirms the projection and opens the real adapter 
   assert.deepEqual(f.urls, ['tel:+12025550124']);
   await f.demo.confirm(offer.episodeId);
   assert.deepEqual(f.urls, ['tel:+12025550124']);
+});
+
+for (const lang of ['en', 'es'] as const) for (const scenario of ['high_hr', 'low_spo2'] as const) {
+  test(`${lang}/${scenario}: sensor-triggered projection matches Safety Testing speech, capture, outcome and phone handoff`, async t => {
+    t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+    const profile = { ...driver, age: 40, gender: 'female' as const, height_cm: 165, weight_kg: 65, language: lang };
+    function voiceFixture() {
+      const events: unknown[][] = [];
+      const answers = lang === 'en' ? ["I feel dizzy", 'yes please'] : ['Me siento mareada', 'sí, por favor'];
+      let captureId: string | undefined;
+      const io: VoiceIO = {
+        prepareRecognition(language, id) { captureId = id; events.push(['prepare', language]); },
+        async speak(text, language, delivery) { events.push(['speak', text, language, delivery]); },
+        async pause() { events.push(['pause']); },
+        async listen(language, ms, hints, id, phase) {
+          assert.equal(id, captureId);
+          assert.equal(ms, 6000);
+          events.push(['listen', language, ms, hints]);
+          phase?.('ready');
+          phase?.('listening');
+          const text = answers.shift()!;
+          return recognitionEvidence(id, { status: 'success', transcript: text, finalTranscript: text, isFinal: true, finalResultReceived: true });
+        },
+        cancel() { events.push(['cancel']); },
+      };
+      return { io, events };
+    }
+
+    const settingsVoice = voiceFixture();
+    let settings!: SafetyState;
+    const opened: string[] = [];
+    const controller = new SafetyController({
+      assistantMode: () => SENSI_MODE, basicOfflineAcknowledgments: VOICECHECK_BASIC_OFFLINE,
+      voiceIO: () => settingsVoice.io, demoSystemConfirmation: true,
+      handoffDemoContact: (phone, authorize) => openConfirmedDemoPhoneInterface(phone, authorize, () => true,
+        async url => { opened.push(url); }),
+      save: async () => assert.fail('Safety Testing must not persist measurements'),
+      saveAck: async () => assert.fail('Safety Testing must not learn from measurements'),
+      haptic() {}, newId: () => 'settings', onChange: next => { settings = next; },
+    });
+    controller.configure(profile, null);
+    let finished = false;
+    const pending = controller.simulate(scenario === 'high_hr' ? 'high_critical' : 'spo2', true)
+      .finally(() => { finished = true; });
+    for (let i = 0; i < 90 && !finished; i++) { t.mock.timers.tick(250); await flush(); }
+    assert.equal(finished, true);
+    const expected = await pending;
+    assert.equal(expected?.outcome, 'not_ok');
+    assert.equal(expected?.contactCall, 'accepted_offer');
+
+    const hardwareVoice = voiceFixture();
+    const hardware = fixture(undefined, hardwareVoice.io);
+    hardware.driver(profile);
+    hardware.saved(profile);
+    assert.equal(hardware.demo.enable(), true);
+    hardware.demo.configureSimulation({ enabled: true, scenario });
+    for (let i = 0; i < 8; i++) hardware.feed(86);
+    await flush();
+    const actual = hardware.state().safety;
+    assert.equal(actual?.last?.episode.kind, scenario === 'high_hr' ? 'bpm_high' : 'spo2_low');
+    assert.equal(actual?.last?.episode.kind, settings.last?.episode.kind);
+    assert.deepEqual(actual?.last?.result, expected);
+    assert.equal(actual?.conversation?.acknowledgmentSource, 'fallback');
+    assert.equal(actual?.conversation?.acknowledgmentSource, settings.conversation?.acknowledgmentSource);
+    assert.ok(hardwareVoice.events.some(([event, , , delivery]) => event === 'speak' && delivery === 'pre_guidance_acknowledgment'));
+    assert.ok(hardwareVoice.events.some(([event, text]) => event === 'speak' && /pull over|detente/i.test(String(text))));
+    assert.deepEqual(hardwareVoice.events, settingsVoice.events);
+    assert.deepEqual(hardwareVoice.events[0], ['prepare', lang]);
+    assert.deepEqual(hardwareVoice.events[3], ['speak', lang === 'en' ? 'Are you feeling okay?' : '¿Te sientes bien?', lang, undefined]);
+    assert.match(String(hardwareVoice.events[1]?.[1]), scenario === 'high_hr'
+      ? lang === 'en' ? /^Driver, your heart rate/ : /^Driver, tu ritmo cardíaco/
+      : lang === 'en' ? /^Driver, your oxygen level/ : /^Driver, tu nivel de oxígeno/);
+    assert.equal(actual?.conversation?.simulation, true);
+    assert.deepEqual(opened, ['tel:+12025550124']);
+    assert.deepEqual(hardware.urls, opened);
+    hardware.demo.stop();
+  });
+}
+
+test('sensor-triggered Spanish demo accepts typed responses only for the current question', async () => {
+  const f = fixture();
+  f.driver({ language: 'es' });
+  f.saved({ language: 'es' });
+  assert.equal(f.demo.enable(), true);
+  f.demo.configureSimulation({ enabled: true });
+  for (let i = 0; i < 8; i++) f.feed(86);
+  await flush();
+  const wellness = f.scope();
+  assert.equal(f.demo.answerText('Me siento mareada', wellness), true);
+  await flush();
+  const offer = f.scope();
+  assert.equal(offer.question, 'contact_offer');
+  assert.equal(f.demo.answerText('sí, por favor', wellness), false);
+  assert.equal(f.demo.answerText('no', offer), true);
+  await flush();
+  assert.equal(f.state().safety?.last?.result.channel, 'typed');
+  assert.equal(f.state().safety?.last?.result.contactCall, 'declined_offer');
+  assert.deepEqual(f.urls, []);
+  f.demo.stop();
 });
 
 test('manual below-threshold projections, rejected frames and prior-mode readings cannot confirm', async () => {

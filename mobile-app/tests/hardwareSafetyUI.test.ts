@@ -65,8 +65,10 @@ test('Start shows the evaluator blocker and enables as soon as readiness returns
 test('hardware badge replaces Simulation only for the matching real-hardware conversation', () => {
   const source = readFileSync(new NodeURL('../components/SensiSafetyConversation.tsx', import.meta.url), 'utf8');
   assert.match(source, /__DEV__ && dialogue && drive\.hardwareTest\?\.safety\?\.conversation\?\.episodeId === dialogue\.episodeId/);
-  assert.match(source, /dialogue\.simulation && !hardware && !homeDemo\?\.liveEpisode \? <Text[^]*?>Simulation<\/Text>/);
+  assert.match(source, /dialogue\.simulation && !hardware \? <Text[^]*?>Simulation<\/Text>/);
   assert.match(source, /hardware \? <Text[^]*?>Real Hardware Safety Test<\/Text>/);
+  assert.match(source, /\(dialogue\.realContactDemo \|\| homeDemo\) && !hardware \? <Text[^]*?Real-contact demo · iOS confirmation required/);
+  assert.match(source, /homeDemo\?\.liveEpisode && check\.question === 'contact_offer'[^]*?may start a real call/);
   assert.match(source, /dialogue\.finished && hardware \?[^]*?Confirm saved emergency contact[^]*?Open iPhone Dialer/);
   assert.match(source, /dialogue\.finished && last\?\.simulation && !hardware && !homeDemo \? <RealContactDemoConfirmation/);
 });

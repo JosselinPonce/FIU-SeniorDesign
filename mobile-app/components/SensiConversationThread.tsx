@@ -32,7 +32,7 @@ export function SensiConversationThread({ messages, provisional, compactPlayback
         backgroundColor: system ? t.surfaceMuted : driver ? t.graphite : t.surface, paddingHorizontal: 12, paddingVertical: 8, gap: 3,
         borderWidth: driver || system ? 0 : 1, borderColor: t.border }}>
         {!joinsPrevious ? <Text style={{ color: driver ? t.pearl : t.textSecondary, fontSize: 12, fontWeight: '700' }}>{system ? 'Status' : driver ? 'You' : 'Sensi'}</Text> : null}
-        <Text localize={!driver} selectable style={{ color: driver ? t.pearl : t.text, fontSize: 15 }}>{message.text}</Text>
+        <Text localize={system} selectable style={{ color: driver ? t.pearl : t.text, fontSize: 15 }}>{message.text}</Text>
         {label ? <Text style={{ color: t.textSecondary, fontSize: 12 }}>{label}</Text> : null}
       </View>;
     })}

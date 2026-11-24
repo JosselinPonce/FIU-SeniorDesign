@@ -158,9 +158,8 @@ function wellness(transcript: string | null | undefined): Omit<Understood, 'cont
   }
   if (result.intent === 'ok') {
     if (scan.hedged) return unclear();
-    const mildFatigue = scan.categories.length === 1 && scan.categories[0] === 'fatigue'
-      && !/\b(?:exhausted|agotad[oa])\b/.test(t) && /\b(?:just a bit|just a little|only a little|solo|solamente)\b/.test(t);
-    if (scan.kind === 'affirmative' && !mildFatigue) return { ...result, intent: 'not_ok', reason: 'symptom-report', context: 'discomfort' };
+    if (scan.kind === 'affirmative') return { ...result, intent: 'not_ok', reason: 'symptom-report',
+      context: scan.categories[0] === 'fatigue' ? 'fatigue' : 'discomfort' };
     if (!clearWellnessAffirmation(t, transcript ?? t)) return unclear();
   }
   return result;
@@ -169,6 +168,8 @@ function wellness(transcript: string | null | undefined): Omit<Understood, 'cont
 /** Call consent is contextual and rule-based, never a wellness probability. */
 export type CallAnswer = 'yes' | 'no' | 'unclear' | 'silent';
 const CALL_REFUSAL = /\b(don't|dont|do not|never|not now|rather not|no need|no thanks|no thank you|don't want|dont want|do not want|no quiero|no llames|no llamar|ahora no)\b/;
+// In a contact offer, a complete polite reassurance can decline the offer.
+const POLITE_CALL_DECLINE = /^(?:(?:no )?(?:i'm|im|i am) (?:ok|okay|fine|good) (?:thanks|thank you)|no (?:i'm|im|i am) (?:ok|okay|fine|good)|no need (?:thanks|thank you)|(?:no )?(?:estoy|me siento) bien gracias|no gracias|no hace falta(?: gracias)?)$/;
 const UNCERTAIN_CALL = /\b(maybe|perhaps|if|what if|might|possibly|unless|not sure|unsure|quiza|quizas|tal vez)\b/;
 const OTHER_DESTINATION = /\b(911|nine one one|112|999|police|ambulance|taxi|uber|policia|ambulancia)\b/;
 
@@ -209,7 +210,7 @@ export function understandCallAnswer(transcript: string | null | undefined): Cal
   const t = normalise(transcript ?? '');
   if (!t) return 'silent';
   if (OTHER_DESTINATION.test(t)) return 'unclear';
-  if (CALL_REFUSAL.test(t) || /^(?:no|no please|no por favor)$/.test(t)) return 'no';
+  if (CALL_REFUSAL.test(t) || POLITE_CALL_DECLINE.test(t) || /^(?:no|no please|no por favor)$/.test(t)) return 'no';
   if (UNCERTAIN_CALL.test(t)) return 'unclear';
   if (explicitContactCallRequest(t)) return 'yes';
   if (/^(?:yes|yeah|yep|sure|okay|ok|absolutely|si|claro)(?: please| por favor| go ahead| do it)?$/.test(t)

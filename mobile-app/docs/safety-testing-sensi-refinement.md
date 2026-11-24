@@ -47,3 +47,31 @@ Tests updated: `tests/automaticMonitoring.test.ts`, `tests/contextualAcknowledgm
 - Release iOS JS export: passed. Bundle inspection confirmed all four new diagnostic operation labels, skipped-inference reason, timing-capture control, fictional handoff control and displayed fictional number absent. Safety Testing and real-contact confirmation remain included.
 - Unsigned Debug iOS build: passed. No Swift/native implementation or dependency changes; no IPA/archive/device validation claimed.
 - `git diff --check`: passed. No commit/push/reset performed. Existing unrelated uncommitted work retained.
+
+## Phase 1 physical iPhone findings and follow-up
+
+These observations were reported during Phase 1 device testing. The wording correction did not address them.
+
+| Observation | Status |
+| --- | --- |
+| “I'm OK I feel fine” was transcribed correctly and classified as unclear. | The deterministic grammar now accepts a second complete affirmation, with or without ASR punctuation. The subsequent iPhone recheck passed overall. |
+| “I'm OK just a little tired” was classified as OK. | Current fatigue now takes precedence over an affirmation and follows ordinary NOT OK guidance. Explicit denial and benign long-day context remain distinct. The subsequent iPhone recheck passed overall. |
+| Contextual acknowledgment playback remained unconfirmed in English and Spanish. | Resolved in Phase 3 and confirmed on the physical iPhone. |
+| The emergency contact handoff status was displayed in English during the Spanish flow. | English status is expected for English app text. The audit also found that the modal used the voice language for its UI and several status strings lacked Spanish translations. The safety conversation now follows the app text language for UI and keeps the actual spoken language in the transcript. The subsequent iPhone recheck passed overall. |
+
+## Phase 3 physical iPhone validation
+
+The device tester reported that all five physical iPhone cases passed after the shared playback correction. Contextual acknowledgments were audible and voice recognition continued to work. This closes the acknowledgment playback finding above.
+
+
+## Phases 4 and 5 physical iPhone recheck
+
+Repeat the test with all four voice and app text combinations. The voice and transcript should follow the first setting, and labels, buttons, system messages and handoff status should follow the second. Decline the contact offer during routine speech checks. To verify the handoff status, use an explicitly authorized real-contact simulation and cancel at the native iOS confirmation screen.
+
+Test clear repeated affirmations with and without a pause, a mild fatigue clause after “I'm OK,” obvious drowsiness, explicit symptom denial, and affirmative responses that include dizziness or weakness. Confirm that clear answers require one wellness capture. Current fatigue and conflicting symptoms should receive ordinary safety guidance without authorizing any call. Check that the Phase 3 acknowledgment remains audible when the ordinary NOT OK response includes one.
+
+## Phases 4 and 5 device result and demonstration follow-up
+
+The device tester reported successful overall physical iPhone validation. Two findings were addressed in the final cleanup. The emergency-contact offer recognizes complete polite declines in English and Spanish without granting authorization. The VoiceCheck Language setting follows the app text language for the two displayed language names. The stored voice language and app text language remain independent.
+
+Typed response arbitration is deferred until after the demonstration. Recognition stays active while the driver composes a typed response. If the conversation advances before submission, the unsent draft can disappear. The cleanup made no changes to input arbitration, listening, conversation timing, or draft persistence.

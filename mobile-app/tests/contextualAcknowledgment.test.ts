@@ -76,11 +76,11 @@ for (const fixture of [safetyAcknowledgmentFixtures[0], safetyAcknowledgmentFixt
       acknowledgment: () => ack!.get(fixture.language),
     });
     const pending = check.run(fixture.event); await tick();
-    assert.ok(ack); assert.equal(said.length, 4); assert.match(said[3]!, /(Please pull over|Por favor detente)/);
-    assert.ok(!said[3]!.includes(fixture.output));
+    assert.ok(ack); assert.equal(said.length, 3); assert.match(said[2]!, /(Please pull over|Por favor detente)/);
+    assert.ok(!said[2]!.includes(fixture.output));
     guidance.resolve(); const result = await pending;
-    assert.equal(said.length, 7); assert.equal(said[5], fixture.output);
-    assert.match(said[6]!, /Would you like me to call your emergency contact\?|¿Quieres que llame a tu contacto de emergencia\?/);
+    assert.equal(said.length, 6); assert.equal(said[4], fixture.output);
+    assert.match(said[5]!, /Would you like me to call your emergency contact\?|¿Quieres que llame a tu contacto de emergencia\?/);
     assert.equal(result.outcome, 'not_ok'); assert.equal(result.contactCall, 'declined_offer'); assert.equal(check.authorizesContact(result), false);
     ack!.cancel();
   });
@@ -104,7 +104,7 @@ test('cancel during guidance aborts the episode task and prevents late empathy/c
     listen: async (_l, _ms, _h, id) => recognitionEvidence(id, { status: 'success', transcript: "I'm dizzy", finalTranscript: "I'm dizzy", isFinal: true, finalResultReceived: true }),
   }, 'en', '', { contactAvailable: true, startAcknowledgment: c => { ack = startSafetyAcknowledgment(() => generation.promise, c); }, acknowledgment: () => ack!.get('en') });
   const pending = check.run('bpm_high'); await tick(); check.cancel(); generation.resolve("I'm sorry you're feeling dizzy."); guidance.resolve();
-  await assert.rejects(pending, /cancelled/); await tick(); assert.equal(said.length, 4);
+  await assert.rejects(pending, /cancelled/); await tick(); assert.equal(said.length, 3);
 });
 
 test('invalid or hung inference cannot prevent guidance or grant consent; failed playback cancels unused inference', async () => {
@@ -180,6 +180,6 @@ for (const stage of ['start', 'read'] as const) test(`throwing presentation ${st
     acknowledgment: () => { if (stage === 'read') throw Error('failed'); return 'invalid output'; },
   });
   const result = await check.run('bpm_high');
-  assert.equal(spoken.length, 7); assert.equal(spoken[5], "Thank you for telling me."); assert.match(spoken[6]!, /^Would you like/);
+  assert.equal(spoken.length, 6); assert.equal(spoken[4], "Thank you for telling me."); assert.match(spoken[5]!, /^Would you like/);
   assert.equal(result.outcome, 'not_ok'); assert.equal(result.contactCall, 'declined_offer'); assert.equal(check.authorizesContact(result), false);
 });
