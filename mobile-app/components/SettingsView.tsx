@@ -1,3 +1,5 @@
+import { STANDALONE_DEMO } from '../lib/buildProfile';
+import { resumeTelemetry, telemetryMode, type TelemetryMode } from '../lib/db/telemetryPolicy';
 import { VoiceCheckTesting } from './VoiceCheckTesting';
 import { SettingsGroup, SettingsRow } from './SettingsGroup';
 import { SimulationProgress } from './SimulationProgress';
@@ -43,7 +45,8 @@ const SensiVoicePlaybackDiagnostic = __DEV__
   ? (require('./SensiVoicePlaybackDiagnostic') as typeof import('./SensiVoicePlaybackDiagnostic')).SensiVoicePlaybackDiagnostic
   : null;
 
-const HardwareSafetyDiagnostic = __DEV__
+const hardwareTools = __DEV__ || STANDALONE_DEMO;
+const HardwareSafetyDiagnostic = hardwareTools
   ? (require('./HardwareSafetyDiagnostic') as typeof import('./HardwareSafetyDiagnostic')).HardwareSafetyDiagnostic
   : null;
 
@@ -70,6 +73,7 @@ export function SettingsView(props: {
   autoOn: boolean;
   setAutoOn: (v: boolean) => void;
   onWiped: () => Promise<void>;
+  onDeleteDriver?: (id: string) => void;
   onShowIntro: () => void;
   onEditProfile: (returnPage?: SettingsPage) => void;
 }) {
@@ -83,7 +87,15 @@ export function SettingsView(props: {
   const positions = useRef<Record<string, number>>({});
   const history = useRef<SettingsPage[]>([]);
   const navigate = (next: SettingsPage) => { history.current.push(page); setPage(next); };
-  const goBack = () => setPage(history.current.length ? history.current.pop()! : isSensiDetail(page) ? 'assistant' : page === 'voicecheck_testing' ? 'safety_testing' : page === 'safety_testing' || page === 'thresholds' || page === 'calibration' ? 'safety' : page === 'developer' ? 'advanced' : page === 'what_to_save' || page === 'cloud_sync' ? 'data' : null);
+  const goBack = () => {
+    const leave = () => setPage(history.current.length ? history.current.pop()! : isSensiDetail(page) ? 'assistant' : page === 'voicecheck_testing' ? 'safety_testing' : page === 'safety_testing' || page === 'thresholds' || page === 'calibration' ? 'safety' : page === 'hardware_safety_test' ? 'developer' : page === 'developer' ? 'advanced' : page === 'what_to_save' || page === 'cloud_sync' ? 'data' : null);
+    const phase = d.hardwareTest?.phase;
+    if (page === 'hardware_safety_test' && phase && !['idle', 'cancelled', 'finished'].includes(phase)) {
+      Alert.alert('Leave hardware test?', 'Leaving this screen cancels the current diagnostic run.', [
+        { text: 'Cancel', style: 'cancel' }, { text: 'Leave test', style: 'destructive', onPress: leave },
+      ]);
+    } else leave();
+  };
   useEffect(() => { if (initialPage) setPage(initialPage); }, [initialPage]);
   useEffect(() => {
     const back = BackHandler.addEventListener('hardwareBackPress', () => {
@@ -91,20 +103,30 @@ export function SettingsView(props: {
       goBack(); return true;
     });
     return () => back.remove();
-  }, [page]);
+  }, [page, d.hardwareTest?.phase]);
   const [languageBusy, setLanguageBusy] = useState(false);
   const [languageError, setLanguageError] = useState('');
   const [direct, setDirect] = useState(false);
   const [syncMsg, setSyncMsg] = useState('');
   const [syncing, setSyncing] = useState(false);
+  const [cloudMode, setCloudMode] = useState<TelemetryMode>(STANDALONE_DEMO ? 'standalone' : 'available');
+  useEffect(() => {
+    if (STANDALONE_DEMO || (page !== 'data' && page !== 'cloud_sync')) return;
+    let current = true;
+    void telemetryMode().then(mode => { if (current) setCloudMode(mode); });
+    return () => { current = false; };
+  }, [page]);
+  const cloudNotice = cloudMode === 'standalone' ? 'Cloud synchronization is unavailable in this demonstration.'
+    : 'Cloud synchronization is paused. Waiting items remain on this phone.';
   const [waiting, setWaiting] = useState<Awaited<ReturnType<typeof pendingCount>> | null>(null);
   useEffect(() => {
-    if (page !== 'data' && page !== 'cloud_sync') return;
+    const profileId = d.driver?.id;
+    if (!profileId || cloudMode !== 'available' || page !== 'data' && page !== 'cloud_sync') return;
     let current = true;
-    void Promise.resolve().then(pendingCount).then(result => { if (current) setWaiting(result); })
+    void Promise.resolve().then(() => pendingCount(profileId)).then(result => { if (current) setWaiting(result); })
       .catch(() => { if (current) setWaiting(null); });
     return () => { current = false; };
-  }, [page, syncing, d.live?.ok, d.session?.status]);
+  }, [page, syncing, d.driver?.id, d.live?.ok, d.session?.status, cloudMode]);
   const [rehearsal, setRehearsal] = useState<string | null>(null);
   const [demoResult, setDemoResult] = useState<string | null>(null);
   const [selectedScenario, setSelectedScenario] = useState<DemoScenario | null>(null);
@@ -162,15 +184,18 @@ export function SettingsView(props: {
   const now = Date.now();
 
   async function uploadBacklog() {
+    if (await telemetryMode() !== 'available') return;
     setSyncing(true);
     try {
-      const p = await pendingCount();
+      const profileId = d.driver?.id;
+      if (!profileId) return;
+      const p = await pendingCount(profileId);
       if (p.sessions === 0 && p.profiles === 0 && p.events === 0) {
         setSyncMsg('Everything is already in the cloud.');
         return;
       }
       setSyncMsg(`Uploading ${p.profiles} profile(s) and ${p.sessions} drive(s)…`);
-      const r = await syncToSupabase();
+      const r = await syncToSupabase(profileId);
       setSyncMsg(r.errors.length ? `Couldn't reach the cloud: ${r.errors[0]}` : `Uploaded ${r.profiles} profile(s), ${r.sessions} drive(s), ${r.events} readings.`);
     } catch {
       setSyncMsg("Could not check or upload waiting data.");
@@ -209,14 +234,17 @@ export function SettingsView(props: {
         <Text localize={false} style={st.note}>{d.driver?.display_name}</Text>
         <Text style={st.note}>{d.driver?.emergency_phone ? `Emergency contact: ${d.driver.emergency_name || 'Saved contact'} · ${maskedContactPhone(d.driver.emergency_phone)}` : 'No emergency contact configured. Saved-contact phone handoff is unavailable.'}</Text>
         <Btn title="Edit Driver Profile" onPress={() => props.onEditProfile(page)} />
-        <InformationButton title="Profile storage" body="Profiles are saved on this phone. Cloud updates retry when online; emergency contacts stay on this phone." />
+        <InformationButton title="Profile storage" body={STANDALONE_DEMO ? "Profiles and emergency contacts are saved on this phone. Cloud synchronization is unavailable in this demonstration." : "Profiles are saved on this phone. Cloud updates retry when online; emergency contacts stay on this phone."} />
         {d.hasActiveSession ? <Text style={st.note}>End and save the current drive before editing.</Text> : null}
       </Card>
+      {d.driver && props.onDeleteDriver ? <Btn title="Delete Driver Profile" kind="danger"
+        disabled={d.hasActiveSession || !!sf.check || !!sf.demo || !!sf.conversation && !sf.conversation.finished}
+        onPress={() => props.onDeleteDriver?.(d.driver!.id)} /> : null}
       </> : null}
       {page === 'assistant' ? <SettingsGroup>
         <SettingsRow title="Voice & Language" onPress={() => navigate('sensi_voice')} />
         <SettingsRow divider title="Safety Testing" onPress={() => navigate('safety_testing')} />
-        <SettingsRow divider title="Diagnostics" onPress={() => navigate(__DEV__ ? 'developer' : 'voicecheck_testing')} />
+        <SettingsRow divider title="Diagnostics" onPress={() => navigate(hardwareTools ? 'developer' : 'voicecheck_testing')} />
       </SettingsGroup> : null}
       {page === 'sensi_voice' ? <>
       <Card>
@@ -343,18 +371,19 @@ export function SettingsView(props: {
       </SettingsGroup>
       <SectionTitle>Cloud & Sync</SectionTitle>
       <SettingsGroup>
-        <SettingsRow title="Cloud Synchronization" subtitle={d.live?.lastError || waiting && (waiting.profiles + waiting.sessions + waiting.events) > 0
+        <SettingsRow title="Cloud Synchronization" subtitle={cloudMode !== 'available' ? cloudNotice : d.live?.lastError || waiting && (waiting.profiles + waiting.sessions + waiting.events) > 0
           ? 'Waiting to sync' : d.live?.lastPushAt ? 'Dashboard reached' : undefined}
           onPress={() => navigate('cloud_sync')} />
       </SettingsGroup>
       <SectionTitle>Your data</SectionTitle>
       <SettingsGroup>
         <SettingsRow title="Review Introduction & Setup" onPress={props.onShowIntro} />
-        <SettingsRow divider title="Delete Local Data" subtitle="Also requests deletion from the dashboard" tone="danger" action disabled={d.hasActiveSession}
+        <SettingsRow divider title="Delete Local Data" subtitle={STANDALONE_DEMO ? 'Deletes records from this phone only.' : 'Also requests deletion from the dashboard'} tone="danger" action disabled={d.hasActiveSession}
           onPress={() =>
             Alert.alert(
               'Wipe everything?',
-              'Deletes every driver, drive, reading, alert and waveform this phone has recorded — here and on the dashboard. Other phones\' data is not touched. This cannot be undone.',
+              STANDALONE_DEMO ? 'This removes every local driver, drive, reading, alert and waveform from this phone. Cloud copies and existing cloud deletion requests are kept.'
+                : 'Deletes every driver, drive, reading, alert and waveform this phone has recorded — here and on the dashboard. Other phones\' data is not touched. This cannot be undone.',
               [
                 { text: 'Cancel', style: 'cancel' },
                 {
@@ -378,12 +407,20 @@ export function SettingsView(props: {
       {page === 'what_to_save' ? <>
         <SettingsGroup>
           {MODES.map((m, index) => <SettingsRow key={m.key} divider={index > 0}
-            title={m.title} subtitle={m.body} selected={d.storageMode === m.key} disabled={d.hasActiveSession}
+            title={m.title} subtitle={STANDALONE_DEMO && m.key === 'full' ? 'Saves raw sensor waveforms on this phone only. Use only with the driver’s consent.' : m.body} selected={d.storageMode === m.key} disabled={d.hasActiveSession}
             onPress={() => void d.setStorageMode(m.key)} />)}
         </SettingsGroup>
         {d.hasActiveSession ? <Text style={st.note}>Applies from the next drive.</Text> : null}
       </> : null}
-      {page === 'cloud_sync' ? <>
+      {page === 'cloud_sync' ? cloudMode !== 'available' ? <>
+        <Text style={st.note}>{cloudNotice}</Text>
+        {cloudMode === 'held' ? <Btn title="Resume cloud synchronization" onPress={() => Alert.alert(
+          'Resume cloud synchronization?', 'Waiting uploads and removals may be sent to the cloud after you resume.',
+          [{ text: 'Cancel', style: 'cancel' }, { text: 'Resume', onPress: () => {
+            void resumeTelemetry().then(resumed => { if (resumed) setCloudMode('available'); })
+              .catch(() => Alert.alert('Could not resume cloud synchronization.'));
+          } }])} /> : null}
+      </> : <>
         <SettingsGroup>
           <SettingsRow title="Upload waiting profiles and drives" disabled={syncing} onPress={uploadBacklog} />
           {waiting ? <>
@@ -436,7 +473,7 @@ export function SettingsView(props: {
         <Row label="Duplicates ignored" value={String(d.duplicates)} />
         {d.relay ? <Row label="Pi: from wheel / lost / CRC" value={`${d.relay.rx} / ${d.relay.lost} / ${d.relay.crc}`} /> : null}
         {d.rollovers ? <Row label="Sensor restarts this drive" value={String(d.rollovers)} /> : null}
-        <Row label="Rows in cloud (this drive)" value={String(d.live?.pushed ?? 0)} />
+        {!STANDALONE_DEMO ? <Row label="Rows in cloud (this drive)" value={String(d.live?.pushed ?? 0)} /> : null}
         <View style={st.bench}>
           <Text style={[st.note, { flex: 1 }]}>
             Bench testing: connect straight to the ESP32 when no Pi is around. Never in the car — it locks the Pi out.
@@ -462,14 +499,14 @@ export function SettingsView(props: {
         <Btn title="Device & Connectivity" kind="ghost" onPress={() => navigate('connections')} />
         <Btn title="Data & Privacy" kind="ghost" onPress={() => navigate('data')} />
       </Card>
-      {__DEV__ ? <Card><SectionTitle>Developer Tools</SectionTitle>
-        <Text style={st.note}>Recognition and audio diagnostics. Debug builds only.</Text>
+      {hardwareTools ? <Card><SectionTitle>Developer Tools</SectionTitle>
+        <Text style={st.note}>{STANDALONE_DEMO ? 'Hardware diagnostics for the standalone demonstration.' : 'Recognition and audio diagnostics. Debug builds only.'}</Text>
         <Btn title="Open Developer Tools" kind="ghost" onPress={() => navigate('developer')} />
       </Card> : null}
       </> : null}
-      {page === 'developer' && __DEV__ ? <>
-      {HardwareSafetyDiagnostic ? <Card><HardwareSafetyDiagnostic drive={d} /></Card> : null}
+      {page === 'developer' && hardwareTools ? <>
       <SettingsGroup>
+        {HardwareSafetyDiagnostic ? <SettingsRow title="Real Hardware Safety Test" onPress={() => navigate('hardware_safety_test')} /> : null}
         {SensiVoicePlaybackDiagnostic ? <SensiVoicePlaybackDiagnostic blocked={!!sf.check || !!sf.demo} /> : null}
         {ResponsivenessDiagnostics ? <DiagnosticDetails title="Timing and Spanish recognition">
           <ResponsivenessDiagnostics blocked={d.hasActiveSession || !!sf.check || !!sf.demo} />
@@ -477,6 +514,7 @@ export function SettingsView(props: {
       </SettingsGroup>
 
       </> : null}
+      {page === 'hardware_safety_test' && hardwareTools && HardwareSafetyDiagnostic ? <Card><HardwareSafetyDiagnostic drive={d} /></Card> : null}
       {page === 'safety_testing' ? <>
       <Btn title="VoiceCheck Testing" disabled={d.hasActiveSession || !!sf.check || !!sf.demo} onPress={() => navigate('voicecheck_testing')} />
       <View onLayout={event => {

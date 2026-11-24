@@ -39,7 +39,7 @@ test('gesture claims movement beyond tap slop; floating wrapper passes ordinary 
 });
 test('diagnostics enter from Advanced or Sensi in Debug; Advanced uses a grouped row', () => {
   const settings=source('components/SettingsView.tsx');
-  const advanced=settings.slice(settings.indexOf("{page === 'developer' && __DEV__"));
+  const advanced=settings.slice(settings.indexOf("{page === 'developer' && hardwareTools"));
   assert.match(advanced, /<ResponsivenessDiagnostics/);
   assert.doesNotMatch(advanced, /gemmaDiagnostics/);
   assert.match(settings, /<SettingsRow divider title="Advanced Settings"/);
@@ -65,12 +65,13 @@ test('Live Vitals default is section-relative and used only without a valid save
   assert.match(source('components/DriveView.tsx'),/onVitalsAnchor/);
 });
 
-test('both Live Vitals headings reserve room for the launcher and report their measured row', () => {
+test('the shared Live Vitals heading reserves room for the launcher and reports its measured row', () => {
   const drive = source('components/DriveView.tsx');
   assert.match(drive, /layout.y - scrollOffset.current/);
-  assert.match(drive, /st.between, st.vitalsHeading\]\} onLayout=\{measureHeading\}/);
+  assert.equal((drive.match(/onLayout=\{measureHeading\}/g) ?? []).length, 1);
+  assert.match(drive, /vitalsTitleRow: \{ flexDirection: 'row'/);
   assert.match(drive, /style=\{st.vitalsHeading\} onLayout=\{measureHeading\}/);
-  assert.match(drive, /vitalsHeading: \{ minHeight: 58, paddingRight: 102/);
+  assert.match(drive, /vitalsHeading: \{ minHeight: 42, paddingRight: 102/);
   assert.deepEqual(defaultLauncherPosition(390, 600, 102, 58, { y: 180, height: 24 }), { x: 288, y: 163 });
 });
 

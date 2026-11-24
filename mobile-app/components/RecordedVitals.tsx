@@ -14,11 +14,11 @@ export function RecordedVitals({ session }: { session: SessionSummary }) {
   const end = Date.parse(session.ended_at);
   if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return null;
   return <SettingsGroup>
-    <RecordedVitalsDisclosure sessionId={session.id} start={start} end={end} />
+    <RecordedVitalsDisclosure profileId={session.profile_id} sessionId={session.id} start={start} end={end} />
   </SettingsGroup>;
 }
 
-function RecordedVitalsDisclosure({ sessionId, start, end }: { sessionId: string; start: number; end: number }) {
+function RecordedVitalsDisclosure({ profileId, sessionId, start, end }: { profileId: string; sessionId: string; start: number; end: number }) {
   const { tokens: t } = useTheme();
   const [open, setOpen] = useState(false);
   const [page, setPage] = useState(0);
@@ -30,12 +30,12 @@ function RecordedVitalsDisclosure({ sessionId, start, end }: { sessionId: string
   useEffect(() => {
     if (!open) return;
     let current = true;
-    void recordedVitals(sessionId, windowStart, windowEnd).then(
+    void recordedVitals(profileId, sessionId, windowStart, windowEnd).then(
       rows => { if (current) setResult({ start: windowStart, rows }); },
       () => { if (current) setResult({ start: windowStart, rows: null }); },
     );
     return () => { current = false; };
-  }, [open, sessionId, windowStart, windowEnd]);
+  }, [open, profileId, sessionId, windowStart, windowEnd]);
 
   const selected = result?.start === windowStart ? result : null;
   const data = selected?.rows ? recordedVitalPoints(selected.rows, windowStart, seconds) : null;

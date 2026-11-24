@@ -1,3 +1,6 @@
+import { STANDALONE_DEMO } from '../buildProfile';
+import { telemetryAllowed } from './telemetryPolicy';
+import { serializeCloudWrite } from './cloudWrites';
 /**
  * Streams the ACTIVE session to Supabase while the drive is in progress, so
  * the website shows it live (typically within ~1-2 s of the sensor reading).
@@ -72,6 +75,7 @@ export class LiveUploader {
 
   /** Begins streaming a session. Safe to call again for a new session. */
   follow(sessionId: string) {
+    if (STANDALONE_DEMO) return;
     this.sessionId = sessionId;
     this.status.pushed = 0;
     this.status.archive = 'none';
@@ -82,12 +86,13 @@ export class LiveUploader {
   /** Final flush for a session that just ended: end time, remaining rows,
    *  alerts, and the folded archive if there is one. */
   async finish(sessionId: string): Promise<void> {
+    if (STANDALONE_DEMO) return;
     if (this.sessionId === sessionId) this.sessionId = null;
     if (!this.sessionId && this.timer) {
       clearInterval(this.timer);
       this.timer = null;
     }
-    await this.enqueue(() => this.push(sessionId, true));
+    await this.enqueue(() => serializeCloudWrite(() => this.push(sessionId, true)));
   }
 
   /** Pushes something that happened outside the tick (e.g. an alert prompt)
@@ -104,7 +109,7 @@ export class LiveUploader {
 
   private flush(): Promise<void> {
     const id = this.sessionId;
-    return id ? this.enqueue(() => this.push(id, false)) : Promise.resolve();
+    return id ? this.enqueue(() => serializeCloudWrite(() => this.push(id, false))) : Promise.resolve();
   }
 
   /** One push at a time: ticks never overlap even on a slow network. */
@@ -142,6 +147,7 @@ export class LiveUploader {
   }
 
   private async push(sessionId: string, final: boolean): Promise<void> {
+    if (STANDALONE_DEMO || !await telemetryAllowed()) return;
     try {
       const db = await getDatabase();
       const session = await db.getFirstAsync<DriveSession>('SELECT * FROM drive_sessions WHERE id = ?', [sessionId]);

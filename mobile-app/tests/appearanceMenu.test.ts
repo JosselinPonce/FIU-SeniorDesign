@@ -43,6 +43,7 @@ test('profile dropdown reuses preferences and changes dashboard mode without inv
     const state: unknown[] = [];
     const calls: string[] = [];
     const deps: Record<string, any> = {
+    '../lib/buildProfile': { STANDALONE_DEMO: false },
       react: { useEffect: (fn: () => void) => fn(), useState: (initial: unknown) => {
         const i = index++;
         if (!(i in state)) state[i] = initial;

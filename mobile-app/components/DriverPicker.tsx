@@ -1,6 +1,6 @@
 import { ScreenHeader, ScreenHeading } from './ScreenHeader';
 import { displayBmi } from '../lib/ui/profileSummary';
-import { LocalizedAlert as Alert, LocalizedPressable as Pressable, LocalizedText as Text, LocalizedTextInput as TextInput } from '../lib/i18n/native';
+import { LocalizedPressable as Pressable, LocalizedText as Text, LocalizedTextInput as TextInput } from '../lib/i18n/native';
 import { InformationButton } from './Information';
 import { useTheme } from '../lib/theme/ThemeProvider';
 import { presentationColors, type ThemeTokens } from '../lib/theme/tokens';
@@ -16,7 +16,6 @@ import { measurementsFromMetric, enterWeight, enterHeightCm, selectHeight, switc
   metricMeasurements, measurementLabel, type HeightUnit, type WeightUnit } from '../lib/db/profileMeasurements';
 import { profileFormValues } from '../lib/db/profileEditing';
 import * as repo from '../lib/db/repositories';
-import { deleteDriverEverywhere } from '../lib/db/deletion';
 import type { DriverProfile, Gender } from '../lib/db/repositories';
 import { CONDITIONS, MEDICATIONS, bmiCategory } from '../lib/analysis/profileModel';
 import { Btn, Card, SectionTitle } from './ui';
@@ -43,6 +42,8 @@ export function DriverPicker(props: {
   activeDriverId?: string;
   onBack?: () => void;
   onEditActive?: () => void;
+  onDeleteProfile?: (id: string) => void;
+  deleteBlocked?: boolean;
   onUseCreated?: (profile: DriverProfile) => void;
   editProfile?: DriverProfile;
   onSaveProfile?: (input: repo.NewProfileInput) => Promise<void>;
@@ -50,8 +51,10 @@ export function DriverPicker(props: {
 }) {
   const { colors: C, tokens } = useTheme();
   const st = makeStyles(tokens);
-  const [adding, setAdding] = useState(!!props.editProfile || props.profiles.length === 0);
+  const [formOpen, setAdding] = useState(!!props.editProfile);
+  const adding = formOpen || props.profiles.length === 0;
   const [editing, setEditing] = useState<DriverProfile | null>(null);
+  const profileToDelete = editing ?? props.editProfile;
   const blank = { custom_id: '', display_name: '', weight_kg: '', age: '', height_cm: '', emergency_name: '', emergency_phone: '' };
   const [form, setForm] = useState(blank);
   const [measurements, setMeasurements] = useState(() => measurementsFromMetric());
@@ -101,7 +104,10 @@ export function DriverPicker(props: {
 
   useEffect(() => { if (props.editProfile) edit(props.editProfile); }, [props.editProfile]);
 
+  const savingProfile = useRef(false);
   async function create() {
+    if (savingProfile.current) return;
+    savingProfile.current = true;
     try {
       setError(null);
       if (!form.display_name.trim()) {
@@ -133,15 +139,11 @@ export function DriverPicker(props: {
       setEditing(null);
       setAdding(false);
       await props.onCreated();
-      if (wasCreating && saved && props.onUseCreated) {
-        Alert.alert('Profile created', 'Would you like to switch to the new driver?', [
-          { text: 'Not now', style: 'cancel' },
-          { text: 'Switch Driver', onPress: () => props.onUseCreated?.(saved) },
-        ]);
-      }
+      if (wasCreating && saved) props.onUseCreated?.(saved);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
+      savingProfile.current = false;
       setBusy(false);
     }
   }
@@ -330,37 +332,9 @@ export function DriverPicker(props: {
           {!form.emergency_phone.trim() ? <Text style={st.hint}>No emergency contact number is configured. Saved-contact phone handoff will be unavailable.</Text> : null}
           {error ? <Text style={st.error}>{error}</Text> : null}
           <Btn title={editing || props.editProfile ? 'Save driver' : 'Create Profile'} onPress={create} busy={busy} />
-          {editing && !props.editProfile ? (
-            <Btn
-              title={`Delete ${editing.display_name}`}
-              kind="danger"
-              onPress={() =>
-                Alert.alert(
-                  `Delete ${editing.display_name}?`,
-                  'This removes the driver and every drive, reading, alert and waveform recorded for them — on this phone and on the dashboard. It cannot be undone.',
-                  [
-                    { text: 'Cancel', style: 'cancel' },
-                    {
-                      text: 'Delete everywhere',
-                      style: 'destructive',
-                      onPress: async () => {
-                        setBusy(true);
-                        const where = await deleteDriverEverywhere(editing.id);
-                        setBusy(false);
-                        setEditing(null);
-                        setAdding(false);
-                        setForm(blank);
-                setMeasurements(measurementsFromMetric());
-                        await props.onCreated();
-                        if (where === 'queued') {
-                          Alert.alert('Deleted on this phone', 'The dashboard copy will be deleted automatically the next time the phone is online.');
-                        }
-                      },
-                    },
-                  ],
-                )
-              }
-            />
+          {profileToDelete && props.onDeleteProfile ? (
+            <Btn title="Delete Driver Profile" kind="danger" disabled={busy || props.deleteBlocked}
+              onPress={() => props.onDeleteProfile?.(profileToDelete.id)} />
           ) : null}
           {props.profiles.length ? <Btn
               title="Cancel"

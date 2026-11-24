@@ -64,6 +64,7 @@ function harness(development = false) {
     setSessionSampleRate: async () => {}, setSetting: async () => {},
   };
   const deps: Record<string, any> = {
+    '../buildProfile': { STANDALONE_DEMO: false },
     '../diagnostics/hardwareSafetyTest': { HardwareSafetyTest },
     '../diagnostics/homeHardwareDemo': { HomeHardwareDemo, demoThresholdProvenance },
     '../assistant/phoneCloudAuth': { sensiCloudAuth: { subscribe: (listener: () => void) => { accountListeners.add(listener); return () => accountListeners.delete(listener); },

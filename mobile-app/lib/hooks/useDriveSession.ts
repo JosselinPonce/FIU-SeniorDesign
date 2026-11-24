@@ -1,3 +1,4 @@
+import { STANDALONE_DEMO } from '../buildProfile';
 import { VOICECHECK_BASIC_OFFLINE } from '../voice/basicOfflineAcknowledgment';
 import type { AnswerScope } from '../voice/voiceCheck';
 import { SENSI_MODE } from '../assistant/mode';
@@ -33,16 +34,17 @@ import { SafetyController, initialSafety, type DemoScenario, type SafetyState } 
 import { phoneSensiVoiceIO, prepareVoice, releaseAudio, resetVoiceCache, setPreferredVoice } from '../voice/speechIO';
 
 import type { HardwareSafetySnapshot } from '../diagnostics/hardwareSafetyTest';
-const HardwareSafetyTest = typeof __DEV__ !== 'undefined' && __DEV__
+const hardwareTools = (typeof __DEV__ !== 'undefined' && __DEV__) || STANDALONE_DEMO;
+const HardwareSafetyTest = hardwareTools
   ? (require('../diagnostics/hardwareSafetyTest') as typeof import('../diagnostics/hardwareSafetyTest')).HardwareSafetyTest
   : null;
 
 import type { HomeHardwareDemoSnapshot } from '../diagnostics/homeHardwareDemo';
-const homeDemoModule = typeof __DEV__ !== 'undefined' && __DEV__
+const homeDemoModule = hardwareTools
   ? require('../diagnostics/homeHardwareDemo') as typeof import('../diagnostics/homeHardwareDemo')
   : null;
 
-const homeDemoAuth = typeof __DEV__ !== 'undefined' && __DEV__
+const homeDemoAuth = hardwareTools
   ? (require('../assistant/phoneCloudAuth') as typeof import('../assistant/phoneCloudAuth')).sensiCloudAuth
   : null;
 
@@ -189,13 +191,12 @@ function reducer(s: State, a: Action): State {
     case 'relay':
       return { ...s, relay: a.relay };
     case 'driver':
-      // Keep the link and preferences; everything about the previous driver goes.
+      // Keep the link and device voice permission; reset driver data.
       return {
         ...initial,
         connection: s.connection,
         link: s.link,
         relay: s.relay,
-        storageMode: s.storageMode,
         rateSeries: s.rateSeries,
         voice: s.voice,
         driver: a.driver,
@@ -225,7 +226,7 @@ function reducer(s: State, a: Action): State {
         lost: a.lost,
         crcErrors: a.crc,
         signal: a.signal,
-        ...(__DEV__ ? { homeDemoWaveform: f.version === 3 && f.usable && f.finger && f.samples.length
+        ...(hardwareTools ? { homeDemoWaveform: f.version === 3 && f.usable && f.finger && f.samples.length
           ? { at: t, samples: f.samples } : null } : {}),
       };
     }
@@ -613,10 +614,9 @@ export function useDriveSession() {
   useEffect(() => {
     void (async () => {
       // Sessions a crash left open: close them locally, then publish that.
-      void processPendingDeletes().then(() => syncProfiles()).catch(() => undefined);
+      if (!STANDALONE_DEMO) void processPendingDeletes().then(() => syncProfiles()).catch(() => undefined);
       const closed = await repo.recoverInterruptedSessions();
-      if (closed) void syncToSupabase().catch(() => undefined);
-      dispatch({ type: 'storageMode', mode: await repo.getStorageMode() });
+      if (closed && !STANDALONE_DEMO) void syncToSupabase().catch(() => undefined);
       // Voices picked in Settings.
       for (const lang of ['en', 'es'] as const) setPreferredVoice(lang, await repo.getSetting(`voice:${lang}`));
     })();
@@ -667,6 +667,10 @@ export function useDriveSession() {
       avgBpm.current = [];
       avgSpo2.current = [];
       dispatch({ type: 'driver', driver });
+      const selection = selectedProfile.current;
+      void repo.getStorageMode(driver.id).then(mode => {
+        if (selectedProfile.current === selection) dispatch({ type: 'storageMode', mode });
+      }).catch(() => {});
       // Driver selection is a foreground user action; prepare voice before an
       // automatic event, independently of whether a trip is being recorded.
       void prepareVoice().then(voice => dispatch({ type: 'voice', voice }));
@@ -718,7 +722,7 @@ export function useDriveSession() {
         dispatch({ type: 'baseline', baseline: context.baseline, trend: context.trend });
       },
     });
-    void syncProfiles().catch(() => undefined);
+    if (!STANDALONE_DEMO) void syncProfiles().catch(() => undefined);
   }, [safety]);
 
   const closeProfileEdit = useCallback(() => { profileEdit.current = null; }, []);
@@ -730,7 +734,8 @@ export function useDriveSession() {
     finally { closeProfileEdit(); }
   }, [beginProfileEdit, saveProfileEdit, closeProfileEdit, state.safety.check, state.safety.demo]);
   useEffect(() => {
-    const timer = setInterval(() => { void syncProfiles().catch(() => undefined); }, 60_000);
+    if (STANDALONE_DEMO) return;
+    const timer = setInterval(() => { void processPendingDeletes().then(() => syncProfiles()).catch(() => undefined); }, 60_000);
     return () => clearInterval(timer);
   }, []);
 
@@ -743,7 +748,9 @@ export function useDriveSession() {
       seen.current.clear();
       dispatch({ type: 'resetSession' });
       const selection = selectedProfile.current;
-      const session = await repo.startSession(state.driver.id, state.storageMode);
+      const mode = await repo.getStorageMode(state.driver.id);
+      if (selectedProfile.current !== selection || selection?.id !== state.driver.id) return;
+      const session = await repo.startSession(state.driver.id, mode);
       if (selectedProfile.current !== selection || selection?.id !== state.driver.id) {
         await repo.endSession(session);
         return;
@@ -755,7 +762,7 @@ export function useDriveSession() {
       // Microphone + speech permission now, so an emergency is never blocked by a dialog.
       if (!state.voice?.granted) dispatch({ type: 'voice', voice: await prepareVoice() });
     } finally { startingSession.current = false; }
-  }, [state.driver, state.storageMode, state.voice, live, safety, hardwareTest, homeDemo]);
+  }, [state.driver, state.voice, live, safety, hardwareTest, homeDemo]);
 
   const endSession = useCallback(async () => {
     const session = sessionRef.current;
@@ -819,8 +826,10 @@ export function useDriveSession() {
   }, [endSession, safety, hardwareTest, homeDemo]);
 
   const setStorageMode = useCallback(async (mode: StorageMode) => {
-    await repo.setSetting('storage_mode', mode);
-    dispatch({ type: 'storageMode', mode });
+    const selection = selectedProfile.current;
+    if (!selection) return;
+    await repo.setSetting(`storage_mode:${selection.id}`, mode);
+    if (selectedProfile.current === selection) dispatch({ type: 'storageMode', mode });
   }, []);
 
   /** Settings: hear and answer the real voice check once (nothing recorded). */

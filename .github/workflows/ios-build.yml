@@ -1,122 +1,154 @@
-# Builds an UNSIGNED iOS .ipa for the Expo app on GitHub's macOS runners.
-#
-# Needed because react-native-ble-plx is native code, so the app can no longer
-# run in Expo Go, and iOS binaries can only be produced by Xcode (macOS only).
-# macOS runner minutes are free on public repositories.
-#
-# The artifact is unsigned on purpose: iloader signs it on-device with a free
-# Apple ID, so no Apple Developer Program membership and no signing secrets in
-# CI are required.
-
-name: Build iOS IPA (unsigned)
+name: Build standalone DriveSense demo IPA
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main, master, "luis/**", "samantha/**"]
+    inputs:
+      approved_sha:
+        description: Exact approved commit SHA for the selected branch or tag
+        required: true
+        type: string
+
+permissions:
+  contents: read
 
 defaults:
   run:
+    shell: bash
     working-directory: mobile-app
 
 jobs:
   build-ios:
-    runs-on: macos-latest
+    runs-on: macos-26
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      EXPO_NO_TELEMETRY: '1'
+      CI: 'true'
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Require an approved commit and private artifact access
+        working-directory: .
+        env:
+          APPROVED_SHA: ${{ inputs.approved_sha }}
+          PRIVATE_REPO: ${{ github.event.repository.private }}
+        run: |
+          set -euo pipefail
+          [[ "$PRIVATE_REPO" == true ]] || { echo "::error::Build in a private repository while the shared telemetry project remains permissive."; exit 1; }
+          [[ "$APPROVED_SHA" =~ ^[a-f0-9]{40}$ && "$APPROVED_SHA" == "$GITHUB_SHA" ]] ||
+            { echo "::error::Selected ref does not match the approved commit."; exit 1; }
 
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
         with:
-          node-version: 22
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22.23.5
           cache: npm
           cache-dependency-path: mobile-app/package-lock.json
 
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Typecheck
-        run: npx tsc --noEmit -p tsconfig.json
-
-      - name: Unit tests (protocol vs firmware encoder, archive codec, alerts)
-        run: npm test
-
-      # EXPO_PUBLIC_* values are read at bundle time, so they must be present
-      # here or the built app sees `undefined` and every Supabase call fails.
-      # They come from repository secrets rather than a committed file, because
-      # this repo is public and the key grants access under the current RLS.
-      - name: Write .env for the bundler
-        run: |
-          {
-            echo "EXPO_PUBLIC_SUPABASE_URL=${{ secrets.EXPO_PUBLIC_SUPABASE_URL }}"
-            echo "EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY=${{ secrets.EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY }}"
-          } > .env
-          # Print only whether they are set, never the values.
-          echo "url set: $([ -n "${{ secrets.EXPO_PUBLIC_SUPABASE_URL }}" ] && echo yes || echo NO)"
-          echo "key set: $([ -n "${{ secrets.EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY }}" ] && echo yes || echo NO)"
-
-      # Regenerated on the runner so the committed ios/ folder can never drift
-      # from app.json. This is what applies the BLE config plugin and writes
-      # NSBluetoothAlwaysUsageDescription into Info.plist.
-      - name: Expo prebuild
-        run: npx expo prebuild --platform ios --clean
-
-      - name: Install CocoaPods
-        run: pod install
-        working-directory: mobile-app/ios
-
-      # CODE_SIGNING_ALLOWED=NO is what lets this build with no Apple account.
-      #
-      # The workspace name is derived, not hardcoded: `expo prebuild` names the
-      # Xcode project after expo.name in app.json, so hardcoding it breaks
-      # silently the moment anyone renames the app.
-      #
-      # pipefail matters: without it the exit status of `xcodebuild | tail` is
-      # tail's, so a failed build reports success and only surfaces later as a
-      # confusing "no .app found" error.
-      - name: Build unsigned .app
-        working-directory: mobile-app/ios
-        shell: bash
+      - name: Verify pinned toolchain
         run: |
           set -euo pipefail
-          WORKSPACE=$(ls -d *.xcworkspace | head -1)
-          SCHEME="${WORKSPACE%.xcworkspace}"
-          echo "workspace=$WORKSPACE scheme=$SCHEME"
-          xcodebuild \
-            -workspace "$WORKSPACE" \
-            -scheme "$SCHEME" \
-            -configuration Release \
-            -sdk iphoneos \
-            -derivedDataPath build \
-            CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGN_IDENTITY="" \
-            | tail -40
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(xcodebuild -version | tr '\n' ' ')" = 'Xcode 26.6 Build version 17F113 '
+          test "$(xcrun --sdk iphoneos --show-sdk-version)" = 26.5
+          test "$(pod --version)" = 1.17.0
 
-      # An .ipa is a zip with the .app inside a top-level Payload/ folder.
-      - name: Package as IPA
-        working-directory: mobile-app/ios
-        shell: bash
+      - name: Install and validate locked JavaScript dependencies
+        run: |
+          npm ci
+          npm run typecheck
+          node --test --test-concurrency=2 tests/*.test.ts
+
+      - name: Generate the iOS project and install native pods
         run: |
           set -euo pipefail
-          APP=$(find build/Build/Products/Release-iphoneos -maxdepth 1 -name "*.app" | head -1)
-          if [ -z "$APP" ]; then
-            echo "::error::no .app was produced by xcodebuild"
-            exit 1
+          npx --no-install expo prebuild --platform ios --clean --no-install
+          cd ios
+          pod install
+          rg -q 'LocalFoundationModels' Podfile.lock
+          rg -q 'ExpoSQLite|SQLite' Podfile.lock
+          rg -q 'LocalFoundationModelsModule' Pods --glob ExpoModulesProvider.swift --no-ignore
+
+      - name: Build unsigned arm64 Release
+        env:
+          EXPO_PUBLIC_DRIVESENSE_PROFILE: standalone-demo
+          EXPO_PUBLIC_SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL }}
+          EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY }}
+        run: |
+          set -euo pipefail
+          node <<'JS'
+          let endpoint;
+          try { endpoint = new URL(process.env.EXPO_PUBLIC_SUPABASE_URL); }
+          catch { throw Error('Invalid public Ask Sensi endpoint'); }
+          if (endpoint.protocol !== 'https:' || endpoint.username || endpoint.password ||
+              endpoint.pathname !== '/' || endpoint.search || endpoint.hash) throw Error('Invalid public Ask Sensi endpoint');
+          const key = process.env.EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY || '';
+          if (!/^sb_publishable_[A-Za-z0-9_-]+$/.test(key)) {
+            const parts = key.split('.');
+            let role;
+            try { if (parts.length === 3) role = JSON.parse(Buffer.from(parts[1], 'base64url')).role; } catch {}
+            if (role !== 'anon') {
+              throw Error('An anonymous publishable key is required. Privileged keys are forbidden.');
+            }
+          }
+          JS
+          cd ios
+          workspaces=( *.xcworkspace )
+          [[ "${#workspaces[@]}" == 1 && -d "${workspaces[0]}" ]]
+          scheme="${workspaces[0]%.xcworkspace}"
+          xcodebuild -workspace "${workspaces[0]}" -scheme "$scheme" -configuration Release \
+            -sdk iphoneos26.5 -derivedDataPath "$RUNNER_TEMP/drivesense-build" \
+            ARCHS=arm64 CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            SKIP_BUNDLING="" FORCE_BUNDLING=1 \
+            > "$RUNNER_TEMP/drivesense-xcodebuild.log" 2>&1 ||
+            { rg -m 20 'error:' "$RUNNER_TEMP/drivesense-xcodebuild.log" || true; exit 1; }
+
+      - name: Verify bundle and package exact commit
+        run: |
+          set -euo pipefail
+          products=( "$RUNNER_TEMP/drivesense-build/Build/Products/Release-iphoneos/"*.app )
+          [[ "${#products[@]}" == 1 && -d "${products[0]}" ]]
+          app="${products[0]}"
+          plist="$app/Info.plist"
+          executable="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$plist")"
+          [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$plist")" == com.luisalvero.smartwheel ]]
+          out="$RUNNER_TEMP/drivesense-artifact"
+          payload="$RUNNER_TEMP/drivesense-payload"
+          test -s "$app/main.jsbundle"
+          test ! -e "$app/embedded.mobileprovision"
+          test ! -e "$app/$executable.debug.dylib"
+          test ! -e "$app/ip.txt"
+          for key in NSBluetoothAlwaysUsageDescription NSMicrophoneUsageDescription NSSpeechRecognitionUsageDescription; do
+            /usr/libexec/PlistBuddy -c "Print :$key" "$app/Info.plist" >/dev/null
+          done
+          xcrun lipo -verify_arch arm64 "$app/$executable"
+          strings "$app/main.jsbundle" > "$RUNNER_TEMP/drivesense-bundle-strings"
+          for marker in 'Cloud synchronization is unavailable in this demonstration.' 'Real Hardware Safety Test' '/functions/v1/ask-sensi'; do
+            rg -qF "$marker" "$RUNNER_TEMP/drivesense-bundle-strings"
+          done
+          if [[ -n "$(find "$app" -type f \( -iname '*.db' -o -iname '*.sqlite*' -o -iname '*.ppga' -o -iname '*.p12' -o -iname '*.pem' -o -name '.env*' \) -print -quit)" ]]; then
+            echo "::error::Unexpected database, archive or credential file in the app."; exit 1
           fi
-          echo "packaging $APP"
-          mkdir -p Payload
-          cp -R "$APP" Payload/
-          zip -qry SmartWheelApp.ipa Payload
-          ls -lh SmartWheelApp.ipa
-          # Confirm the Bluetooth usage string survived into the built bundle;
-          # without it iOS terminates the app on its first BLE scan.
-          /usr/libexec/PlistBuddy -c "Print :NSBluetoothAlwaysUsageDescription" \
-            "$APP/Info.plist"
+          if rg -q 'sb_secret_[A-Za-z0-9_-]+|sk-(proj-|svcacct-)?[A-Za-z0-9_-]{24,}|-----BEGIN .*PRIVATE KEY-----' "$RUNNER_TEMP/drivesense-bundle-strings"; then
+            echo "::error::Possible private credential in the JS bundle."; exit 1
+          fi
+          mkdir -p "$out" "$payload/Payload"
+          ditto --norsrc --noextattr "$app" "$payload/Payload/$(basename "$app")"
+          ipa="DriveSense-standalone-${GITHUB_SHA}.ipa"
+          (cd "$payload" && zip -qry "$out/$ipa" Payload)
+          (cd "$out" && shasum -a 256 "$ipa" > SHA256SUMS && shasum -a 256 -c SHA256SUMS)
+          {
+            printf 'commit=%s\nprofile=standalone-demo\nconfiguration=Release\n' "$GITHUB_SHA"
+            xcodebuild -version
+            printf 'ios_sdk=%s\nnode=%s\ncocoapods=%s\n' "$(xcrun --sdk iphoneos --show-sdk-version)" "$(node -v)" "$(pod --version)"
+          } > "$out/BUILD.txt"
+          cp ios/Podfile.lock "$out/Podfile.lock"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: SmartWheelApp-unsigned-ipa
-          path: mobile-app/ios/SmartWheelApp.ipa
-          retention-days: 30
+          name: DriveSense-standalone-${{ github.sha }}
+          path: ${{ runner.temp }}/drivesense-artifact/
+          retention-days: 14
           if-no-files-found: error

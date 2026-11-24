@@ -1,5 +1,3 @@
-import * as sensiPresentation from '../lib/ui/sensiPresentation.ts';
-import { SENSI_PROVIDERS } from '../lib/assistant/sensiPreferences.ts';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -7,171 +5,156 @@ import { URL as NodeURL } from 'node:url';
 import { createRequire } from 'node:module';
 import ts from 'typescript';
 import { light, dark } from '../lib/theme/tokens.ts';
-import { GEMMA_ARTIFACT } from '../modules/gemma-poc/artifact.ts';
-import { GEMMA_TERMS_TEXT, GEMMA_POLICY_TEXT } from '../lib/onboarding/gemmaTerms.ts';
-import { GEMMA_TERMS_URL, GEMMA_POLICY_URL, LEGACY_SETUP_KEY, NOTICE_VERSION, SETUP_KEY } from '../lib/onboarding/setup.ts';
+import { translateText } from '../lib/i18n/translate.ts';
+import * as driverProgress from '../lib/onboarding/driverProgress.ts';
+import { LEGACY_SETUP_KEY, NOTICE_VERSION, SETUP_KEY } from '../lib/onboarding/setup.ts';
 const require = createRequire(import.meta.url);
 const source = (path: string) => readFileSync(new NodeURL('../' + path, import.meta.url), 'utf8');
-function harness(page: number, tokens = light, accepted = false, busy = false, education = 0, review = false) {
-  const calls: any[] = []; let index = 0; let background: any;
-  const controller = { state: { page, notices: accepted, terms: accepted, busy, modelReady: false, ready: false, recovery: false, error: '' },
-    runtime: { state: { phase: 'Downloading model', installed: false, loaded: false, progress: { stage: 'download', completed: 120000000, total: GEMMA_ARTIFACT.bytes } } },
-    subscribe: (fn: any) => { fn(controller.state); return () => {}; },
-    cancel: () => calls.push('cancel'), acknowledge: (...args: any[]) => { calls.push(['ack', ...args]); }, go: (p: number) => calls.push(['go', p]),
-    prepare: () => { calls.push('prepare'); }, complete: async () => { calls.push('complete'); return true; },
-    continueWithoutGemma: async () => { calls.push('without model'); return true; },
-  };
-  const deps: Record<string, any> = {
-    '../lib/i18n/native': { LocalizedText: 'Text', LocalizedPressable: 'Pressable' },
-    './CloudPrivacyInfo': { CloudPrivacyInfo: 'CloudPrivacyInfo' }, '../lib/ui/sensiPresentation': sensiPresentation, '../lib/assistant/sensiPreferences': { SENSI_PROVIDERS },
-    './LanguageMenu': { LanguageMenu: 'LanguageMenu' },
-    '../lib/db/repositories': { getSetting: async () => null, setSetting: async (key: string, value: string) => { calls.push(['saved', key, value]); } },
-    react: { useState: (initial: any) => { const current = index++; return [current === 1 && review ? page : current === 4 ? education : initial, (value: any) => calls.push(['state', value])]; }, useRef: (value: any) => ({ current: value }), useEffect: (fn: any) => fn() },
-    'react/jsx-runtime': require('react/jsx-runtime'),
-    'react-native': { ...Object.fromEntries(['Image', 'Modal', 'Pressable', 'SafeAreaView', 'ScrollView', 'Text', 'View'].map(n => [n, n])),
-      StyleSheet: { hairlineWidth: 1 }, AppState: { addEventListener: (_: any, fn: any) => { background = fn; return { remove() {} }; } },
-      Linking: { openURL: async () => {} } },
-    '../lib/theme/ThemeProvider': { useTheme: () => ({ tokens }) }, '../lib/onboarding/setup': { GEMMA_TERMS_URL, GEMMA_POLICY_URL },
-    '../lib/onboarding/gemmaTerms': { GEMMA_TERMS_TEXT, GEMMA_POLICY_TEXT }, '../modules/gemma-poc/artifact': { GEMMA_ARTIFACT },
-    '../lib/voice/speechIO': { prepareVoice: async () => ({ granted: true }) },
-    './SettingsGroup': { SettingsGroup: 'SettingsGroup', SettingsRow: 'SettingsRow', SettingsNote: 'SettingsNote' },
-    './BrandMark': { BrandMark: 'BrandMark' }, './DashboardAssistantEntry': { DashboardAssistantEntry: 'SensiIcon' },
-    './VoicePicker': { VoicePicker: 'VoicePicker' }, './ui': { Btn: 'Btn' }, '../assets/branding/drivesense-logo.png': 'approved-logo',
-  };
+const compilerOptions = { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.ES2022 };
+function load(path: string, deps: Record<string, unknown>) {
   const exports: any = {};
-  new Function('require', 'exports', ts.transpileModule(source('components/Onboarding.tsx'), {
-    compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.ES2022 },
-  }).outputText)((name: string) => { assert.ok(name in deps, name); return deps[name]; }, exports);
-  const tree = exports.Onboarding({ controller, review, onDone: () => calls.push('done'), onChooseDriver: () => calls.push('drivers') });
+  new Function('require', 'exports', ts.transpileModule(source(path), { compilerOptions }).outputText)(
+    (name: string) => { assert.ok(name in deps, name); return deps[name]; }, exports);
+  return exports;
+}
+function harness(page: number, tokens = light, accepted = false, review = false, language: 'en' | 'es' = 'en', askOpen = false) {
+  const calls: any[] = [];
+  let index = 0;
+  const controller = { state: { page, notices: accepted, busy: false, error: '' },
+    subscribe: () => () => {}, acknowledge: (value: boolean) => { calls.push(['ack', value]); },
+    go: (value: number) => calls.push(['go', value]), complete: async () => { calls.push('complete'); return true; },
+  };
+  const { Onboarding } = load('components/Onboarding.tsx', {
+    '../lib/i18n/native': { LocalizedText: 'Text', LocalizedPressable: 'Pressable' },
+    '../lib/i18n/LanguageProvider': { useAppLanguage: () => ({ t: (key: string) => translateText(key, language) }) },
+    '../lib/db/repositories': { getSetting: async () => null, setSetting: async (...args: unknown[]) => { calls.push(['saved', ...args]); } },
+    './LanguageMenu': { LanguageMenu: 'LanguageMenu' },
+    react: { useState: (initial: unknown) => { const i = index++; return [i === 1 && review ? page : i === 3 && askOpen ? true : initial, (value: unknown) => calls.push(['state', value])]; }, useEffect: (fn: () => void) => fn() },
+    'react/jsx-runtime': require('react/jsx-runtime'),
+    'react-native': { ...Object.fromEntries(['Image', 'SafeAreaView', 'ScrollView', 'View'].map(n => [n, n])), StyleSheet: { hairlineWidth: 1 } },
+    'expo/node_modules/@expo/vector-icons/Feather': { __esModule: true, default: 'Feather' },
+    '../lib/theme/ThemeProvider': { useTheme: () => ({ tokens }) },
+    '../lib/voice/speechIO': { prepareVoice: async () => ({ granted: true }) },
+    './DashboardAssistantEntry': { SensiGlyph: 'SensiGlyph' },
+    './VoicePicker': { VoicePicker: 'VoicePicker' }, './ui': { Btn: 'Btn' }, './AskSensi': { AskSensi: 'AskSensi' },
+    '../assets/branding/drivesense-logo.png': 'approved-logo',
+  });
+  const tree = Onboarding({ controller, review, driverId: 'driver-a', onDone: () => calls.push('done'), onLeave: () => calls.push('leave') });
   const nodes: any[] = [];
-  function visit(n: any) { if (!n || typeof n !== 'object') return; if (Array.isArray(n)) { n.forEach(visit); return; }
-    nodes.push(n); if (n.type === 'Modal' && !n.props.visible) return;
-    if (typeof n.type === 'function') visit(n.type(n.props)); else visit(n.props?.children);
+  function visit(n: any) {
+    if (!n || typeof n !== 'object') return;
+    if (Array.isArray(n)) { n.forEach(visit); return; }
+    nodes.push(n); visit(n.props?.children);
   }
   visit(tree);
-  return { tree, nodes, controller, calls, background, text: nodes.filter(n => n.type === 'Text').flatMap(n => n.props.children).join(' ') };
+  return { tree, nodes, calls, button: (title: string) => nodes.find(n => n.props?.title === title).props,
+    text: nodes.filter(n => n.type === 'Text').flatMap(n => n.props.children).join(' ') };
 }
-test('setup completion requires notice consent and has no model step', async () => {
-  const f = harness(4, light, true);
-  const button = f.nodes.find(n => n.props?.title === 'Continue to DriveSense');
-  assert.equal(button.props.disabled, false);
-  button.props.onPress();
-  await Promise.resolve(); await Promise.resolve();
-  assert.ok(f.calls.includes('complete'));
-  assert.ok(f.calls.includes('done'));
-  assert.ok(!f.calls.includes('prepare'));
-  assert.equal(harness(4).nodes.find(n => n.props?.title === 'Continue to DriveSense').props.disabled, true);
-});
-for (const tokens of [light, dark]) test(`${tokens === light ? 'Warm Pearl' : 'Soft Graphite'} onboarding preserves notices and excludes model installation`, () => {
-  for (let page = 0; page < 5; page++) {
-    const f = harness(page, tokens);
-    assert.equal(f.tree.type, 'SafeAreaView'); assert.equal(f.tree.props.style.backgroundColor, tokens.background);
-    assert.equal(f.nodes.some(n => n.type === 'Btn' && n.props.title === 'Skip'), false);
+
+test('all six real stages report matching progress and render in both themes', () => {
+  for (const palette of [light, dark]) for (let page = 0; page < 6; page++) {
+    const f = harness(page, palette, false, false, 'es');
+    assert.equal(f.tree.props.style.backgroundColor, palette.background);
+    assert.deepEqual(f.nodes.find(n => n.props?.accessibilityRole === 'progressbar').props.accessibilityValue, { min: 0, max: 6, now: page + 1 });
+    assert.match(f.text, new RegExp('Paso ' + (page + 1) + ' de 6'));
     assert.ok(f.nodes.some(n => n.type === 'ScrollView'));
-    if (page === 0) assert.ok(f.nodes.some(n => n.type === 'Image' && n.props.source === 'approved-logo'));
+    if (!page) assert.ok(f.nodes.some(n => n.type === 'Image' && n.props.source === 'approved-logo'));
   }
 });
 
-test('new baseline and alert slides persist progress without shifting notice/license gates', async () => {
-  const baseline = harness(1, light, false, false, 1);
-  assert.match(baseline.text, /Monitoring That’s Personal/);
-  assert.match(baseline.text, /60 heart-rate readings/);
-  assert.match(baseline.text, /oxygen is compared, never corrected/);
-  baseline.nodes.find(node => node.type === 'Btn' && node.props.title === 'Next').props.onPress();
-  await Promise.resolve(); await Promise.resolve();
-  assert.ok(baseline.calls.some(call => Array.isArray(call) && call[0] === 'saved' && call[1] === 'setup_education_step' && call[2] === '2'));
-  assert.equal(baseline.calls.some(call => Array.isArray(call) && call[0] === 'go'), false);
-  const alerts = harness(1, light, false, false, 2);
-  assert.match(alerts.text, /15 seconds.*8 seconds/);
-  assert.match(alerts.text, /explicit consent/);
-  alerts.nodes.find(node => node.type === 'Btn' && node.props.title === 'Next').props.onPress();
-  assert.deepEqual(alerts.calls.at(-1), ['go', 2]);
-});
-
-test('onboarding exposes app language immediately and persists spoken defaults separately', async () => {
-  assert.ok(harness(0).nodes.some(node => node.type === 'LanguageMenu'));
-  const voice = harness(3);
-  const spanish = voice.nodes.find(node => node.type === 'Btn' && node.props.title === 'Español');
-  assert.ok(spanish); spanish.props.onPress();
-  await Promise.resolve(); await Promise.resolve();
-  assert.ok(voice.calls.some(call => Array.isArray(call) && call[0] === 'saved' && call[1] === 'voicecheck_default_language' && call[2] === 'es'));
-  assert.equal(voice.calls.some(call => Array.isArray(call) && call[1] === 'app_language'), false);
-});
-test('safety notices retain an explicit checkbox gate and setup exposes no model tools', () => {
-  const f = harness(2);
-  const checkbox = f.nodes.find(n => n.props.accessibilityRole === 'checkbox');
-  assert.equal(checkbox.props.accessibilityState.checked, false);
-  checkbox.props.onPress();
-  assert.deepEqual(f.calls.at(-1), ['ack', true]);
-  assert.equal(f.nodes.find(n => n.props?.title === 'Next').props.disabled, true);
-  for (let page = 0; page < 5; page++) {
-    assert.doesNotMatch(harness(page).text, /Gemma|OpenAI|model installation/i);
-  }
-});
-
-test('copy separates foreground monitoring, recording, built-in safety, and synchronization', () => {
-  assert.match(harness(1).text, /Start Drive controls trip recording/);
+test('onboarding keeps optional native voice, separate Ask settings, and explicit safety acknowledgment', async () => {
   assert.match(harness(1).text, /locked-phone VoiceCheck are not supported/);
-  assert.match(harness(2).text, /not a medical device/);
-  assert.match(harness(2).text, /dashboard synchronization are separate/);
-  assert.match(harness(2).text, /explicit request or agreement/);
-  assert.match(harness(3).text, /built-in driving safety assistant/);
-  assert.match(harness(3).text, /explicit authorization/);
-});
-test('setup is launch-only, deferred for existing work, and preserves the normal profile selection path', () => {
-  const shell = source('components/SmartWheelScreen.tsx');
-  assert.match(shell, /if \(!ongoing\) void sensiSetup.boot/);
-  assert.match(shell, /drive.safety.monitoring === 'active'/);
-  assert.match(shell, /setupState.booted && !setupState.ready && !ongoing/);
-  assert.match(shell, /<DriverPicker profiles=\{profiles\} onPick=\{setPendingDriver\}/);
-  assert.match(shell, /drive.selectDriver\(pendingDriver\)/);
-  assert.match(shell, /setupState.ready \|\| ongoing/);
-  assert.doesNotMatch(source('lib/onboarding/setup.ts'), /createProfile|startSession|setRecordingSession|handoffContact|VoiceCheck\(/);
+  assert.match(harness(2).text, /60 qualifying heart-rate readings/);
+  assert.match(harness(2).text, /15-second warning.*8-second critical/);
+  const voice = harness(3);
+  assert.ok(voice.nodes.some(n => n.type === 'SensiGlyph'));
+  assert.match(voice.text, /Speech is processed on this phone/);
+  assert.match(voice.text, /iOS asks for confirmation/);
+  voice.button('Spanish').onPress();
+  await Promise.resolve();
+  assert.ok(voice.calls.some(c => Array.isArray(c) && c[1] === 'voicecheck_default_language' && c[2] === 'es'));
+  const ask = harness(4, light, false, false, 'en', true);
+  const settings = ask.nodes.find(n => n.type === 'AskSensi');
+  assert.equal(settings.props.driverId, 'driver-a');
+  assert.equal(settings.props.settingsOnly, true);
+  assert.match(ask.text, /requires separate approval/);
+  assert.doesNotMatch(source('components/Onboarding.tsx'), /createAskSensiClient|sendAsk\(/);
+  const gate = harness(5);
+  assert.equal(gate.button('Continue to DriveSense').disabled, true);
+  gate.nodes.find(n => n.props?.accessibilityRole === 'checkbox').props.onPress();
+  assert.deepEqual(gate.calls.at(-1), ['ack', true]);
+  assert.match(gate.text, /not a medical device/);
+  const completed = harness(5, light, true);
+  completed.button('Continue to DriveSense').onPress();
+  await Promise.resolve();
+  assert.deepEqual(completed.calls.filter(c => typeof c === 'string'), ['complete', 'done']);
 });
 
-
-test('review reuses every onboarding page without setup writes, downloads or completion', async () => {
-  for (let page = 0; page < 5; page++) {
-    const f = harness(page, light, true, false, 2, true);
-    assert.ok(f.nodes.some(n => n.props?.title === 'Return to application'));
-    f.nodes.find(n => n.props?.title === 'Return to application').props.onPress();
-    f.nodes.find(n => n.props?.title === 'Choose or create a driver').props.onPress();
-    const next = f.nodes.find(n => n.props?.title === (page === 4 ? 'Continue to DriveSense' : 'Next'));
-    assert.equal(next.props.disabled, false); next.props.onPress();
-    await Promise.resolve(); await Promise.resolve();
-    assert.equal(f.calls.some(c => c === 'prepare' || c === 'complete' || c === 'cancel' || Array.isArray(c) && ['saved','go','ack'].includes(c[0])), false);
-    assert.ok(f.calls.includes('done')); assert.ok(f.calls.includes('drivers'));
+test('review offers a single close action and does not update setup progress', async () => {
+  for (let page = 0; page < 6; page++) {
+    const f = harness(page, dark, false, true);
+    assert.equal(f.nodes.filter(n => n.props?.title === 'Close review').length, 1);
+    f.button('Close review').onPress();
+    f.button(page === 5 ? 'Continue to DriveSense' : 'Next').onPress();
+    await Promise.resolve();
+    assert.ok(f.calls.includes('leave'));
+    assert.ok(!f.calls.includes('complete'));
+    assert.ok(!f.nodes.some(n => n.props?.accessibilityRole === 'checkbox'));
   }
 });
 
-test('built-in admission restores completed legacy notices and new setup saves no model state', async () => {
-  const code = ts.transpileModule(source('lib/onboarding/builtInPhone.ts'), { compilerOptions: {
-    module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022,
-  } }).outputText;
-  function setup(settings: Map<string, string>) {
-    const exports: any = {};
-    const modules: Record<string, unknown> = {
-      '../db/repositories': { getSetting: async (key: string) => settings.get(key) ?? null,
-        setSetting: async (key: string, value: string) => { settings.set(key, value); } },
-      './setup': { LEGACY_SETUP_KEY, NOTICE_VERSION, SETUP_KEY },
-    };
-    new Function('require', 'exports', code)((name: string) => { assert.ok(name in modules); return modules[name]; }, exports);
-    return exports.sensiSetup;
-  }
-  const previous = setup(new Map([[SETUP_KEY, JSON.stringify({
-    version: 2, noticeVersion: NOTICE_VERSION, notices: true, completed: true, page: 5, artifact: 'legacy',
-  })]]));
-  await previous.boot();
-  assert.equal(previous.state.ready, true);
-  const saved = new Map<string, string>();
-  const current = setup(saved);
-  await current.boot();
-  await current.go(4);
-  assert.equal(current.state.page, 0);
-  await current.acknowledge(true);
-  await current.go(4);
-  assert.equal(await current.complete(), true);
-  assert.deepEqual(JSON.parse(saved.get(SETUP_KEY)!), {
-    version: 3, noticeVersion: NOTICE_VERSION, page: 4, notices: true, completed: true,
+test('driver-scoped setup migrates legacy completion, starts new drivers clean, and resumes without affecting another driver', async () => {
+  const { driverIntroKey, newDriverIntro } = driverProgress;
+  const settings = new Map<string, string>([[SETUP_KEY, JSON.stringify({
+    version: 3, noticeVersion: NOTICE_VERSION, notices: true, completed: true, page: 4,
+  })], [driverIntroKey('new'), newDriverIntro]]);
+  const app = load('lib/onboarding/builtInPhone.ts', {
+    '../db/repositories': { getSetting: async (key: string) => settings.get(key) ?? null,
+      setSetting: async (key: string, value: string) => { settings.set(key, value); } },
+    './driverProgress': driverProgress, './setup': { LEGACY_SETUP_KEY, NOTICE_VERSION, SETUP_KEY },
   });
+  assert.equal((await app.setupForDriver('existing')).state.ready, true);
+  let pending = await app.setupForDriver('new');
+  assert.equal(pending.state.ready, false);
+  assert.equal(pending.state.notices, false);
+  await pending.go(3);
+  pending = await app.setupForDriver('new');
+  assert.equal(pending.state.page, 3);
+  await pending.go(5);
+  assert.equal(await pending.complete(), false);
+  await pending.acknowledge(true);
+  assert.equal(await pending.complete(), true);
+  assert.equal((await app.setupForDriver('new')).state.ready, true);
+  assert.equal((await app.setupForDriver('existing')).state.ready, true);
+  assert.match(source('lib/db/repositories.ts'), /withExclusiveTransactionAsync[\s\S]*driverIntroKey\(profile.id\), newDriverIntro/);
+  assert.match(source('components/SmartWheelScreen.tsx'), /await setupForDriver\(profile.id\)/);
+  assert.match(source('components/DriverPicker.tsx'), /if \(savingProfile.current\) return/);
+});
+
+test('personalized monitoring uses four consistent scrollable cards with unchanged technical copy', () => {
+  const copy = [
+    ['Your personal reference', 'Your profile sets starting ranges. At least 60 qualifying heart-rate readings from finished drives are needed to establish a personal reference.'],
+    ['Adaptive baseline', 'DriveSense uses recent drives from 28 days, extending to the last 10 drives when needed. Poor-quality readings and periods around NOT OK or unanswered events are excluded.'],
+    ['Reference-device calibration', 'The reference refreshes after saved drives. Optional reference-device calibration corrects heart rate only; oxygen is compared, never corrected. Calibration is not required to start monitoring.'],
+    ['How alerts are confirmed', 'Tracking uses a 15-second warning window or an 8-second critical window. Only sustained, usable evidence can confirm an event and start VoiceCheck.'],
+  ];
+  for (const tokens of [light, dark]) {
+    const { tree, nodes } = harness(2, tokens);
+    const [header, scroll, footer] = tree.props.children;
+    assert.equal(scroll.type, 'ScrollView');
+    assert.ok(header.props.children[0].props.children.some((node: any) => node.props.title === 'Finish later'));
+    assert.deepEqual(footer.props.children.map((node: any) => node.props.title), ['Back', 'Next']);
+    const cards = nodes.filter(node => node.props?.style?.backgroundColor === tokens.surfaceMuted);
+    assert.equal(cards.length, 4);
+    assert.equal(new Set(cards.map((card: any) => JSON.stringify(card.props.style))).size, 1);
+    for (const [i, card] of cards.entries()) {
+      const [icon, content] = card.props.children;
+      assert.equal(icon.type, 'Feather');
+      const [heading, body] = content.props.children;
+      assert.deepEqual([heading.props.children, body.props.children], copy[i]);
+      assert.equal(body.props.style.color, tokens.textSecondary);
+      assert.equal(body.props.numberOfLines, undefined);
+      for (const text of copy[i]) assert.notEqual(translateText(text, 'es'), text);
+    }
+  }
 });

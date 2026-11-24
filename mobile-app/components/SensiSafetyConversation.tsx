@@ -1,3 +1,4 @@
+import { STANDALONE_DEMO } from '../lib/buildProfile';
 import { RealContactDemoConfirmation } from './RealContactDemoConfirmation';
 import { responsivenessProbe, SENSI_ACKNOWLEDGMENT_PRESENTATION, traceVoiceCheckUI } from '../lib/voice/responsivenessDiagnostics';
 import { LocalizedText as Text } from '../lib/i18n/native';
@@ -49,21 +50,21 @@ export function SensiSafetyConversation({ drive, onContinue, standby, onStandbyC
   const pending = useRef(false);
   const [answerPending, setAnswerPending] = useState(false);
   useEffect(() => { pending.current = false; setAnswerPending(false); }, [dialogue?.episodeId, check?.question, check?.captureId]);
-  const hardware = __DEV__ && dialogue && drive.hardwareTest?.safety?.conversation?.episodeId === dialogue.episodeId ? drive.hardwareTest : null;
-  const homeDemo = __DEV__ && dialogue && drive.homeHardwareDemo?.safety?.conversation?.episodeId === dialogue.episodeId
+  const hardware = (__DEV__ || STANDALONE_DEMO) && dialogue && drive.hardwareTest?.safety?.conversation?.episodeId === dialogue.episodeId ? drive.hardwareTest : null;
+  const homeDemo = (__DEV__ || STANDALONE_DEMO) && dialogue && drive.homeHardwareDemo?.safety?.conversation?.episodeId === dialogue.episodeId
     ? drive.homeHardwareDemo : null;
   const homeConfirmation = homeDemo?.confirmation;
   const confirmation = hardware?.confirmation;
   const visibleConfirmationId = dialogue?.finished ? confirmation?.id : undefined;
-  const markConfirmationVisible = __DEV__ ? drive.hardwareTestControls?.markConfirmationVisible : undefined;
+  const markConfirmationVisible = (__DEV__ || STANDALONE_DEMO) ? drive.hardwareTestControls?.markConfirmationVisible : undefined;
   useEffect(() => {
-    if (__DEV__ && visibleConfirmationId) markConfirmationVisible?.(visibleConfirmationId);
+    if ((__DEV__ || STANDALONE_DEMO) && visibleConfirmationId) markConfirmationVisible?.(visibleConfirmationId);
   }, [markConfirmationVisible, visibleConfirmationId]);
-  const markListeningVisible = __DEV__ ? drive.hardwareTestControls?.markListeningVisible : undefined;
+  const markListeningVisible = (__DEV__ || STANDALONE_DEMO) ? drive.hardwareTestControls?.markListeningVisible : undefined;
   const listeningCapture = hardware && !dialogue?.finished && !answerPending && !check?.fallbackText
     && check?.phase === 'listening' && check.episode.id === dialogue?.episodeId ? check.captureId : undefined;
   useEffect(() => {
-    if (__DEV__ && dialogue?.episodeId && listeningCapture) markListeningVisible?.(dialogue.episodeId, listeningCapture);
+    if ((__DEV__ || STANDALONE_DEMO) && dialogue?.episodeId && listeningCapture) markListeningVisible?.(dialogue.episodeId, listeningCapture);
   }, [markListeningVisible, dialogue?.episodeId, listeningCapture]);
   const blockedHandoff = hardware?.handoffEvidence?.permit?.reason;
   // Keep one native modal host when a sensor event replaces standby. Neither

@@ -1,3 +1,4 @@
+import { STANDALONE_DEMO } from '../lib/buildProfile';
 import { ScreenHeader, ScreenHeading } from './ScreenHeader';
 import { LocalizedAlert as Alert, LocalizedPressable as Pressable, LocalizedText as Text } from '../lib/i18n/native';
 import { useTheme } from '../lib/theme/ThemeProvider';
@@ -52,12 +53,13 @@ function Detail(props: { session: SessionSummary; onBack: () => void }) {
   const s = props.session;
 
   useEffect(() => {
-    void (async () => {
-      setStats(await repo.robustSessionStats(s.id));
-      setAlerts(await repo.alertsForSession(s.id));
-      setInfo(await archiveInfo(s.id));
-    })();
-  }, [s.id]);
+    let current = true;
+    void Promise.all([repo.robustSessionStats(s.profile_id, s.id), repo.alertsForSession(s.profile_id, s.id), archiveInfo(s.id, s.profile_id)])
+      .then(([summary, events, metadata]) => {
+        if (current) { setStats(summary); setAlerts(events); setInfo(metadata); }
+      }).catch(() => { if (current) setError('Could not load drive history.'); });
+    return () => { current = false; };
+  }, [s.id, s.profile_id]);
 
   useEffect(() => {
     let current = true;
@@ -71,7 +73,7 @@ function Detail(props: { session: SessionSummary; onBack: () => void }) {
     setUnfolding(true);
     setError(null);
     try {
-      setArchive(await unfoldSession(s.id));
+      setArchive(await unfoldSession(s.id, s.profile_id));
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -180,7 +182,7 @@ function Detail(props: { session: SessionSummary; onBack: () => void }) {
               label="Folded size"
               value={`${fmtBytes(info.packed_bytes)} (×${(info.raw_bytes / info.packed_bytes).toFixed(1)} smaller)`}
             />
-            <Row label="Cloud backup" value={info.sync_status === 'synced' ? 'yes' : 'pending'} tone={info.sync_status === 'synced' ? 'good' : 'warn'} />
+            <Row label="Cloud backup" value={info.sync_status === 'synced' ? 'Synced' : STANDALONE_DEMO ? 'Saved locally' : 'pending'} tone={info.sync_status === 'synced' ? 'good' : STANDALONE_DEMO ? 'neutral' : 'warn'} />
             {!archive ? (
               <Btn title="Unfold waveform" kind="ghost" busy={unfolding} onPress={unfold} />
             ) : (
@@ -202,15 +204,17 @@ function Detail(props: { session: SessionSummary; onBack: () => void }) {
           title="Delete this drive"
           kind="danger"
           onPress={() =>
-            Alert.alert('Delete this drive?', 'Removes its readings, alerts and waveform on this phone and on the dashboard. It cannot be undone.', [
+            Alert.alert('Delete this drive?', STANDALONE_DEMO ? 'This permanently deletes the drive from this phone only. Cloud records are kept.' : 'Removes its readings, alerts and waveform on this phone and on the dashboard. It cannot be undone.', [
               { text: 'Cancel', style: 'cancel' },
               {
-                text: 'Delete everywhere',
+                text: STANDALONE_DEMO ? 'Delete from this phone' : 'Delete everywhere',
                 style: 'destructive',
                 onPress: async () => {
-                  const where = await deleteDriveEverywhere(s.id);
-                  props.onBack();
-                  if (where === 'queued') Alert.alert('Deleted on this phone', 'The dashboard copy will be deleted the next time the phone is online.');
+                  try {
+                    const where = await deleteDriveEverywhere(s.id, s.profile_id);
+                    props.onBack();
+                    if (where === 'queued') Alert.alert('Deleted on this phone', 'Cloud removal is pending. DriveSense will retry when it can connect.');
+                  } catch { Alert.alert('Could not delete this drive.'); }
                 },
               },
             ])
@@ -232,7 +236,11 @@ function Big(props: { label: string; value: string; color: string }) {
   );
 }
 
-export function HistoryView(props: { refreshKey: string }) {
+export function HistoryView(props: { driverId: string; refreshKey: string }) {
+  return <DriverHistory key={props.driverId} {...props} />;
+}
+
+function DriverHistory(props: { driverId: string; refreshKey: string }) {
   const listOffset = useRef(0);
   const { colors: C, tokens } = useTheme();
   const st = makeStyles(tokens);
@@ -240,9 +248,20 @@ export function HistoryView(props: { refreshKey: string }) {
   const [open, setOpen] = useState<SessionSummary | null>(null);
   const [refreshing, setRefreshing] = useState(false);
 
-  const load = useCallback(async () => setSessions(await repo.listSessions(100)), []);
+  const request = useRef(0);
+  const [loadError, setLoadError] = useState(false);
+  const load = useCallback(async () => {
+    const revision = ++request.current;
+    try {
+      const rows = await repo.listSessions(props.driverId, 100);
+      if (request.current === revision) { setSessions(rows); setLoadError(false); }
+    } catch {
+      if (request.current === revision) { setSessions([]); setLoadError(true); }
+    }
+  }, [props.driverId]);
   useEffect(() => {
     void load();
+    return () => { request.current += 1; };
   }, [load, props.refreshKey]);
 
   if (open)
@@ -271,7 +290,8 @@ export function HistoryView(props: { refreshKey: string }) {
       }
     >
       {!sessions ? <ActivityIndicator /> : null}
-      {sessions?.length === 0 ? <Text style={st.sub}>No drives yet. Start one from the Drive tab.</Text> : null}
+      {loadError ? <Text accessibilityRole="alert" style={st.sub}>Could not load drive history.</Text> : null}
+      {!loadError && sessions?.length === 0 ? <Text style={st.sub}>No drives yet. Start one from the Drive tab.</Text> : null}
       {sessions?.map((s) => (
         <Pressable key={s.id} onPress={() => setOpen(s)} accessibilityRole="button">
           <Card style={st.item}>
@@ -283,7 +303,7 @@ export function HistoryView(props: { refreshKey: string }) {
             </View>
             <View style={{ alignItems: 'flex-end', gap: 4 }}>
               <Pill tone={s.status === 'active' ? 'good' : s.sync_status === 'synced' ? 'brand' : 'neutral'}>
-                {s.status === 'active' ? 'recording' : s.sync_status === 'synced' ? 'in cloud' : 'on phone'}
+                {s.status === 'active' ? 'recording' : s.sync_status === 'synced' ? 'Synced' : 'Saved locally'}
               </Pill>
               <Text style={st.sub}>{s.event_count} s of data{s.storage_mode === 'full' ? ' · waveform' : ''}</Text>
             </View>

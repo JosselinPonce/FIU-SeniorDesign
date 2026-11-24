@@ -55,10 +55,10 @@ test('Gemma uses the same verified runtime with bounded allowlisted output and d
   assert.match(read('lib/voice/speechIO.ts'), /listenOffline/); assert.match(read('components/VoicePicker.tsx'), /listVoices/);
 });
 test('general notices, optional model continuation and isolated non-AI Supabase services stay intact', () => {
-  assert.match(read('components/SmartWheelScreen.tsx'), /!setupState.ready && !ongoing/);
+  assert.match(read('components/SmartWheelScreen.tsx'), /await setupForDriver\(profile.id\)/);
   assert.match(read('lib/onboarding/setup.ts'), /!this.state.notices \|\| !this.state.terms/);
   assert.match(read('lib/onboarding/setup.ts'), /async continueWithoutGemma/);
-  assert.doesNotMatch(read('components/Onboarding.tsx'), /Gemma|OpenAI/);
+  assert.doesNotMatch(read('components/Onboarding.tsx'), /Gemma|createAskSensiClient/);
   assert.doesNotMatch(read('lib/onboarding/builtInPhone.ts'), /gemmaPoc|provision\(/);
   assert.match(read('components/DemoStartup.tsx'), /sensiCloudAuth.restore/);
   assert.match(read('components/DemoStartup.tsx'), /return <>{children}<\/>/);

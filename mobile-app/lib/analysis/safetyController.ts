@@ -1,3 +1,4 @@
+import { STANDALONE_DEMO } from '../buildProfile.ts';
 import { FIRST_ABNORMAL_SIMULATION_SECOND, simulationReading, type DemoScenario } from './simulationReadings.ts';
 export type { DemoScenario } from './simulationReadings.ts';
 import type { SemanticContext, SemanticTask } from '../assistant/safetySemantic.ts';
@@ -543,7 +544,7 @@ export class SafetyController {
 
   /** Debug callers use a separate controller instance without model or persistence dependencies. */
   runIsolatedCheck(ep: Episode, onOfferAccepted: () => void): Promise<CheckResult> | undefined {
-    if (typeof __DEV__ !== 'undefined' && __DEV__) return this.runCheck(ep, 'rehearsal', onOfferAccepted);
+    if ((typeof __DEV__ !== 'undefined' && __DEV__) || STANDALONE_DEMO) return this.runCheck(ep, 'rehearsal', onOfferAccepted);
   }
 
   private async runCheck(ep: Episode, mode: 'live' | 'rehearsal' | 'demo' = 'live', onOfferAccepted?: () => void): Promise<CheckResult> {

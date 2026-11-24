@@ -1,3 +1,4 @@
+import * as driverProgress from '../lib/onboarding/driverProgress.ts';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, mkdtempSync, rmSync } from 'node:fs';
@@ -19,6 +20,7 @@ function load(path: string, deps: Record<string, unknown>, expose = '') {
   const compiled = ts.transpileModule(source + expose, { compilerOptions: {
     module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX,
   } }).outputText;
+  deps = { '../buildProfile': { STANDALONE_DEMO: false }, '../lib/buildProfile': { STANDALONE_DEMO: false }, './telemetryPolicy': { telemetryAllowed: async () => true }, ...deps };
   const exports: any = {};
   new Function('require', 'exports', compiled)((name: string) => {
     assert.ok(name in deps, name);
@@ -49,6 +51,7 @@ test('phone SQLite baseline counts unique qualifying finished-drive telemetry an
   const storage = { getAllAsync: async (sql: string, args: SQLInputValue[]) => db.prepare(sql).all(...args),
     runAsync: async (sql: string, args: SQLInputValue[]) => db.prepare(sql).run(...args) };
   const repo = load('lib/db/repositories.ts', {
+    '../onboarding/driverProgress': driverProgress,
     './database': { getDatabase: async () => storage },
     './profileEditing': {}, '../util/json': {}, '../analysis/baseline': baseline, '../analysis/stats': stats,
     '../ble/protocol': { uuidv4: () => `reading-${++id}` },
@@ -80,11 +83,11 @@ test('phone SQLite baseline counts unique qualifying finished-drive telemetry an
   assert.equal(learned.spo2Median, 97);
   assert.equal(await store('recording', 62), 'duplicate');
 
-  const window = await repo.recordedVitals('recording', start + 59_000, start + 63_000);
+  const window = await repo.recordedVitals('alice', 'recording', start + 59_000, start + 63_000);
   const points = recordedVitalPoints(window, start + 59_000, 4);
   assert.deepEqual(points.heart.map(point => point.v), [null, null, 72, 72]);
   assert.deepEqual(points.oxygen.map(point => point.v), [null, null, 97, 97]);
-  assert.deepEqual((await repo.recordedVitals('missing', start, start + 60_000)), []);
+  assert.deepEqual((await repo.recordedVitals('alice', 'missing', start, start + 60_000)), []);
 });
 
 function baselineView(theme: typeof light, fontScale = 1) {
@@ -198,7 +201,7 @@ test('ready baseline compares live heart rate only while its own snapshot is cur
   assert.equal(has(ui.render('bob', 0, 80), 'Within your usual range'), false);
 });
 
-test('v6 to v7 migration preserves genuine drive data and stores demo events separately and idempotently', async t => {
+test('v6 migration through v8 preserves genuine drive data and stores demo events separately and idempotently', async t => {
   const db = new DatabaseSync(':memory:');
   t.after(() => db.close());
   const storage = {
@@ -210,15 +213,16 @@ test('v6 to v7 migration preserves genuine drive data and stores demo events sep
   const open = () => load('lib/db/database.ts', { 'expo-sqlite': { openDatabaseAsync: async () => storage } }).getDatabase();
   await open();
   // Restore the v6 table set, then populate an existing drive before upgrading.
-  db.exec("DROP TABLE drive_demo_events; PRAGMA user_version = 6;");
+  db.exec("DROP TABLE ask_sensi_chats; DROP TABLE drive_demo_events; PRAGMA user_version = 6;");
   const stamp = new Date(Date.now() - 3600_000).toISOString();
   db.prepare('INSERT INTO driver_profiles (id, display_name, created_at, updated_at) VALUES (?, ?, ?, ?)').run('p1', 'Driver', stamp, stamp);
   db.prepare(`INSERT INTO drive_sessions (id, profile_id, started_at, status, sync_status) VALUES (?, ?, ?, 'completed', 'local')`).run('s1', 'p1', stamp);
   db.prepare(`INSERT INTO telemetry_events (id, session_id, event_type, received_at, raw_payload, sync_status, bpm, spo2, sqi_good)
     VALUES ('real', 's1', 'reading', ?, '{}', 'local', 78, 98, 1)`).run(stamp);
   await open();
-  assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, 7);
+  assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, 8);
   const repo = load('lib/db/repositories.ts', {
+    '../onboarding/driverProgress': driverProgress,
     './database': { getDatabase: async () => storage },
     './profileEditing': {}, '../util/json': {}, '../analysis/baseline': baseline, '../analysis/stats': stats, '../ble/protocol': {},
   });
@@ -240,7 +244,7 @@ test('v6 to v7 migration preserves genuine drive data and stores demo events sep
   assert.deepEqual({ ...row }, { ...event, source: 'hardware_biometric_simulation', sensi_outcome: 'not_ok', sync_status: 'pending' });
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM drive_demo_events').get()?.n, 1);
   assert.deepEqual(await repo.demoEventsForSession('s1', 'wrong-driver'), []);
-  assert.deepEqual(await repo.alertsForSession('s1'), []);
+  assert.deepEqual(await repo.alertsForSession('p1', 's1'), []);
   assert.ok(before.readings > 0);
   assert.deepEqual(await repo.driverBaseline('p1'), before);
   assert.deepEqual({ ...db.prepare('SELECT bpm, spo2 FROM telemetry_events').get() }, { bpm: 78, spo2: 98 });
@@ -281,4 +285,55 @@ test('History renders labeled demo values and local status in a card separate fr
   assert.ok(demo.some(node => node.props.value === 'Said not OK'));
   assert.ok(findCard('Alerts').some(node => String(node.props.label).includes('180')));
   assert.ok(!findCard('Alerts').some(node => node.props.value === '90.0%'));
+});
+
+
+test('Ask Sensi SQLite history survives reopening and enforces account, driver, and drive association', async t => {
+  const folder = mkdtempSync(join(tmpdir(), 'drivesense-chats-'));
+  const path = join(folder, 'chats.db');
+  let db = new DatabaseSync(path);
+  t.after(() => { db.close(); rmSync(folder, { recursive: true, force: true }); });
+  const storage = {
+    getFirstAsync: async (sql: string, args: SQLInputValue[] = []) => db.prepare(sql).get(...args),
+    getAllAsync: async (sql: string, args: SQLInputValue[] = []) => db.prepare(sql).all(...args),
+    runAsync: async (sql: string, args: SQLInputValue[] = []) => db.prepare(sql).run(...args),
+    execAsync: async (sql: string) => db.exec(sql),
+  };
+  const reopen = async () => {
+    const database = load('lib/db/database.ts', { 'expo-sqlite': { openDatabaseAsync: async () => storage } });
+    await database.getDatabase();
+    return load('lib/db/askSensiConversations.ts', { './database': database });
+  };
+  await reopen();
+  db.exec(`
+    DROP TABLE ask_sensi_chats;
+    PRAGMA user_version = 7;
+    INSERT INTO driver_profiles(id, display_name, created_at, updated_at) VALUES
+      ('d1', 'Driver One', '2026-11-01', '2026-11-01'), ('d2', 'Driver Two', '2026-11-01', '2026-11-01');
+    INSERT INTO drive_sessions(id, profile_id, started_at, status, sync_status) VALUES
+      ('drive', 'd1', '2026-11-12', 'completed', 'local'), ('other-drive', 'd1', '2026-11-13', 'completed', 'local');
+  `);
+  let repo = await reopen();
+  assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, 8);
+  assert.equal(db.prepare('SELECT count(*) AS n FROM drive_sessions').get()?.n, 2);
+  const chat = { id: 'chat', driveId: 'drive', title: 'Drive summary', createdAt: '2026-11-20', updatedAt: '2026-11-21',
+    turns: [{ id: 'turn', question: 'Explain this drive', answer: 'Recorded summary' }] };
+  await repo.saveAskConversation('a1', 'd1', chat);
+  await repo.saveAskConversation('a1', 'd1', { ...chat, id: 'new', driveId: 'other-drive', createdAt: '2026-11-22' });
+  await assert.rejects(repo.saveAskConversation('a1', 'd1', { ...chat, driveId: 'other-drive' }));
+  await repo.deleteAskConversation('a2', 'd1', chat.id);
+  db.close();
+  db = new DatabaseSync(path);
+  repo = await reopen();
+  assert.deepEqual(await repo.listAskConversations('a1', 'd2'), []);
+  assert.deepEqual(await repo.listAskConversations('a2', 'd1'), []);
+  const chats = await repo.listAskConversations('a1', 'd1');
+  assert.deepEqual(chats.map((item: { id: string }) => item.id), ['new', 'chat']);
+  assert.deepEqual(chats[1], { ...chat, driveStartedAt: '2026-11-12' });
+  await repo.deleteAskConversation('a1', 'd1', 'new');
+  assert.equal(db.prepare("SELECT count(*) AS n FROM drive_sessions WHERE id = 'other-drive'").get()?.n, 1);
+  db.exec("DELETE FROM drive_sessions WHERE id = 'drive'");
+  assert.deepEqual((await repo.listAskConversations('a1', 'd1'))[0], { ...chat, driveStartedAt: null });
+  db.exec("DELETE FROM driver_profiles WHERE id = 'd1'");
+  assert.deepEqual(await repo.listAskConversations('a1', 'd1'), []);
 });

@@ -1,3 +1,5 @@
+import { STANDALONE_DEMO } from '../buildProfile';
+import { telemetryAllowed } from './telemetryPolicy';
 /**
  * Deleting data -- on this phone AND in Supabase.
  *
@@ -23,17 +25,17 @@
 import { supabase } from '../supabase';
 import { getDatabase } from './database';
 import { getSetting, setSetting } from './repositories';
+import { serializeCloudWrite } from './cloudWrites';
+import { driverIntroKey } from '../onboarding/driverProgress';
+import { profileSyncKey } from './profileEditing';
 import { ARCHIVE_BUCKET } from './liveSync';
 
 type Pending = { table: 'driver_profiles' | 'drive_sessions'; id: string; files: string[] };
 
 async function readQueue(): Promise<Pending[]> {
-  try {
-    const v = JSON.parse((await getSetting('pending_deletes')) ?? '[]');
-    return Array.isArray(v) ? v : [];
-  } catch {
-    return [];
-  }
+  const v = JSON.parse((await getSetting('pending_deletes')) ?? '[]');
+  if (!Array.isArray(v)) throw new Error('Pending deletion queue is unavailable.');
+  return v;
 }
 
 async function writeQueue(q: Pending[]) {
@@ -42,11 +44,21 @@ async function writeQueue(q: Pending[]) {
 
 /** One cloud deletion. Returns true when the server confirmed it. */
 async function cloudDelete(p: Pending): Promise<boolean> {
+  if (!await telemetryAllowed()) return false;
   try {
-    if (p.files.length) {
-      // Best effort: without the v5 Storage policy this is refused, and the
-      // row delete below still removes everything the dashboard shows.
-      await supabase.storage.from(ARCHIVE_BUCKET).remove(p.files);
+    const files = new Set(p.files);
+    if (p.table === 'driver_profiles') {
+      const result = await supabase.from('drive_sessions').select('id,session_archives(storage_path)').eq('profile_id', p.id);
+      if (result.error) return false;
+      for (const session of result.data ?? []) {
+        if (session.session_archives && (Array.isArray(session.session_archives) ? session.session_archives.length > 0 : true)) {
+          files.add(archivePath(session.id));
+        }
+      }
+    }
+    if (files.size) {
+      const storage = await supabase.storage.from(ARCHIVE_BUCKET).remove([...files]);
+      if (storage.error) return false;
     }
     const { error } = await supabase.from(p.table).delete().eq('id', p.id);
     return !error;
@@ -55,20 +67,23 @@ async function cloudDelete(p: Pending): Promise<boolean> {
   }
 }
 
-async function deleteOrQueue(p: Pending): Promise<'cloud' | 'queued'> {
-  if (await cloudDelete(p)) return 'cloud';
-  await writeQueue([...(await readQueue()), p]);
-  return 'queued';
+async function settle(p: Pending): Promise<'cloud' | 'queued' | 'local'> {
+  try {
+    if (!await cloudDelete(p)) return 'queued';
+    await writeQueue((await readQueue()).filter(item => item.table !== p.table || item.id !== p.id));
+    return 'cloud';
+  } catch { return 'queued'; }
 }
 
-/** Retries queued cloud deletions. Safe to call any time. */
-export async function processPendingDeletes(): Promise<number> {
-  const q = await readQueue();
-  if (!q.length) return 0;
-  const left: Pending[] = [];
-  for (const p of q) if (!(await cloudDelete(p))) left.push(p);
-  await writeQueue(left);
-  return q.length - left.length;
+export function processPendingDeletes(): Promise<number> {
+  return serializeCloudWrite(async () => {
+    if (!await telemetryAllowed()) return 0;
+    const queue = await readQueue();
+    const left: Pending[] = [];
+    for (const item of queue) if (!await cloudDelete(item)) left.push(item);
+    if (queue.length) await writeQueue(left);
+    return queue.length - left.length;
+  });
 }
 
 export async function pendingDeleteCount(): Promise<number> {
@@ -77,35 +92,61 @@ export async function pendingDeleteCount(): Promise<number> {
 
 const archivePath = (sessionId: string) => `${sessionId}.ppga`;
 
-export async function deleteDriverEverywhere(profileId: string): Promise<'cloud' | 'queued'> {
-  const db = await getDatabase();
-  const sessions = await db.getAllAsync<{ id: string }>('SELECT id FROM drive_sessions WHERE profile_id = ?', [profileId]);
-  await db.withTransactionAsync(async () => {
-    // Explicit child deletes as well as the FK cascade, so an install whose
-    // foreign keys were created without ON DELETE CASCADE is still cleaned.
-    for (const s of sessions) {
-      await db.runAsync('DELETE FROM telemetry_events WHERE session_id = ?', [s.id]);
-      await db.runAsync('DELETE FROM drive_alerts WHERE session_id = ?', [s.id]);
-      await db.runAsync('DELETE FROM session_archives WHERE session_id = ?', [s.id]);
-    }
-    await db.runAsync('DELETE FROM drive_demo_events WHERE profile_id = ?', [profileId]);
-    await db.runAsync('DELETE FROM drive_sessions WHERE profile_id = ?', [profileId]);
-    await db.runAsync('DELETE FROM driver_profiles WHERE id = ?', [profileId]);
-    await db.runAsync("DELETE FROM app_settings WHERE key = ?", [`ack:${profileId}`]);
+export function deleteDriverEverywhere(profileId: string, onLocalDeleted?: () => Promise<void>): Promise<'cloud' | 'queued' | 'local'> {
+  return serializeCloudWrite(async () => {
+    const db = await getDatabase();
+    const queue = STANDALONE_DEMO ? null : await readQueue();
+    let item!: Pending;
+    await db.withExclusiveTransactionAsync(async tx => {
+      const profile = await tx.getFirstAsync<{ id: string }>('SELECT id FROM driver_profiles WHERE id = ?', [profileId]);
+      if (!profile) throw new Error('The selected driver is no longer available.');
+      const sessions = await tx.getAllAsync<{ id: string; status: string; storage_mode: string }>(
+        'SELECT id, status, storage_mode FROM drive_sessions WHERE profile_id = ?', [profileId]);
+      if (sessions.some(session => session.status === 'active')) throw new Error('End and save the current drive before deleting this driver.');
+      item = { table: 'driver_profiles', id: profileId, files: sessions.filter(s => s.storage_mode === 'full').map(s => archivePath(s.id)) };
+      for (const s of sessions) {
+        await tx.runAsync('DELETE FROM telemetry_events WHERE session_id = ?', [s.id]);
+        await tx.runAsync('DELETE FROM drive_alerts WHERE session_id = ?', [s.id]);
+        await tx.runAsync('DELETE FROM session_archives WHERE session_id = ?', [s.id]);
+      }
+      await tx.runAsync('DELETE FROM drive_demo_events WHERE profile_id = ?', [profileId]);
+      await tx.runAsync('DELETE FROM ask_sensi_chats WHERE profile_id = ?', [profileId]);
+      await tx.runAsync('DELETE FROM threshold_history WHERE profile_id = ?', [profileId]);
+      await tx.runAsync('DELETE FROM drive_sessions WHERE profile_id = ?', [profileId]);
+      await tx.runAsync('DELETE FROM driver_profiles WHERE id = ?', [profileId]);
+      await tx.runAsync('DELETE FROM app_settings WHERE key IN (?, ?, ?, ?, ?, ?, ?)', [
+        `ack:${profileId}`, `trend:${profileId}`, driverIntroKey(profileId), profileSyncKey(profileId),
+        `sensi:launcher-position:${profileId}`, `caln:${profileId}`, `storage_mode:${profileId}`,
+      ]);
+      if (queue) await tx.runAsync("INSERT INTO app_settings(key,value) VALUES ('pending_deletes', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        [JSON.stringify([...queue, item])]);
+    });
+    // Publish the committed local change before waiting on the remote copy.
+    await onLocalDeleted?.();
+    return STANDALONE_DEMO ? 'local' : settle(item);
   });
-  return deleteOrQueue({ table: 'driver_profiles', id: profileId, files: sessions.map((s) => archivePath(s.id)) });
 }
 
-export async function deleteDriveEverywhere(sessionId: string): Promise<'cloud' | 'queued'> {
-  const db = await getDatabase();
-  await db.withTransactionAsync(async () => {
-    await db.runAsync('DELETE FROM telemetry_events WHERE session_id = ?', [sessionId]);
-    await db.runAsync('DELETE FROM drive_alerts WHERE session_id = ?', [sessionId]);
-    await db.runAsync('DELETE FROM session_archives WHERE session_id = ?', [sessionId]);
-    await db.runAsync('DELETE FROM drive_demo_events WHERE session_id = ?', [sessionId]);
-    await db.runAsync('DELETE FROM drive_sessions WHERE id = ?', [sessionId]);
+export function deleteDriveEverywhere(sessionId: string, profileId: string): Promise<'cloud' | 'queued' | 'local'> {
+  return serializeCloudWrite(async () => {
+    const db = await getDatabase();
+    const queue = STANDALONE_DEMO ? null : await readQueue();
+    let item!: Pending;
+    await db.withExclusiveTransactionAsync(async tx => {
+      const session = await tx.getFirstAsync<{ status: string; storage_mode: string }>(
+        'SELECT status, storage_mode FROM drive_sessions WHERE id = ? AND profile_id = ?', [sessionId, profileId]);
+      if (!session || session.status === 'active') throw new Error('This drive is unavailable for the selected driver.');
+      item = { table: 'drive_sessions', id: sessionId, files: session.storage_mode === 'full' ? [archivePath(sessionId)] : [] };
+      await tx.runAsync('DELETE FROM telemetry_events WHERE session_id = ?', [sessionId]);
+      await tx.runAsync('DELETE FROM drive_alerts WHERE session_id = ?', [sessionId]);
+      await tx.runAsync('DELETE FROM session_archives WHERE session_id = ?', [sessionId]);
+      await tx.runAsync('DELETE FROM drive_demo_events WHERE session_id = ?', [sessionId]);
+      await tx.runAsync('DELETE FROM drive_sessions WHERE id = ? AND profile_id = ?', [sessionId, profileId]);
+      if (queue) await tx.runAsync("INSERT INTO app_settings(key,value) VALUES ('pending_deletes', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        [JSON.stringify([...queue, item])]);
+    });
+    return STANDALONE_DEMO ? 'local' : settle(item);
   });
-  return deleteOrQueue({ table: 'drive_sessions', id: sessionId, files: [archivePath(sessionId)] });
 }
 
 /** Deletes every driver (and everything under them) on this phone and in the

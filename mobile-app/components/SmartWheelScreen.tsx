@@ -1,7 +1,12 @@
+import { STANDALONE_DEMO } from '../lib/buildProfile';
+import * as SecureStore from 'expo-secure-store';
+import { sensiCloudAuth } from '../lib/assistant/phoneCloudAuth';
+import { askSensiPreferenceKey, askSensiSharingKey } from '../lib/assistant/askSensiClient';
+import { deleteDriverEverywhere } from '../lib/db/deletion';
 import type { SettingsPage } from '../lib/ui/settingsNavigation';
 import { LocalizedAlert as Alert, LocalizedPressable as Pressable, LocalizedText as Text } from '../lib/i18n/native';
 import { SENSI_MODE } from '../lib/assistant/mode';
-import { sensiSetup } from '../lib/onboarding/builtInPhone';
+import { sensiSetup, setupForDriver } from '../lib/onboarding/builtInPhone';
 import { SensiStandby } from './SensiStandby';
 import { openSensi, sensiDestination } from '../lib/assistant/sensiStandby';
 import { SensiSafetyConversation } from './SensiSafetyConversation';
@@ -65,6 +70,11 @@ export default function SmartWheelScreen() {
   const [busy, setBusy] = useState(false);
   const [editingProfile, setEditingProfile] = useState<DriverProfile | null>(null);
   const [editOpening, setEditOpening] = useState(false);
+  const [deletingDriver, setDeletingDriver] = useState(false);
+  const deletionInProgress = useRef(false);
+  const deletionScope = useRef({ id: drive.driver?.id, profiles, blocked: false });
+  deletionScope.current = { id: drive.driver?.id, profiles, blocked: drive.hasActiveSession || !!drive.safety.check
+    || !!drive.safety.demo || !!drive.safety.conversation && !drive.safety.conversation.finished };
   const [assistantOpen, setAssistantOpen] = useState(false);
   const [autoOn, setAutoOn] = useState(true);
   useEffect(() => { if (drive.safety.check) setAssistantOpen(false); }, [drive.safety.check]);
@@ -73,15 +83,41 @@ export default function SmartWheelScreen() {
     // Preserve any current safety modal; opening never restarts the check.
     openSensi(drive.safety, setAssistantOpen);
   }
-  // First run: mandatory, versioned setup. An already-active safety/recording
-  // lifecycle is never interrupted to re-run installation or launch checks.
-  const [setupState, setSetupState] = useState(sensiSetup.state);
   const [reviewIntro, setReviewIntro] = useState(false);
+  const [intro, setIntro] = useState<{ driver: DriverProfile; controller: typeof sensiSetup } | null>(null);
+  const checkingIntro = useRef(false);
+  const [introLoading, setIntroLoading] = useState(false);
   const ongoing = drive.hasActiveSession || !!drive.safety.check || !!drive.safety.demo || drive.safety.monitoring === 'active';
-  const showIntro = reviewIntro || (setupState.booted && !setupState.ready && !ongoing);
-  useEffect(() => sensiSetup.subscribe(setSetupState), []);
-  useEffect(() => { if (!ongoing) void sensiSetup.boot(); }, [ongoing]);
-  const finishIntro = useCallback(() => { if (sensiSetup.state.ready) setReviewIntro(false); }, []);
+  const showIntro = reviewIntro || intro !== null;
+  function selectPreparedDriver(profile: DriverProfile) {
+    if (drive.driver?.id !== profile.id) drive.selectDriver(profile);
+    setPendingDriver(null);
+    setSwitching(false);
+  }
+  async function confirmDriver(profile: DriverProfile) {
+    if (checkingIntro.current) return;
+    checkingIntro.current = true;
+    setIntroLoading(true);
+    try {
+      const controller = await setupForDriver(profile.id);
+      if (controller.state.ready) selectPreparedDriver(profile);
+      else setIntro({ driver: profile, controller });
+    } catch {
+      Alert.alert('Could not restore setup. You can review and retry.');
+      setPendingDriver(profile);
+    } finally {
+      checkingIntro.current = false;
+      setIntroLoading(false);
+    }
+  }
+  function finishIntro() {
+    if (intro) {
+      if (!intro.controller.state.ready) return;
+      selectPreparedDriver(intro.driver);
+      setIntro(null);
+    }
+    setReviewIntro(false);
+  }
   // Re-render once a second so timers and "x s ago" stay current.
   const [, setTick] = useState(0);
   useEffect(() => {
@@ -97,9 +133,9 @@ export default function SmartWheelScreen() {
   // Early-return routes cannot host the safety modal. Pause before they are
   // presented, revoking active capture/consent rather than running invisibly.
   useLayoutEffect(() => {
-    drive.setSafetyPresentationEnabled(!!drive.driver && !!profiles && showIntro === false && (setupState.ready || ongoing)
-      && !editingProfile && !editOpening && !switching);
-  }, [drive.driver?.id, profiles, setupState.ready, ongoing, showIntro, editingProfile, editOpening, switching, drive.setSafetyPresentationEnabled]);
+    drive.setSafetyPresentationEnabled(!!drive.driver && !!profiles && !showIntro
+      && !editingProfile && !editOpening && !switching && !deletingDriver);
+  }, [drive.driver?.id, profiles, showIntro, editingProfile, editOpening, switching, deletingDriver, drive.setSafetyPresentationEnabled]);
 
   const guard = useCallback((fn: () => Promise<unknown>) => {
     setBusy(true);
@@ -140,6 +176,54 @@ export default function SmartWheelScreen() {
     finally { setEditOpening(false); }
   }
 
+  function confirmDeleteDriver(id: string) {
+    const active = deletionScope.current.id;
+    const current = () => {
+      const scope = deletionScope.current;
+      return !deletionInProgress.current && scope.id === active && !!scope.profiles?.some(profile => profile.id === id)
+        && (id !== active || !scope.blocked);
+    };
+    if (!current()) return;
+    Alert.alert('Delete Driver Profile?', STANDALONE_DEMO
+      ? 'This permanently deletes this driver and their data from this phone only. Cloud records are kept.'
+      : 'This permanently removes this driver’s profile, drives, readings, safety events, waveforms, calibration, onboarding progress, and Ask Sensi history from this phone. Synced copies and archives are deleted from the dashboard when online. Other drivers and your cloud account are kept.', [
+      { text: 'Cancel', style: 'cancel' },
+      { text: STANDALONE_DEMO ? 'Delete from this phone' : 'Delete everywhere', style: 'destructive', onPress: async () => {
+        if (!current()) return;
+        deletionInProgress.current = true;
+        setDeletingDriver(true);
+        const account = sensiCloudAuth.cachedCredential()?.userId;
+        try {
+          const where = await deleteDriverEverywhere(id, async () => {
+            if (id === active) {
+              await drive.leaveDriver();
+              drive.closeProfileEdit();
+              setEditingProfile(null);
+              setAssistantOpen(false);
+              setSwitching(false);
+              setTab('drive');
+            }
+            setPendingDriver(previous => previous?.id === id ? null : previous);
+            setPendingEdit(false);
+            setProfiles(previous => previous?.filter(profile => profile.id !== id) ?? null);
+            setDeletingDriver(false);
+          });
+          if (account) {
+            const removed = await Promise.allSettled([askSensiPreferenceKey(account, id), askSensiSharingKey(account, id)]
+              .map(key => SecureStore.deleteItemAsync(key)));
+            if (removed.some(result => result.status === 'rejected')) Alert.alert('Some saved Ask Sensi preferences could not be removed.');
+          }
+          if (where === 'queued') Alert.alert('Deleted on this phone', 'Cloud removal is pending. DriveSense will retry when it can connect.');
+        } catch {
+          Alert.alert(STANDALONE_DEMO ? 'Could not finish deleting the driver.' : 'Could not finish deleting the driver. Check your connection and try again.');
+        } finally {
+          deletionInProgress.current = false;
+          setDeletingDriver(false);
+        }
+      } },
+    ]);
+  }
+
   function closeEditor() { drive.closeProfileEdit(); setEditingProfile(null); }
 
   if (showIntro) {
@@ -147,15 +231,15 @@ export default function SmartWheelScreen() {
       <>
         <StatusBar style={themeName === 'dark' ? 'light' : 'dark'} />
         <InformationHost blocked={!!drive.safety.check || !!drive.safety.demo} />
-        <Onboarding controller={sensiSetup} review={setupState.ready} onDone={finishIntro} onChooseDriver={() => {
-          if (ongoing) return;
-          void drive.leaveDriver().then(() => { setPendingDriver(null); setReviewIntro(false); }).catch(e => Alert.alert('Could not switch driver', String(e)));
-        }} />
+        <Onboarding key={intro?.driver.id ?? 'review'} controller={intro?.controller ?? sensiSetup}
+          driverId={intro?.driver.id ?? drive.driver?.id} voiceLanguage={(intro?.driver ?? drive.driver)?.language === 'es' ? 'es' : 'en'}
+          review={reviewIntro} onDone={finishIntro}
+          onLeave={() => { setIntro(null); setReviewIntro(false); }} />
       </>
     );
   }
 
-  if (!profiles || (!setupState.booted && !ongoing)) {
+  if (!profiles || introLoading || deletingDriver) {
     return (
       <View style={st.center}>
         <ActivityIndicator />
@@ -165,20 +249,17 @@ export default function SmartWheelScreen() {
 
   if (!drive.driver || switching) {
     if (pendingDriver && pendingEdit) return <DriverPicker profiles={[pendingDriver]} editProfile={pendingDriver}
-      onPick={() => {}} onCreated={reload} onCancelEdit={() => setPendingEdit(false)} onSaveProfile={async input => {
+      onPick={() => {}} onCreated={reload} onDeleteProfile={confirmDeleteDriver} onCancelEdit={() => setPendingEdit(false)} onSaveProfile={async input => {
         await repo.updateProfile(pendingDriver.id, input, pendingDriver.updated_at);
         const updated = await repo.getProfile(pendingDriver.id); await reload(); setPendingDriver(updated); setPendingEdit(false);
       }} />;
-    if (pendingDriver) return <DriverConfirmation profile={pendingDriver} onEdit={() => setPendingEdit(true)} onBack={() => setPendingDriver(null)} onConfirm={() => {
-      if (drive.driver?.id !== pendingDriver.id) drive.selectDriver(pendingDriver);
-      setPendingDriver(null); setSwitching(false);
-    }} />;
+    if (pendingDriver) return <DriverConfirmation profile={pendingDriver} onEdit={() => setPendingEdit(true)} onBack={() => setPendingDriver(null)} onConfirm={() => void confirmDriver(pendingDriver)} />;
     return (
       <>
         <StatusBar style={themeName === 'dark' ? 'light' : 'dark'} />
         <View style={{ flex: 1, backgroundColor: tokens.background }}>
-        <DriverPicker profiles={profiles} onPick={setPendingDriver} onCreated={reload} onUseCreated={setPendingDriver}
-          activeDriverId={drive.driver?.id} onBack={switching ? () => setSwitching(false) : undefined}
+        <DriverPicker profiles={profiles} onPick={setPendingDriver} onCreated={reload} onUseCreated={profile => { setPendingDriver(profile); void confirmDriver(profile); }}
+          activeDriverId={drive.driver?.id} onDeleteProfile={confirmDeleteDriver} onBack={switching ? () => setSwitching(false) : undefined}
           onEditActive={() => { setSwitching(false); void openProfileEditor(); }} />
         <InformationHost blocked={!!drive.safety.check || !!drive.safety.demo} />
         </View>
@@ -191,6 +272,7 @@ export default function SmartWheelScreen() {
   if (editingProfile) return <>
     <StatusBar style={themeName === 'dark' ? 'light' : 'dark'} />
     <DriverPicker profiles={[editingProfile]} editProfile={editingProfile} onPick={() => {}} onCreated={reload}
+      onDeleteProfile={confirmDeleteDriver} deleteBlocked={deletionScope.current.blocked}
       onCancelEdit={closeEditor} onSaveProfile={async input => {
         await drive.saveProfileEdit(editingProfile, input);
         await reload();
@@ -205,8 +287,8 @@ export default function SmartWheelScreen() {
       <View style={st.header}>
         <View style={{ flex: 1, minWidth: 0 }}><BrandMark compact /></View>
         <DriveProfileMenu name={drive.driver.display_name} blocked={!!drive.safety.check || !!drive.safety.conversation && !drive.safety.conversation.finished} onSwitch={switchDriver} onEdit={() => void openProfileEditor()}
-          dashboardMode={__DEV__ && drive.homeHardwareDemoControls ? demoView : undefined}
-          onDashboardMode={__DEV__ ? setDemoView : undefined} />
+          dashboardMode={(__DEV__ || STANDALONE_DEMO) && drive.homeHardwareDemoControls ? demoView : undefined}
+          onDashboardMode={(__DEV__ || STANDALONE_DEMO) ? setDemoView : undefined} />
       </View>
 
 
@@ -214,16 +296,16 @@ export default function SmartWheelScreen() {
         {tab === 'drive' ? drivePage === 'vitals'
           ? <VitalsDetailView drive={drive} onBack={() => setDrivePage(drivePageAfter('back'))} />
           : <View style={{ flex: 1 }}>
-            <View style={{ flex: 1, minWidth: 0 }}><DriveView drive={drive} demoView={__DEV__ && demoView} busy={busy} guard={guard} monitoringDetailsExpanded={monitoringDetailsExpanded}
+            <View style={{ flex: 1, minWidth: 0 }}><DriveView drive={drive} demoView={(__DEV__ || STANDALONE_DEMO) && demoView} busy={busy} guard={guard} monitoringDetailsExpanded={monitoringDetailsExpanded}
               onToggleMonitoringDetails={() => setMonitoringDetailsExpanded(value => !value)} onOpenVitals={() => setDrivePage(drivePageAfter('details'))} onVitalsAnchor={updateVitalsAnchor}
               onDashboardScrollStart={() => setDashboardScrollStart(value => value + 1)} /></View>
             {!assistantOpen ? <DraggableSensiLauncher key={drive.driver.id} driverId={drive.driver.id} defaultAnchor={vitalsAnchor} scrollStart={dashboardScrollStart}>{(collapse, showGreeting) => <DashboardAssistantEntry mode={SENSI_MODE} language={drive.driver?.language ?? 'en'}
               disabled={false}
               error="" onPress={() => { showGreeting(); openAssistant(); }} onCollapse={collapse} />}</DraggableSensiLauncher> : null}
           </View> : null}
-        {tab === 'history' ? <HistoryView refreshKey={`${drive.session?.id ?? ''}:${drive.session?.status ?? ''}:${drive.fold.state}`} /> : null}
+        {tab === 'history' ? <HistoryView key={drive.driver.id} driverId={drive.driver.id} refreshKey={`${drive.session?.id ?? ''}:${drive.session?.status ?? ''}:${drive.fold.state}`} /> : null}
         {tab === 'settings' ? (
-          <SettingsView key={`settings-${settingsRequest}`}
+          <SettingsView key={`settings-${drive.driver.id}-${settingsRequest}`}
             initialPage={settingsEntry}
             drive={drive}
             autoOn={autoOn}
@@ -234,6 +316,7 @@ export default function SmartWheelScreen() {
               setAssistantOpen(false);
               setTab('drive');
             }}
+            onDeleteDriver={confirmDeleteDriver}
             onEditProfile={returnPage => { setSettingsEntry(returnPage ?? 'profile'); void openProfileEditor(); }}
             onShowIntro={() => {
               if (ongoing) { Alert.alert('Safety monitoring active', 'Finish the current recording or safety check and pause the sensor connection before reviewing setup.'); return; }
@@ -248,7 +331,7 @@ export default function SmartWheelScreen() {
       <SensiSafetyConversation drive={drive} onContinue={() => { /* Event-only Sensi. */ }}
         onStandbyClose={() => setAssistantOpen(false)}
         standby={assistantOpen && sensiDestination(drive.safety) === 'standby'
-          ? <SensiStandby visible drive={drive} mode={SENSI_MODE} onClose={() => setAssistantOpen(false)} onTrySafetyCheck={() => {
+          ? <SensiStandby key={drive.driver.id} visible drive={drive} mode={SENSI_MODE} onClose={() => setAssistantOpen(false)} onTrySafetyCheck={() => {
             if (drive.hasActiveSession || drive.safety.check || drive.safety.demo) return;
             setAssistantOpen(false); setSettingsEntry('safety_testing'); setSettingsRequest(value => value + 1); setTab('settings');
           }} /> : null} />

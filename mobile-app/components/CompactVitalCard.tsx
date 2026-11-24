@@ -1,3 +1,4 @@
+import { STANDALONE_DEMO } from '../lib/buildProfile';
 import { LocalizedText as Text } from '../lib/i18n/native';
 import { StyleSheet, View } from 'react-native';
 import { useTheme } from '../lib/theme/ThemeProvider';
@@ -18,8 +19,8 @@ export function CompactVitalCard(props: {
   const accent = props.metric === 'heart' ? tokens.heartAccent : tokens.oxygenAccent;
   const labelColor = props.metric === 'heart' ? tokens.heartText : tokens.oxygenText;
   const reading = vitalRangePresentation(props.value, props.lastRx, props.connected, props.now, props.warningBounds);
-  const simulation = __DEV__ ? props.simulation : undefined;
-  const demoLayout = __DEV__ ? props.demoLayout : undefined;
+  const simulation = (__DEV__ || STANDALONE_DEMO) ? props.simulation : undefined;
+  const demoLayout = (__DEV__ || STANDALONE_DEMO) ? props.demoLayout : undefined;
   const shown = (value: number) => String(Number(value.toFixed(2)));
   return <Card style={{ flex: 1, minWidth: 0, gap: 4, padding: 9, borderWidth: StyleSheet.hairlineWidth, borderColor: simulation ? tokens.warning : tokens.border }}>
     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>

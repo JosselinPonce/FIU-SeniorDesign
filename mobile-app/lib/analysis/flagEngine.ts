@@ -1,3 +1,4 @@
+import { STANDALONE_DEMO } from '../buildProfile.ts';
 /**
  * Warning and emergency flags from one reading per second.
  *
@@ -196,15 +197,18 @@ export class FlagEngine {
   private th: Thresholds;
   private readonly newId: () => string;
   private readonly highWarningOnly: boolean;
+  private readonly highWarningInterval?: Readonly<{ lower: number; upper: number }>;
   private confirmWarningS: number;
   private readonly confirmCriticalS: number;
 
   /** `opts` lets the offline tuning tool (tools/tuning/tune.ts) replay drives
    *  with other confirmation windows. The isolated hardware diagnostic can restrict the warning kind. */
-  constructor(th: Thresholds, newId: () => string, opts: { confirmWarningS?: number; confirmCriticalS?: number; highWarningOnly?: boolean } = {}) {
+  constructor(th: Thresholds, newId: () => string, opts: { confirmWarningS?: number; confirmCriticalS?: number; highWarningOnly?: boolean; highWarningInterval?: Readonly<{ lower: number; upper: number }> } = {}) {
     this.th = th;
     this.newId = newId;
     this.highWarningOnly = opts.highWarningOnly ?? false;
+    this.highWarningInterval = ((typeof __DEV__ !== 'undefined' && __DEV__) || STANDALONE_DEMO) && this.highWarningOnly
+      ? opts.highWarningInterval : undefined;
     this.confirmWarningS = opts.confirmWarningS ?? CONFIRM_WARNING_S;
     this.confirmCriticalS = opts.confirmCriticalS ?? CONFIRM_CRITICAL_S;
   }
@@ -273,6 +277,7 @@ export class FlagEngine {
   private levelOf(kind: FlagKind, v: number): FlagLevel | null {
     const th = this.th;
     if (kind === 'bpm_high') {
+      if (this.highWarningInterval) return this.isBeyond(kind, v) ? 'warning' : null;
       if (v >= th.highCrit || news2Pulse(v) === 3) return v > 90 ? 'critical' : null;
       if (v >= th.highWarn) return 'warning';
       if (v >= th.highNotice) return 'notice';
@@ -294,15 +299,19 @@ export class FlagEngine {
   }
 
   private warnLine(kind: FlagKind): number {
-    return kind === 'bpm_high' ? this.th.highWarn : kind === 'bpm_low' ? this.th.lowWarn : this.th.spo2Warn;
+    return kind === 'bpm_high' ? this.highWarningInterval?.lower ?? this.th.highWarn : kind === 'bpm_low' ? this.th.lowWarn : this.th.spo2Warn;
   }
 
   private isBeyond(kind: FlagKind, v: number): boolean {
+    const interval = this.highWarningInterval;
+    if (kind === 'bpm_high' && interval) return v > interval.lower && v < interval.upper;
     const line = this.warnLine(kind);
     return kind === 'bpm_high' ? v >= line : v <= line;
   }
 
   private recovered(kind: FlagKind, v: number): boolean {
+    const interval = this.highWarningInterval;
+    if (kind === 'bpm_high' && interval) return v < interval.lower - HYSTERESIS_BPM || v > interval.upper + HYSTERESIS_BPM;
     const line = this.warnLine(kind);
     if (kind === 'bpm_high') return v < line - HYSTERESIS_BPM;
     if (kind === 'bpm_low') return v > line + HYSTERESIS_BPM;

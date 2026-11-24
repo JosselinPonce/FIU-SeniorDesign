@@ -1,3 +1,4 @@
+import { STANDALONE_DEMO } from '../lib/buildProfile';
 import { VoiceCheckLanguageScope } from '../lib/i18n/LanguageProvider';
 import { traceVoiceCheckUI } from '../lib/voice/responsivenessDiagnostics';
 import { LocalizedPressable as Pressable, LocalizedText as Text } from '../lib/i18n/native';
@@ -22,7 +23,7 @@ import { Btn, Card, Pill, Row, SectionTitle, fmtBytes, fmtClock, fmtDuration, fm
 import { RateDot } from './charts';
 import { PERFUSION_HINT } from '../lib/analysis/signal';
 
-const demoUI = __DEV__
+const demoUI = (__DEV__ || STANDALONE_DEMO)
   ? require('./HomeHardwareDemo') as typeof import('./HomeHardwareDemo')
   : null;
 
@@ -89,8 +90,8 @@ export function DriveView(props: { drive: Drive; demoView?: boolean; busy: boole
   const st = makeStyles(tokens);
   const d = props.drive;
   const details = props.monitoringDetailsExpanded;
-  const demoView = __DEV__ && !!props.demoView;
-  const stopDemo = __DEV__ ? d.homeHardwareDemoControls?.stop : undefined;
+  const demoView = (__DEV__ || STANDALONE_DEMO) && !!props.demoView;
+  const stopDemo = (__DEV__ || STANDALONE_DEMO) ? d.homeHardwareDemoControls?.stop : undefined;
   // Leaving the dashboard retains its existing cleanup. Switching panels stays on this dashboard.
   useEffect(() => () => stopDemo?.(), [stopDemo]);
   const heading = useRef<{ y: number; height: number } | null>(null);
@@ -104,8 +105,8 @@ export function DriveView(props: { drive: Drive; demoView?: boolean; busy: boole
     reportHeading();
   };
   const now = Date.now();
-  const simulation = __DEV__ && demoView ? d.homeHardwareDemo?.simulation : undefined;
-  const demoVitals = __DEV__ && demoUI && demoView ? demoUI.demoVitalPresentation(d, now) : null;
+  const simulation = (__DEV__ || STANDALONE_DEMO) && demoView ? d.homeHardwareDemo?.simulation : undefined;
+  const demoVitals = (__DEV__ || STANDALONE_DEMO) && demoUI && demoView ? demoUI.demoVitalPresentation(d, now) : null;
   const projection = simulation?.enabled && demoVitals ? {
     value: demoVitals.projected?.value ?? null,
     actual: demoVitals.sourceValue,
@@ -176,26 +177,22 @@ export function DriveView(props: { drive: Drive; demoView?: boolean; busy: boole
     <ScrollView contentContainerStyle={st.container} scrollEventThrottle={32}
       onScrollBeginDrag={props.onDashboardScrollStart}
       onScroll={({ nativeEvent }) => { scrollOffset.current = nativeEvent.contentOffset.y; reportHeading(); }}>
-      {__DEV__ && !demoView && d.homeHardwareDemo?.simulation.enabled
+      {(__DEV__ || STANDALONE_DEMO) && !demoView && d.homeHardwareDemo?.simulation.enabled
         ? <Pill tone="warn">Hardware Demo simulation enabled</Pill> : null}
       <Chain drive={d} />
       {recordingControls}
 
-      {__DEV__ && demoUI && demoView ? <>
-        <View style={[st.between, st.vitalsHeading]} onLayout={measureHeading}>
+      <View style={st.vitalsHeading} onLayout={measureHeading}>
+        <View style={st.vitalsTitleRow}>
           <Text accessibilityRole="header" style={{ color: tokens.text, fontSize: 19, fontWeight: '700' }}>Live Vitals</Text>
-          <Pill tone={simulation?.enabled ? 'warn' : 'neutral'}>{simulation?.enabled ? 'Simulation' : 'Simulation off'}</Pill>
-          {!simulation?.enabled ? <Text style={st.subtle}>Showing actual sensor readings only</Text> : null}
+          {(__DEV__ || STANDALONE_DEMO) && demoUI && demoView ? <Pill tone={simulation?.enabled ? 'warn' : 'neutral'}>{simulation?.enabled ? 'Simulation' : 'Simulation off'}</Pill> : <Pill tone={signal.tone}>{signal.text}</Pill>}
         </View>
+      </View>
+      {(__DEV__ || STANDALONE_DEMO) && demoUI && demoView ? <>
+        {!simulation?.enabled ? <Text style={st.subtle}>Showing actual sensor readings only</Text> : null}
         {sf.tracking ? <Text style={st.watchText} accessibilityLiveRegion="polite">{WATCH_TEXT[sf.tracking.kind] ?? 'Checking…'}</Text> : null}
         {vitalTiles('summary')}
       </> : <>
-      <View style={st.vitalsHeading} onLayout={measureHeading}>
-        <Text accessibilityRole="header" style={{ color: tokens.text, fontSize: 19, fontWeight: '700' }}>Live Vitals</Text>
-      </View>
-      <View style={{ gap: 6, paddingHorizontal: 2 }}>
-        <View style={st.between}>
-          <Pill tone={signal.tone}>{signal.text}</Pill>
           {d.finger && d.signal?.hrBeats != null ? (
             <Text style={[st.subtle, { color: d.signal.good ? C.good : C.warn }]}>
               {d.signal.good
@@ -209,7 +206,6 @@ export function DriveView(props: { drive: Drive; demoView?: boolean; busy: boole
           ) : d.quality !== null && d.finger ? (
             <Text style={st.subtle}>quality {d.quality}%</Text>
           ) : null}
-        </View>
         {sf.demo ? (
           <View style={[st.watch, { backgroundColor: C.brandSoft }]}>
             <Text style={[st.watchText, { color: C.brand }]}>
@@ -225,8 +221,6 @@ export function DriveView(props: { drive: Drive; demoView?: boolean; busy: boole
           </View>
         ) : null}
 
-      </View>
-
       {vitalTiles()}
       </>}
       <Btn title="View Detailed Vitals" kind="ghost" onPress={props.onOpenVitals} />
@@ -240,7 +234,8 @@ export function DriveView(props: { drive: Drive; demoView?: boolean; busy: boole
             <Row
               label="Cloud sync"
               value={
-                d.live?.ok === false
+                STANDALONE_DEMO ? 'Unavailable in this demonstration'
+                  : d.live?.ok === false
                   ? 'queued (offline)'
                   : d.live?.lastPushAt
                     ? `${Math.max(0, Math.round((now - d.live.lastPushAt.getTime()) / 1000))} s ago`
@@ -261,7 +256,7 @@ export function DriveView(props: { drive: Drive; demoView?: boolean; busy: boole
         <RateDot series={d.rateSeries} />
       </Card> : null}
       <PersonalizedBaseline key={d.driver?.id} driverId={d.driver?.id} savedDriveRevision={d.savedDriveRevision} recording={d.hasActiveSession} liveBpm={liveBaselineBpm} />
-      {__DEV__ && demoUI && demoView ?
+      {(__DEV__ || STANDALONE_DEMO) && demoUI && demoView ?
         <demoUI.HomeHardwareDemo drive={d} now={now}>
           <demoUI.HardwareDemoDiagnostics drive={d} now={now}>{vitalTiles('history')}</demoUI.HardwareDemoDiagnostics>
         </demoUI.HomeHardwareDemo>
@@ -273,7 +268,7 @@ export function DriveView(props: { drive: Drive; demoView?: boolean; busy: boole
           <Text style={st.body}>
             Waveform folded: {d.fold.info.sample_count.toLocaleString()} samples → {fmtBytes(d.fold.info.packed_bytes)} (×
             {(d.fold.info.raw_bytes / d.fold.info.packed_bytes).toFixed(1)} smaller, verified).{' '}
-            {d.live?.archive === 'uploaded' ? 'Backed up to the cloud.' : d.live?.archive === 'failed' ? 'Cloud backup will retry.' : ''}
+            {STANDALONE_DEMO ? '' : d.live?.archive === 'uploaded' ? 'Backed up to the cloud.' : d.live?.archive === 'failed' ? 'Cloud backup will retry.' : ''}
           </Text>
         ) : null}
         {d.fold.state === 'failed' ? <Text style={[st.body, { color: C.bad }]}>Archive not created: {d.fold.error}. Raw data kept.</Text> : null}
@@ -382,7 +377,8 @@ const makeStyles = (tokens: ThemeTokens) => {
     hopLabel: { textAlign: 'center', fontSize: 12, fontWeight: '700', color: C.ink },
     hopDetail: { fontSize: 11, color: C.sub, textAlign: 'center' },
     between: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, justifyContent: 'space-between', alignItems: 'center' },
-    vitalsHeading: { minHeight: 58, paddingRight: 102, justifyContent: 'center', alignContent: 'center' },
+    vitalsHeading: { minHeight: 42, paddingRight: 102, justifyContent: 'center' },
+    vitalsTitleRow: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 8 },
     tiles: { flexDirection: 'row', gap: 10 },
     subtle: { fontSize: 12, color: C.sub },
     body: { fontSize: 14, color: C.sub, lineHeight: 20 },

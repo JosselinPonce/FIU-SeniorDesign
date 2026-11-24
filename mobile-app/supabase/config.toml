@@ -4,3 +4,7 @@ project_id = "drivesense"
 [functions.driver-assistant]
 verify_jwt = true
 entrypoint = "./functions/driver-assistant/index.ts"
+
+[functions.ask-sensi]
+verify_jwt = true
+entrypoint = "./functions/ask-sensi/index.ts"

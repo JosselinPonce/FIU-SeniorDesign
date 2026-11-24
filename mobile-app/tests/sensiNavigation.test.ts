@@ -17,14 +17,17 @@ function nodes(tree: any): any[] {
 }
 function harness(model: GemmaFileStatus, tokens = light, observation: Partial<ReadinessSnapshot> = {}) {
   const exports: any = {};
+  let askOpen = false;
   const deps: Record<string, unknown> = {
     './ScreenHeader': { ScreenHeader: 'ScreenHeader' },
+    './AskSensi': { AskSensi: 'AskSensi' },
+    '../lib/assistant/askSensiContext': { askSafetyContext: () => null },
     './DashboardAssistantEntry': { SensiGlyph: 'SensiGlyph' },
     '../lib/ui/profileSummary': { driverInitials: (name: string) => name[0] },
     '../lib/analysis/safetyController': { contactPhone: (phone?: string) => ({phone: phone || null}) },
     './RealContactDemoConfirmation': { RealContactDemoConfirmation: 'RealContactDemoConfirmation' },
     '../lib/i18n/native': { LocalizedText: 'Text', LocalizedPressable: 'Pressable' },
-    react: { useState: () => [model, () => {}], useEffect() {} },
+    react: { useState: () => [askOpen, (next: boolean) => { askOpen = next; }], useEffect() {} },
     'react/jsx-runtime': require('react/jsx-runtime'),
     'react-native': { ScrollView: 'ScrollView', Modal: 'Modal', SafeAreaView: 'SafeAreaView', Text: 'Text', View: 'View', Pressable: 'Pressable' },
     '../lib/theme/ThemeProvider': { useTheme: () => ({ tokens }) },
@@ -79,8 +82,8 @@ for (const tokens of [light, dark]) {
     assert.match(text, /Manual responses/); assert.doesNotMatch(text, /Voice recognition|Typed and button responses\./);
     assert.equal(rendered.find(node => node.type === 'SafeAreaView').props.style.backgroundColor, tokens.background);
     assert.equal(rendered.some(node => /TextInput|TypedResponse|ConversationThread/.test(String(node.type))), false);
-    const buttons = rendered.filter(node => node.type === 'Btn'); assert.deepEqual(buttons.map(node => node.props.title), ['Try Sensi']);
-    buttons[0].props.onPress(); assert.equal(tried, 1);
+    const buttons = rendered.filter(node => node.type === 'Pressable'); assert.deepEqual(buttons.map(node => node.props.accessibilityLabel), ['Ask Sensi', 'Try Sensi']);
+    buttons[1].props.onPress(); assert.equal(tried, 1);
     assert.equal(rendered.filter(node => node.type === 'SensiGlyph').length, 1);
     assert.equal(rendered.filter(node => node.type === 'View' && node.props.accessible && node.props.accessibilityLabel).length, 3);
     assert.equal(rendered.find(node => node.type === 'ScrollView').props.contentContainerStyle.padding, 16);
@@ -89,6 +92,16 @@ for (const tokens of [light, dark]) {
     assert.equal(ui.SensiStandby({ visible: false }), null);
   });
 }
+test('Ask Sensi opens the text destination for the active driver and Back returns to standby', () => {
+  const ui = harness('missing');
+  const props = { visible: true, drive: { driver: { id: 'driver-a' }, safety: {} }, onClose() {}, onTrySafetyCheck() {} };
+  nodes(ui.SensiStandby(props)).find(node => node.props.accessibilityLabel === 'Ask Sensi').props.onPress();
+  const chat = ui.SensiStandby(props);
+  assert.equal(chat.type, 'AskSensi');
+  assert.equal(chat.props.driverId, 'driver-a');
+  chat.props.onBack();
+  assert.ok(nodes(ui.SensiStandby(props)).some(node => node.props.accessibilityLabel === 'Try Sensi'));
+});
 test('file presence does not claim verified inference or bypass speech prerequisites', () => {
   const ready = standbyReadiness({ hasDriver: true, activeDrive: true, connected: true, voice: { granted: false, onDevice: false }, model: 'present', core: false }).join(' ');
   assert.match(ready, /Integrity and runtime availability are checked before use/);
@@ -96,7 +109,7 @@ test('file presence does not claim verified inference or bypass speech prerequis
 });
 test('Settings remains a separate tab; homepage handler cannot start/reset a check or ordinary chat', () => {
   const shell = source('components/SmartWheelScreen.tsx');
-  const handler = shell.split('function openAssistant()')[1]!.split('// First run:')[0]!;
+  const handler = shell.split('function openAssistant()')[1]!.split('\n  }')[0]!;
   assert.match(handler, /openSensi\(drive.safety, setAssistantOpen\)/);
   assert.doesNotMatch(handler, /setTab|rehearse|simulate|cancel|startSession|respondAlert|DriverAssistant/);
   assert.match(shell, /\['settings', 'Settings'\]/); assert.match(shell, /setTab\(key\)/);
@@ -112,14 +125,14 @@ test('compact home hierarchy has exactly three indicators and no recognition or 
   const ui=harness('present');
   const rendered=nodes(ui.SensiStandby({visible:true,drive:{driver:{id:'p'},connection:'connected',link:{source:'esp32'},safety:{monitoring:'active'}},onClose(){},onTrySafetyCheck(){}}));
   const text=rendered.filter(n=>n.type==='Text').flatMap(n=>n.props.children).join(' ');
-  assert.match(text,/If DriveSense detects unusual health readings, I'll check in to see how you're feeling\./);
-  assert.match(text,/Simulated safety check · No live emergency actions/);
+  assert.match(text,/I check in when readings are unusual and help you understand your recorded drives\./);
+  assert.match(text,/Offline · Simulated safety check No live emergency actions/);
   assert.doesNotMatch(text,/Meet Sensi|Experience a simulated safety check|Voice recognition|Integrity and runtime availability|playback is checked|Opens Safety Testing/);
   const headers=rendered.filter(n=>n.props.accessibilityRole==='header').map(n=>n.props.children);
-  assert.deepEqual(headers,["Hi, I'm Sensi!",'System Readiness']);
+  assert.deepEqual(headers,["Hi, I'm Sensi!",'System Readiness','Explore Sensi']);
   const rows=rendered.filter(n=>n.type==='View'&&n.props.accessible&&n.props.accessibilityLabel);
   assert.deepEqual(rows.map(n=>n.props.accessibilityLabel.split('. ')[0]),['Steering-wheel sensors','Voice responses','Manual responses']);
-  assert.equal(rendered.filter(n=>n.type==='Feather').length,3);
+  assert.deepEqual(rows.map(n => nodes(n).filter(child => child.type === 'Feather')[0].props.name), ['radio', 'volume-2', 'edit-3']);
   assert.match(rows[1].props.accessibilityLabel,/Checked when a safety check starts/);
   assert.equal(rendered.filter(n=>n.type==='SensiGlyph').length,1);
 });
@@ -142,7 +155,7 @@ for (const tokens of [light, dark]) test(`home applies shared semantic color to 
   const rows = rendered.filter(n => n.type === 'View' && n.props.accessible && n.props.accessibilityLabel);
   for (const [i, status, color] of [[0, 'Connecting', tokens.warning], [1, 'Available', tokens.connected], [2, 'Available', tokens.connected]] as const) {
     const row = rows[i]; assert.ok(row.props.accessibilityLabel.includes(status));
-    const contents = nodes(row); assert.equal(contents.find(n => n.type === 'Feather').props.color, color);
+    const contents = nodes(row); assert.equal(contents.filter(n => n.type === 'Feather').at(-1).props.color, color);
     const text = contents.find(n => n.type === 'Text' && n.props.children === status);
     assert.ok(text); assert.equal(text.props.style.color, color);
   }

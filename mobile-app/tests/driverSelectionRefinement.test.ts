@@ -9,6 +9,8 @@ import * as summary from '../lib/ui/profileSummary.ts';
 import { profileFormValues } from '../lib/db/profileEditing.ts';
 import { CONDITIONS, MEDICATIONS, bmiCategory } from '../lib/analysis/profileModel.ts';
 import { light, presentationColors } from '../lib/theme/tokens.ts';
+import * as driverProgress from '../lib/onboarding/driverProgress.ts';
+import * as setup from '../lib/onboarding/setup.ts';
 import { translateText } from '../lib/i18n/translate.ts';
 const require = createRequire(import.meta.url);
 const profile = { id: 'driver-a', custom_id: 'INTERNAL-ONLY', display_name: 'Alex Rivera', language: 'es', age: 35,
@@ -19,11 +21,25 @@ function nodes(tree: any): any[] {
   if (Array.isArray(tree)) return tree.flatMap(nodes);
   return [tree, ...nodes(tree.props?.children)];
 }
-function harness() {
+function harness(initialProfiles = [profile, { ...profile, id: 'driver-b', display_name: 'Blair Test', updated_at: 'revision-b' }]) {
   const hooks: any[] = []; let cursor = 0;
   const selected: any[] = [], saved: any[] = [], help: any[] = [], alerts: any[] = [], used: any[] = [];
   let reloads = 0;
+  let profiles = initialProfiles;
+  const settings = new Map<string, string>();
+  const deletes: string[] = [];
+  const drive = {
+    driver: null as typeof profile | null, safety: { check: null as unknown, demo: null, conversation: null },
+    hasActiveSession: false, setSafetyPresentationEnabled() {}, closeProfileEdit() {},
+    selectDriver(value: typeof profile) { drive.driver = value; },
+    async beginProfileEdit() { return drive.driver; },
+    async leaveDriver() { drive.driver = null; },
+  };
+  let shellCursor = 0;
+  const shellHooks: any[] = [];
+  const effects: Array<() => unknown> = [];
   const deps: Record<string, any> = {
+    '../lib/buildProfile': { STANDALONE_DEMO: false },
     'expo/node_modules/@expo/vector-icons/Feather': { __esModule: true, default: 'FeatherIcon' },
     react: { createContext: () => ({}), useContext: () => ({ open: (value: unknown) => help.push(value) }),
       useState(initial: any) { const i = cursor++; if (!(i in hooks)) hooks[i] = typeof initial === 'function' ? initial() : initial;
@@ -40,26 +56,89 @@ function harness() {
     '../lib/db/profileEditing': { profileFormValues }, '../lib/ui/profileSummary': summary,
     '../lib/analysis/profileModel': { CONDITIONS, MEDICATIONS, bmiCategory },
     '../lib/db/repositories': { getSetting: async () => 'en', parseList: (value: string) => JSON.parse(value),
-      createProfile: async (input: any) => ({ ...profile, ...input, id: 'created' }),
+      createProfile: async (input: any) => {
+        const created = { ...profile, ...input, id: 'created', conditions: JSON.stringify(input.conditions), medications: JSON.stringify(input.medications) };
+        profiles = [...profiles, created];
+        settings.set(driverProgress.driverIntroKey(created.id), driverProgress.newDriverIntro);
+        return created;
+      },
+      listProfiles: async () => profiles,
+      setSetting: async (key: string, value: string) => { settings.set(key, value); },
       updateProfile: async (...args: any[]) => { saved.push(args); } },
-    '../lib/db/deletion': { deleteDriverEverywhere() { throw Error('Unexpected deletion'); } },
+    '../lib/db/deletion': { async deleteDriverEverywhere(id: string, onLocalDeleted: () => Promise<void>) {
+      assert.ok(profiles.some(row => row.id === id));
+      deletes.push(id);
+      profiles = profiles.filter(row => row.id !== id);
+      settings.delete(driverProgress.driverIntroKey(id));
+      await onLocalDeleted();
+      return 'local';
+    } },
     '../lib/i18n/LanguageProvider': { useAppLanguage: () => ({ t: (text: string) => text }) },
     '../lib/ui/information': {}, './LanguageMenu': { LanguageMenu: 'LanguageMenu' },
     './SettingsGroup': { SettingsGroup: 'SettingsGroup', SettingsRow: 'SettingsRow', SettingsNote: 'SettingsNote' },
     './ui': { Btn: 'Btn', Card: 'Card', SectionTitle: 'SectionTitle' },
   };
-  function load(name: string) {
-    const source = readFileSync(new NodeURL('../components/'+name+'.tsx', import.meta.url), 'utf8');
+  function load(name: string, modules = deps, path = 'components/' + name + '.tsx') {
+    const source = readFileSync(new NodeURL('../' + path, import.meta.url), 'utf8');
     const exports: any = {};
-    new Function('require','exports',ts.transpileModule(source,{compilerOptions:{module:ts.ModuleKind.CommonJS,jsx:ts.JsxEmit.ReactJSX,target:ts.ScriptTarget.ES2022}}).outputText)(
-      (key: string) => { assert.ok(key in deps, key); return deps[key]; }, exports);
+    new Function('require','exports','__DEV__',ts.transpileModule(source,{compilerOptions:{module:ts.ModuleKind.CommonJS,jsx:ts.JsxEmit.ReactJSX,target:ts.ScriptTarget.ES2022}}).outputText)(
+      (key: string) => { assert.ok(key in modules, key); return modules[key]; }, exports, false);
     return exports;
   }
   deps['./Information'] = load('Information'); deps['./ScreenHeader'] = load('ScreenHeader');
   const picker = load('DriverPicker').DriverPicker, confirmation = load('DriverConfirmation').DriverConfirmation;
-  const profiles = [profile, { ...profile, id: 'driver-b', display_name: 'Blair Test', updated_at: 'revision-b' }];
-  return { profiles, selected, saved, help, alerts, used, reloads: () => reloads,
-    picker(activeDriverId?: string) { cursor = 0; return picker({ profiles, activeDriverId, onUseCreated: (value: any) => used.push(value), onPick: (value: unknown) => selected.push(value), onCreated: async () => { reloads++; } }); },
+  return { get profiles() { return profiles; }, selected, saved, help, alerts, used, drive, deletes, settings,
+    reloads: () => reloads,
+    remountPicker() { hooks.length = 0; },
+    picker(activeDriverId?: string, props = {}) {
+      cursor = 0;
+      return picker({ profiles, activeDriverId, onUseCreated: (value: any) => used.push(value),
+        onPick: (value: unknown) => selected.push(value), onCreated: async () => { reloads++; }, ...props });
+    },
+    shell() {
+      const shellReact = {
+        useState(initial: any) {
+          const i = shellCursor++; if (!(i in shellHooks)) shellHooks[i] = typeof initial === 'function' ? initial() : initial;
+          return [shellHooks[i], (value: any) => { shellHooks[i] = typeof value === 'function' ? value(shellHooks[i]) : value; }];
+        },
+        useRef(value: any) { return shellHooks[shellCursor++] ??= { current: value }; },
+        useCallback(callback: () => unknown) { return callback; },
+        useLayoutEffect() {},
+        useEffect(callback: () => unknown) { shellCursor++; if (!shellMounted) effects.push(callback); },
+      };
+      const onboarding = load('setup', { './driverProgress': driverProgress, './setup': setup,
+        '../db/repositories': { ...deps['../lib/db/repositories'], getSetting: async (key: string) => settings.get(key) ?? null },
+      }, 'lib/onboarding/builtInPhone.ts');
+      const components = ['SensiStandby', 'SensiSafetyConversation', 'VitalsDetailView', 'BrandMark',
+        'DraggableSensiLauncher', 'DriveProfileMenu', 'DashboardAssistantEntry', 'HistoryView', 'SettingsView', 'Onboarding'];
+      const { default: Shell } = load('SmartWheelScreen', {
+        ...deps, ...Object.fromEntries(components.map(name => ['./' + name, { [name]: name }])),
+        react: shellReact, '../lib/buildProfile': { STANDALONE_DEMO: true },
+        'react-native': { ...deps['react-native'], Platform: { OS: 'ios' }, ActivityIndicator: 'ActivityIndicator' },
+        'expo-secure-store': {}, 'expo-status-bar': { StatusBar: 'StatusBar' },
+        '../lib/assistant/phoneCloudAuth': { sensiCloudAuth: { cachedCredential: () => null } },
+        '../lib/assistant/askSensiClient': {}, '../lib/assistant/mode': {},
+        '../lib/onboarding/builtInPhone': onboarding,
+        '../lib/assistant/sensiStandby': {}, '../lib/ui/dashboard': {},
+        '../lib/hooks/useDriveSession': { useDriveSession: () => drive },
+        './DriverPicker': { DriverPicker: 'DriverPicker' }, './DriverConfirmation': { DriverConfirmation: 'DriverConfirmation' },
+        './DriveView': { DriveView: 'DriveView', VoiceCheckModal: 'VoiceCheckModal' },
+      });
+      let shellMounted = false;
+      function render() {
+        shellCursor = 0;
+        const tree = Shell();
+        if (!shellMounted) {
+          shellMounted = true;
+          for (const effect of effects) {
+            const cleanup = effect();
+            if (typeof cleanup === 'function') cleanup();
+          }
+        }
+        return nodes(tree);
+      }
+      return render;
+    },
     confirmation(props: any) { cursor = 0; return confirmation(props); },
     renderElement(element: any) { return element.type(element.props); },
   };
@@ -168,7 +247,7 @@ test('confirmation uses matching monochrome outline icons rather than emoji, wit
   assert.ok(all.some(node => node.props?.children === '••• ••• 0123'));
 });
 
-test('an active-driver list opens a blank creation screen and never switches without explicit confirmation', async () => {
+test('creating a driver opens the setup route without directly selecting the profile', async () => {
   const f = harness();
   let tree = nodes(f.picker('driver-a'));
   assert.ok(tree.some(n => n.props?.children === 'Active driver'));
@@ -181,10 +260,71 @@ test('an active-driver list opens a blank creation screen and never switches wit
   assert.equal(name.props.value, '');
   name.props.onChangeText('New driver');
   await nodes(f.picker('driver-a')).find(n => n.props?.title === 'Create Profile').props.onPress();
-  assert.equal(f.used.length, 0);
   assert.deepEqual(f.selected, []);
-  const buttons = f.alerts[0][2];
-  assert.equal(buttons[0].style, 'cancel');
-  buttons.find((button: any) => button.text === 'Switch Driver').onPress();
-  assert.equal(f.used[0].id, 'created');
+  assert.deepEqual(f.used.map(profile => profile.id), ['created']);
+  assert.deepEqual(f.alerts, []);
+});
+
+test('create, complete onboarding and delete the new active driver in one mounted shell', async () => {
+  for (const remaining of [[], [profile]]) {
+    const f = harness(remaining);
+    const render = f.shell();
+    const find = (name: string) => render().find(node => node.type === name);
+    const flush = () => new Promise<void>(resolve => setImmediate(resolve));
+    render();
+    await flush();
+    const picker = find('DriverPicker').props;
+    if (remaining.length) {
+      nodes(f.picker(undefined, picker)).find(node => node.type === 'Pressable' && node.props.children?.props?.children === 'Add New Driver').props.onPress();
+    }
+    nodes(f.picker(undefined, picker)).find(node => node.props?.placeholder === 'Name *').props.onChangeText('Synthetic driver');
+    await nodes(f.picker(undefined, picker)).find(node => node.props?.title === 'Create Profile').props.onPress();
+    await flush();
+    const onboarding = find('Onboarding').props;
+    assert.equal(onboarding.driverId, 'created');
+    assert.equal(f.drive.driver?.id ?? null, null);
+    for (let page = 1; page <= 5; page++) await onboarding.controller.go(page);
+    await onboarding.controller.acknowledge(true);
+    assert.equal(await onboarding.controller.complete(), true);
+    onboarding.onDone();
+    assert.equal(f.drive.driver?.id, 'created');
+
+    find('DriveProfileMenu').props.onSwitch();
+    const activePicker = find('DriverPicker').props;
+    const activeRow = nodes(f.picker(undefined, activePicker)).find(node => node.key === 'created');
+    activeRow.props.children[1].props.onPress();
+    await flush();
+    f.remountPicker();
+    let editor = find('DriverPicker').props;
+    assert.equal(editor.editProfile.id, 'created');
+    f.drive.hasActiveSession = true;
+    editor = find('DriverPicker').props;
+    assert.equal(nodes(f.picker(undefined, editor)).find(node => node.props?.title === 'Delete Driver Profile').props.disabled, true);
+    f.drive.hasActiveSession = false;
+    editor = find('DriverPicker').props;
+    const remove = nodes(f.picker(undefined, editor)).find(node => node.props?.title === 'Delete Driver Profile');
+    assert.equal(remove.props.disabled, false);
+    remove.props.onPress();
+    const confirmation = f.alerts.at(-1)[2].find((action: any) => action.style === 'destructive');
+    assert.equal(confirmation.text, 'Delete from this phone');
+    f.drive.safety.check = {};
+    render();
+    await confirmation.onPress();
+    assert.deepEqual(f.deletes, []);
+    f.drive.safety.check = null;
+    render();
+    await confirmation.onPress();
+    assert.deepEqual(f.deletes, ['created']);
+    assert.equal(f.drive.driver?.id ?? null, null);
+    assert.equal(f.settings.has(driverProgress.driverIntroKey('created')), false);
+    const pickerAfterDelete = find('DriverPicker').props;
+    assert.deepEqual(pickerAfterDelete.profiles, remaining);
+    assert.equal(pickerAfterDelete.editProfile, undefined);
+    if (!remaining.length) {
+      const empty = harness([]).picker(undefined, pickerAfterDelete);
+      assert.ok(nodes(empty).some(node => node.props?.title === 'Create Profile'));
+    }
+    await confirmation.onPress();
+    assert.deepEqual(f.deletes, ['created']);
+  }
 });

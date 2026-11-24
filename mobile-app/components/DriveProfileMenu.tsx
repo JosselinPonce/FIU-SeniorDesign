@@ -1,3 +1,4 @@
+import { STANDALONE_DEMO } from '../lib/buildProfile';
 import { useEffect, useState } from 'react';
 import { Modal, ScrollView, View } from 'react-native';
 import { LocalizedPressable as Pressable, LocalizedText as Text } from '../lib/i18n/native';
@@ -60,7 +61,7 @@ export function DriveProfileMenu({ name, onSwitch, onEdit, dashboardMode, onDash
               <SettingsRow divider title="Appearance" />
               {segments(['light', 'dark', 'system'], preference, value => appearance[value], value => { void setPreference(value); })}
               <SettingsRow divider title="Language" subtitle={language === 'es' ? 'Español' : 'English'} onPress={openLanguage} />
-              {__DEV__ && dashboardMode !== undefined && onDashboardMode ? <>
+              {(__DEV__ || STANDALONE_DEMO) && dashboardMode !== undefined && onDashboardMode ? <>
                 <SettingsRow divider title="Dashboard Mode" />
                 {segments(['normal', 'demo'], dashboardMode ? 'demo' : 'normal', value => value === 'demo' ? 'Hardware Demo' : 'Normal Drive',
                   value => { onDashboardMode(value === 'demo'); close(); })}

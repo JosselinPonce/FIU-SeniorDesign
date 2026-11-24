@@ -10,6 +10,7 @@
  * push rows to Supabase -- this module deliberately does no networking.
  */
 import * as SQLite from 'expo-sqlite';
+import { STANDALONE_DEMO, TELEMETRY_HOLD_KEY } from '../buildProfile';
 
 export const DB_NAME = 'smart_wheel.db';
 
@@ -18,7 +19,7 @@ export const DB_NAME = 'smart_wheel.db';
  * version the device is on, so an existing install keeps its recorded drives
  * instead of being wiped.
  */
-export const SCHEMA_VERSION = 7;
+export const SCHEMA_VERSION = 8;
 
 let dbPromise: Promise<SQLite.SQLiteDatabase> | null = null;
 
@@ -82,6 +83,10 @@ async function openAndMigrate(): Promise<SQLite.SQLiteDatabase> {
   `);
 
   await migrate(db);
+  if (STANDALONE_DEMO) {
+    await db.runAsync("INSERT INTO app_settings (key,value) VALUES (?, 'true') ON CONFLICT(key) DO UPDATE SET value='true'",
+      [TELEMETRY_HOLD_KEY]);
+  }
   return db;
 }
 
@@ -270,6 +275,22 @@ async function migrate(db: SQLite.SQLiteDatabase): Promise<void> {
         sync_status TEXT NOT NULL DEFAULT 'pending' CHECK (sync_status = 'pending')
       );
       CREATE INDEX IF NOT EXISTS idx_demo_events_session ON drive_demo_events (session_id, confirmed_at);
+    `);
+  }
+
+  if (current < 8) {
+    await db.execAsync(`
+      CREATE TABLE IF NOT EXISTS ask_sensi_chats (
+        account_id TEXT NOT NULL,
+        profile_id TEXT NOT NULL REFERENCES driver_profiles(id) ON DELETE CASCADE,
+        id TEXT NOT NULL,
+        drive_id TEXT,
+        title TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        messages TEXT NOT NULL,
+        PRIMARY KEY (account_id, profile_id, id)
+      );
     `);
   }
 

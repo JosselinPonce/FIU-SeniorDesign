@@ -17,6 +17,7 @@ function harness(height = 844, development = false, preference?: SensiPreference
   const preferences = { state: { loaded: preference !== undefined, preference: preference ?? 'gemma' },
     subscribe: () => () => {} };
   const deps:Record<string,unknown>={
+    '../lib/buildProfile': { STANDALONE_DEMO: false },
     '../lib/i18n/LanguageProvider': { VoiceCheckLanguageScope: 'LanguageScope' },
     './ScreenHeader': { ScreenHeader: 'ScreenHeader' },
     '../lib/ui/profileSummary': { driverInitials: (name: string) => name[0] },
@@ -268,7 +269,7 @@ test('Developer timing tools retain recorded acknowledgment provenance after clo
   const diagnostics = readFileSync(new NodeURL('../components/ResponsivenessDiagnostics.tsx', import.meta.url), 'utf8');
   const settings = readFileSync(new NodeURL('../components/SettingsView.tsx', import.meta.url), 'utf8');
   assert.doesNotMatch(diagnostics, /VoiceCheckProviderStatus|Response provider/);
-  assert.match(settings, /page === 'developer' && __DEV__/);
+  assert.match(settings, /page === 'developer' && hardwareTools/);
 });
 
 test('built-in VoiceCheck keeps its header, controls and state without a provider panel', () => {

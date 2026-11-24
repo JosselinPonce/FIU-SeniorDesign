@@ -132,28 +132,28 @@ export async function foldSession(sessionId: string, createdBy: string): Promise
   return info;
 }
 
-export async function archiveInfo(sessionId: string): Promise<ArchiveInfo | null> {
+export async function archiveInfo(sessionId: string, profileId?: string): Promise<ArchiveInfo | null> {
   const db = await getDatabase();
   return db.getFirstAsync<ArchiveInfo>(
     `SELECT session_id, format_version, sample_rate_hz, sample_count, frame_count, raw_bytes,
             packed_bytes, sha256, created_at, sync_status
-     FROM session_archives WHERE session_id = ?`,
-    [sessionId],
+     FROM session_archives WHERE session_id = ? AND (? IS NULL OR session_id IN (SELECT id FROM drive_sessions WHERE profile_id = ?))`,
+    [sessionId, profileId ?? null, profileId ?? null],
   );
 }
 
-export async function archiveBytes(sessionId: string): Promise<Uint8Array | null> {
+export async function archiveBytes(sessionId: string, profileId?: string): Promise<Uint8Array | null> {
   const db = await getDatabase();
-  const row = await db.getFirstAsync<{ data: Uint8Array }>('SELECT data FROM session_archives WHERE session_id = ?', [
-    sessionId,
+  const row = await db.getFirstAsync<{ data: Uint8Array }>('SELECT data FROM session_archives WHERE session_id = ? AND (? IS NULL OR session_id IN (SELECT id FROM drive_sessions WHERE profile_id = ?))', [
+    sessionId, profileId ?? null, profileId ?? null,
   ]);
   return row?.data ?? null;
 }
 
 /** Unfolds a stored archive after checking its SHA-256. */
-export async function unfoldSession(sessionId: string): Promise<Archive> {
-  const info = await archiveInfo(sessionId);
-  const bytes = await archiveBytes(sessionId);
+export async function unfoldSession(sessionId: string, profileId: string): Promise<Archive> {
+  const info = await archiveInfo(sessionId, profileId);
+  const bytes = await archiveBytes(sessionId, profileId);
   if (!info || !bytes) throw new Error('no archive for this session');
   if (toHex(sha256(bytes)) !== info.sha256) throw new Error('archive checksum mismatch');
   return unfoldArchive(bytes, Z);

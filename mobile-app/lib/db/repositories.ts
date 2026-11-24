@@ -1,3 +1,4 @@
+import { driverIntroKey, newDriverIntro } from '../onboarding/driverProgress';
 /**
  * Data access for the Smart Wheel tables.
  *
@@ -173,6 +174,8 @@ export async function createProfile(
       ],
     );
     await tx.runAsync('INSERT INTO app_settings (key, value) VALUES (?, ?)', [profileSyncKey(profile.id), profile.updated_at]);
+    await tx.runAsync('INSERT INTO app_settings (key, value) VALUES (?, ?)', [driverIntroKey(profile.id), newDriverIntro]);
+    await tx.runAsync('INSERT INTO app_settings (key, value) VALUES (?, ?)', [`storage_mode:${profile.id}`, 'vitals']);
   });
   return profile;
 }
@@ -327,8 +330,8 @@ export async function setAck(profileId: string, ack: { high: number | null; low:
   await setSetting(`ack:${profileId}`, JSON.stringify(ack));
 }
 
-export async function getStorageMode(): Promise<StorageMode> {
-  return (await getSetting('storage_mode')) === 'full' ? 'full' : 'vitals';
+export async function getStorageMode(profileId: string): Promise<StorageMode> {
+  return (await getSetting(`storage_mode:${profileId}`) ?? await getSetting('storage_mode')) === 'full' ? 'full' : 'vitals';
 }
 
 export async function endSession(session: DriveSession): Promise<DriveSession> {
@@ -382,7 +385,7 @@ export async function recoverInterruptedSessions(): Promise<number> {
   return stale.length;
 }
 
-export async function listSessions(limit = 100): Promise<SessionSummary[]> {
+export async function listSessions(profileId: string, limit = 100): Promise<SessionSummary[]> {
   const db = await getDatabase();
   return db.getAllAsync<SessionSummary>(
     `SELECT s.*, p.display_name AS driver_name,
@@ -390,9 +393,10 @@ export async function listSessions(limit = 100): Promise<SessionSummary[]> {
               AS event_count
      FROM drive_sessions s
      JOIN driver_profiles p ON p.id = s.profile_id
+     WHERE s.profile_id = ?
      ORDER BY s.started_at DESC
      LIMIT ?`,
-    [limit],
+    [profileId, limit],
   );
 }
 
@@ -484,18 +488,18 @@ export async function eventsForSession(
 export type RecordedVital = Pick<TelemetryEvent, 'received_at' | 'bpm' | 'spo2'>;
 
 /** Only the processed readings in the requested portion of the saved drive. */
-export async function recordedVitals(sessionId: string, start: number, end: number): Promise<RecordedVital[]> {
+export async function recordedVitals(profileId: string, sessionId: string, start: number, end: number): Promise<RecordedVital[]> {
   const db = await getDatabase();
   return db.getAllAsync<RecordedVital>(
     `SELECT received_at, bpm, spo2 FROM telemetry_events
-     WHERE session_id = ? AND received_at >= ? AND received_at < ?
+     WHERE session_id = ? AND session_id IN (SELECT id FROM drive_sessions WHERE profile_id = ?) AND received_at >= ? AND received_at < ?
      ORDER BY received_at, sequence_number, id`,
-    [sessionId, new Date(start).toISOString(), new Date(end).toISOString()],
+    [sessionId, profileId, new Date(start).toISOString(), new Date(end).toISOString()],
   );
 }
 
 /** Min/max/average heart rate and SpO2 across a session. */
-export async function sessionStats(sessionId: string): Promise<SessionStats> {
+export async function sessionStats(sessionId: string, profileId?: string): Promise<SessionStats> {
   const db = await getDatabase();
   const row = await db.getFirstAsync<SessionStats>(
     `SELECT COUNT(bpm) AS samples,
@@ -504,8 +508,8 @@ export async function sessionStats(sessionId: string): Promise<SessionStats> {
             MIN(spo2) AS spo2_min, MAX(spo2) AS spo2_max,
             ROUND(AVG(spo2), 1) AS spo2_avg
      FROM telemetry_events
-     WHERE session_id = ? AND bpm IS NOT NULL`,
-    [sessionId],
+     WHERE session_id = ? AND bpm IS NOT NULL AND (? IS NULL OR session_id IN (SELECT id FROM drive_sessions WHERE profile_id = ?))`,
+    [sessionId, profileId ?? null, profileId ?? null],
   );
   return (
     row ?? {
@@ -530,11 +534,11 @@ export type RobustSessionStats = {
 };
 
 /** Percentile-based summary of a session (see lib/analysis/stats.ts). */
-export async function robustSessionStats(sessionId: string): Promise<RobustSessionStats> {
+export async function robustSessionStats(profileId: string, sessionId: string): Promise<RobustSessionStats> {
   const db = await getDatabase();
   const rows = await db.getAllAsync<{ bpm: number | null; spo2: number | null }>(
-    'SELECT bpm, spo2 FROM telemetry_events WHERE session_id = ?',
-    [sessionId],
+    'SELECT bpm, spo2 FROM telemetry_events WHERE session_id = ? AND session_id IN (SELECT id FROM drive_sessions WHERE profile_id = ?)',
+    [sessionId, profileId],
   );
   const bpm = rows.map((r) => r.bpm).filter((v): v is number => v !== null);
   const spo2 = rows.map((r) => r.spo2).filter((v): v is number => v !== null);
@@ -637,10 +641,10 @@ export async function saveAlert(a: Omit<DriveAlertRow, 'sync_status'>): Promise<
   );
 }
 
-export async function alertsForSession(sessionId: string): Promise<DriveAlertRow[]> {
+export async function alertsForSession(profileId: string, sessionId: string): Promise<DriveAlertRow[]> {
   const db = await getDatabase();
-  return db.getAllAsync<DriveAlertRow>('SELECT * FROM drive_alerts WHERE session_id = ? ORDER BY started_at', [
-    sessionId,
+  return db.getAllAsync<DriveAlertRow>('SELECT * FROM drive_alerts WHERE session_id = ? AND session_id IN (SELECT id FROM drive_sessions WHERE profile_id = ?) ORDER BY started_at', [
+    sessionId, profileId,
   ]);
 }
 
@@ -703,5 +707,52 @@ export async function demoEventsForSession(sessionId: string, profileId: string)
   return db.getAllAsync<DriveDemoEventRow>(
     'SELECT * FROM drive_demo_events WHERE session_id = ? AND profile_id = ? ORDER BY confirmed_at, id',
     [sessionId, profileId],
+  );
+}
+
+/** Ask Sensi reads only finished, locally recorded sessions owned by the selected driver. */
+export type AskSensiSession = DriveSession & { warning_count: number };
+
+export async function listAskSensiSessions(driverId: string): Promise<AskSensiSession[]> {
+  const db = await getDatabase();
+  return db.getAllAsync<AskSensiSession>(
+    "SELECT d.*, (SELECT COUNT(*) FROM drive_alerts a WHERE a.session_id = d.id) AS warning_count " +
+    "FROM drive_sessions d WHERE d.profile_id = ? AND d.status IN ('completed', 'interrupted') ORDER BY d.started_at DESC LIMIT 30",
+    [driverId],
+  );
+}
+
+export async function getAskSensiSession(driverId: string, sessionId: string): Promise<DriveSession | null> {
+  const db = await getDatabase();
+  return db.getFirstAsync<DriveSession>(
+    "SELECT * FROM drive_sessions WHERE id = ? AND profile_id = ? AND status IN ('completed', 'interrupted')",
+    [sessionId, driverId],
+  );
+}
+
+export async function askSensiWarningSummary(sessionId: string, limit: number, profileId: string) {
+  const db = await getDatabase();
+  const scope = ' FROM drive_alerts WHERE session_id = ? AND session_id IN (SELECT id FROM drive_sessions WHERE profile_id = ?)';
+  const groups = await db.getAllAsync<{ kind: string; level: string | null; count: number }>(
+    'SELECT kind, level, COUNT(*) AS count' + scope + ' GROUP BY kind, level ORDER BY MAX(started_at) DESC, kind, level',
+    [sessionId, profileId],
+  );
+  const rows = await db.getAllAsync<Pick<DriveAlertRow, 'kind' | 'level' | 'value' | 'threshold'>>(
+    'SELECT kind, level, value, threshold' + scope + ' ORDER BY started_at DESC, id DESC LIMIT ?',
+    [sessionId, profileId, limit],
+  );
+  return { total: groups.reduce((total, group) => total + group.count, 0), rows, groups };
+}
+
+/** Compare measured values in the two halves of a finished session. */
+export async function askSensiVitalTrend(sessionId: string, from: string, midpoint: string, to: string, profileId: string) {
+  const db = await getDatabase();
+  return db.getFirstAsync<{ heartRateFirst: number | null; heartRateLast: number | null; oxygenFirst: number | null; oxygenLast: number | null }>(
+    'SELECT ROUND(AVG(CASE WHEN received_at < ? THEN bpm END), 1) AS heartRateFirst, ' +
+    'ROUND(AVG(CASE WHEN received_at >= ? THEN bpm END), 1) AS heartRateLast, ' +
+    'ROUND(AVG(CASE WHEN received_at < ? THEN spo2 END), 1) AS oxygenFirst, ' +
+    'ROUND(AVG(CASE WHEN received_at >= ? THEN spo2 END), 1) AS oxygenLast ' +
+    'FROM telemetry_events WHERE session_id = ? AND received_at >= ? AND received_at <= ? AND session_id IN (SELECT id FROM drive_sessions WHERE profile_id = ?)',
+    [midpoint, midpoint, midpoint, midpoint, sessionId, from, to, profileId],
   );
 }

@@ -1,3 +1,4 @@
+import { telemetryAllowed } from './telemetryPolicy';
 /**
  * Pushes locally recorded drives to Supabase.
  *
@@ -35,17 +36,18 @@ export type SyncResult = {
  *
  * Only *finished* sessions: an active one is being streamed live already.
  */
-export async function syncToSupabase(): Promise<SyncResult> {
+export async function syncToSupabase(profileId?: string): Promise<SyncResult> {
+  if (!await telemetryAllowed()) return { profiles: 0, sessions: 0, events: 0, errors: [] };
   await processPendingDeletes(); // deletions made offline go first
   const db = await getDatabase();
   const pending = await db.getAllAsync<{ id: string; n: number }>(
     `SELECT s.id, (SELECT COUNT(*) FROM telemetry_events e
                    WHERE e.session_id = s.id AND e.sync_status = 'local') AS n
      FROM drive_sessions s
-     WHERE s.sync_status = 'local' AND s.status != 'active'
-     ORDER BY s.started_at`,
+     WHERE s.sync_status = 'local' AND s.status != 'active' AND (? IS NULL OR s.profile_id = ?)
+     ORDER BY s.started_at`, [profileId ?? null, profileId ?? null],
   );
-  const profileResult = await syncProfiles();
+  const profileResult = await syncProfiles(profileId);
   const result: SyncResult = { ...profileResult, sessions: 0, events: 0 };
   const up = new LiveUploader(() => 'pi_lost');
   for (const s of pending) {
@@ -61,15 +63,15 @@ export async function syncToSupabase(): Promise<SyncResult> {
 }
 
 /** How much is waiting to upload, for a "Sync (N)" button. */
-export async function pendingCount(): Promise<{ profiles: number; sessions: number; events: number }> {
+export async function pendingCount(profileId: string): Promise<{ profiles: number; sessions: number; events: number }> {
   const db = await getDatabase();
   const s = await db.getFirstAsync<{ c: number }>(
     `SELECT COUNT(*) AS c FROM drive_sessions
-     WHERE sync_status = 'local' AND status != 'active'`,
+     WHERE sync_status = 'local' AND status != 'active' AND profile_id = ?`, [profileId],
   );
   const e = await db.getFirstAsync<{ c: number }>(
-    "SELECT COUNT(*) AS c FROM telemetry_events WHERE sync_status = 'local'",
+    "SELECT COUNT(*) AS c FROM telemetry_events e JOIN drive_sessions s ON s.id = e.session_id WHERE e.sync_status = 'local' AND s.profile_id = ?", [profileId],
   );
-  const p = await db.getFirstAsync<{ c: number }>("SELECT COUNT(*) AS c FROM app_settings q JOIN driver_profiles p ON q.key = 'profile_sync:' || p.id");
+  const p = await db.getFirstAsync<{ c: number }>("SELECT COUNT(*) AS c FROM app_settings q JOIN driver_profiles p ON q.key = 'profile_sync:' || p.id WHERE p.id = ?", [profileId]);
   return { profiles: p?.c ?? 0, sessions: s?.c ?? 0, events: e?.c ?? 0 };
 }

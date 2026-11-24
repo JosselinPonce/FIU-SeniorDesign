@@ -7,7 +7,7 @@ import ts from 'typescript';
 
 const metroMinify = createRequire(import.meta.url)('metro-minify-terser');
 
-test('Release constant folding removes the hardware test module edges and confirmation UI', async () => {
+test('hardware tools are available in Debug and standalone demo Release only', async () => {
   for (const [path, marker] of [
     ['lib/hooks/useDriveSession.ts', '../diagnostics/hardwareSafetyTest'],
     ['lib/hooks/useDriveSession.ts', '../diagnostics/homeHardwareDemo'],
@@ -26,12 +26,22 @@ test('Release constant folding removes the hardware test module edges and confir
     ['components/SensiSafetyConversation.tsx', 'Request contact handoff again'],
   ] as const) {
     const source = readFileSync(new NodeURL(`../${path}`, import.meta.url), 'utf8');
-    const code = ts.transpileModule(source, { compilerOptions: {
-      module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.ES2022,
-    } }).outputText;
-    const minify = (dev: boolean) => metroMinify({ code, filename: path, reserved: [],
-      config: { compress: { global_defs: { __DEV__: dev }, passes: 2 }, mangle: false } });
+    const minify = (dev: boolean, standalone = false) => {
+      const configured = source
+        .replace(/^import \{ STANDALONE_DEMO \}.*;$/m, '')
+        .replace(/typeof __DEV__ !== 'undefined' && __DEV__/g, String(dev))
+        .replace(/^const hardwareTools = .*;$/m, '')
+        .replace(/\bhardwareTools\b/g, String(dev || standalone))
+        .replace(/\b__DEV__\b/g, String(dev))
+        .replace(/\bSTANDALONE_DEMO\b/g, String(standalone));
+      const { outputText: code } = ts.transpileModule(configured, { compilerOptions: {
+        module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.ES2022,
+      } });
+      return metroMinify({ code, filename: path, reserved: [],
+        config: { compress: { global_defs: { __DEV__: dev }, toplevel: true, passes: 2 }, mangle: false } });
+    };
     assert.ok((await minify(true)).code.includes(marker), `${path} includes the Debug entry`);
-    assert.ok(!(await minify(false)).code.includes(marker), `${path} excludes the Release entry`);
+    assert.ok(!(await minify(false)).code.includes(marker), `${path} excludes the ordinary Release entry ${marker}`);
+    assert.ok((await minify(false, true)).code.includes(marker), `${path} includes the standalone Release entry`);
   }
 });

@@ -21,16 +21,18 @@ function harness(development: boolean, active = false, theme = light, settings =
   const calls: unknown[] = [];
   const host = Object.fromEntries(['Pressable','ScrollView','Switch','Text','View'].map(n => [n,n]));
   const forbidden = () => { throw Error('Unexpected service access'); };
-  const drive = { safety: { th: null, prior: null, check: null, demo: null, last: null }, driver: { id: 'fixture', display_name: 'Fixture', language: 'en' },
+  const drive = { hardwareTest: null as { phase: string } | null, safety: { th: null, prior: null, check: null, demo: null, last: null }, driver: { id: 'fixture', display_name: 'Fixture', language: 'en' },
     hasActiveSession: active, storageMode: 'vitals', connection: 'idle', packets: 0, lost: 0, crcErrors: 0, duplicates: 0,
     setStorageMode: (mode: string) => calls.push(['storage', mode]), autoConnect: () => calls.push('connect'),
     stopConnecting: () => calls.push('disconnect'), setAllowDirect: (v: boolean) => calls.push(['direct',v]) };
   const deps: Record<string, any> = {
+    '../lib/buildProfile': { STANDALONE_DEMO: false },
+    '../lib/db/telemetryPolicy': { telemetryMode: async () => 'available' },
     './ScreenHeader': { ScreenHeader: 'ScreenHeader', ScreenHeading: 'ScreenHeading' },
     '../lib/ui/profileSummary': { driverInitials: (name: string) => name[0], displayBmi: () => null, maskedContactPhone: () => "•••• 0124" },
     '../lib/analysis/safetyController': { contactPhone: (phone?: string) => ({phone: phone || null}) },
     './RealContactDemoConfirmation': { RealContactDemoConfirmation: 'RealContactDemoConfirmation' },
-    '../lib/i18n/native': { LocalizedText: 'Text', LocalizedPressable: 'Pressable', LocalizedAlert: { alert: forbidden } },
+    '../lib/i18n/native': { LocalizedText: 'Text', LocalizedPressable: 'Pressable', LocalizedAlert: { alert: (...args: unknown[]) => calls.push(['alert', ...args]) } },
     './LanguageMenu': { LanguageMenu: 'LanguageMenu' },
     react: { useState: (initial: any) => { const id = index++; if (!state.has(id)) state.set(id, initial); return [state.get(id), (v: any) => state.set(id, typeof v === 'function' ? v(state.get(id)) : v)]; },
       useRef: (value: any) => {
@@ -293,4 +295,23 @@ test('VoiceCheck language labels follow app text while selection keeps the drive
     assert.deepEqual(choices.map(node => translateText(node.props.title, 'en')), ['English', 'Spanish']);
     assert.deepEqual(choices.map(node => translateText(node.props.title, 'es')), ['Inglés', 'Español']);
   }
+});
+
+test('real hardware test is a Debug detail and active runs require confirmation before leaving', () => {
+  const f = harness(true);
+  const row = (title: string) => f.render().find(n => n.props?.title === title);
+  row('Advanced Settings').props.onPress();
+  row('Open Developer Tools').props.onPress();
+  assert.ok(!f.render().some(n => n.type === 'HardwareSafetyDiagnostic'));
+  row('Real Hardware Safety Test').props.onPress();
+  assert.ok(f.render().some(n => n.type === 'HardwareSafetyDiagnostic'));
+  f.props.drive.hardwareTest = { phase: 'checking' };
+  f.render();
+  f.back();
+  const alert = f.calls.find(c => Array.isArray(c) && c[0] === 'alert') as [string, string, string, { text: string; onPress?: () => void }[]];
+  assert.equal(alert[1], 'Leave hardware test?');
+  assert.ok(f.render().some(n => n.type === 'HardwareSafetyDiagnostic'));
+  alert[3].find(button => button.text === 'Leave test')?.onPress?.();
+  assert.ok(!f.render().some(n => n.type === 'HardwareSafetyDiagnostic'));
+  assert.ok(row('Real Hardware Safety Test'));
 });
